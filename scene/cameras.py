@@ -16,9 +16,9 @@ from utils.graphics_utils import getWorld2View2, getProjectionMatrix, getProject
 from kornia import create_meshgrid
 from copy import deepcopy
 
-class Camera:
+class Camera(nn.Module):
     def __init__(self, colmap_id, R, T, FoVx, FoVy, image, gt_alpha_mask,
-                 image_name, uid,
+                 image_name, uid, features = None, masks = None, mask_scales = None,
                  trans=np.array([0.0, 0.0, 0.0]), scale=1.0, data_device = "cuda", timestamp = 0.0,
                  cx=-1, cy=-1, fl_x=-1, fl_y=-1, depth=None, resolution=None, image_path=None, meta_only=False,
                  ):
@@ -49,7 +49,15 @@ class Camera:
 
         self.image_width = resolution[0]
         self.image_height = resolution[1]
-        
+        self.original_image = image
+        self.original_features = features
+        self.original_masks = masks
+        self.mask_scales = mask_scales
+
+        # a dirty hack to make sure that the feature width is always 200
+        self.feature_width = 100
+        self.feature_height = int(self.feature_width * self.image_height / self.image_width)
+
         if not self.meta_only:
             if gt_alpha_mask is not None:
                 self.image *= gt_alpha_mask.to(self.image.device)

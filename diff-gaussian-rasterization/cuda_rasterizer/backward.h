@@ -58,7 +58,6 @@ namespace BACKWARD
 		const glm::vec4* rotations_r,
 		const float scale_modifier,
 		const float* cov3Ds,
-		const float prefilter_var,
 		const float* view,
 		const float* proj,
 		const float focal_x, float focal_y,

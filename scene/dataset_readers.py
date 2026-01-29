@@ -17,6 +17,7 @@ from scene.colmap_loader import read_extrinsics_text, read_intrinsics_text, qvec
     read_extrinsics_binary, read_intrinsics_binary, read_points3D_binary, read_points3D_text
 from utils.graphics_utils import getWorld2View2, focal2fov, fov2focal
 import numpy as np
+import torch
 import json
 from pathlib import Path
 from plyfile import PlyData, PlyElement
@@ -36,6 +37,9 @@ class CameraInfo(NamedTuple):
     FovX: np.array
     image: np.array
     depth: np.array
+    features: torch.tensor
+    masks: torch.tensor
+    mask_scales: torch.tensor
     image_path: str
     image_name: str
     width: int
@@ -115,19 +119,25 @@ def readColmapCameras(cam_extrinsics, cam_intrinsics, images_folder):
     sys.stdout.write('\n')
     return cam_infos
 
-def fetchPly(path):
+def fetchPly(path, only_xyz=False):
     plydata = PlyData.read(path)
     vertices = plydata['vertex']
     positions = np.vstack([vertices['x'], vertices['y'], vertices['z']]).T
-    colors = np.vstack([vertices['red'], vertices['green'], vertices['blue']]).T / 255.0
-    if 'nx' in vertices:
-        normals = np.vstack([vertices['nx'], vertices['ny'], vertices['nz']]).T
-    else:
-        normals = np.zeros_like(positions)
+    colors, normals = None, None
+
+    if not only_xyz:
+        colors = np.vstack([vertices['red'], vertices['green'], vertices['blue']]).T / 255.0
+
+        if 'nx' in vertices:
+            normals = np.vstack([vertices['nx'], vertices['ny'], vertices['nz']]).T
+        else:
+            normals = np.zeros_like(positions)
+
     if 'time' in vertices:
         timestamp = vertices['time'][:, None]
     else:
         timestamp = None
+
     return BasicPointCloud(points=positions, colors=colors, normals=normals, time=timestamp)
 
 def storePly(path, xyz, rgb):
@@ -209,7 +219,9 @@ def readColmapSceneInfo(path, images, eval, llffhold=8, num_pts_ratio=1.0):
                            ply_path=ply_path)
     return scene_info
 
-def readCamerasFromTransforms(path, transformsfile, white_background, extension=".png", time_duration=None, frame_ratio=1, dataloader=False):
+def readCamerasFromTransforms(path, transformsfile, white_background,
+                              extension=".png", time_duration=None, frame_ratio=1, dataloader=False,
+                              features_folder=None, masks_folder=None, mask_scale_folder=None):
     cam_infos = []
 
     with open(os.path.join(path, transformsfile)) as json_file:
@@ -228,6 +240,9 @@ def readCamerasFromTransforms(path, transformsfile, white_background, extension=
         if time_duration is not None and 'time' in frame:
             if timestamp < time_duration[0] or timestamp > time_duration[1]:
                 return
+        # TODO: cam00's mask scale lost
+        if 'cam00' in frame["file_path"]:
+            return
 
         cam_name = os.path.join(path, frame["file_path"] + extension)
 
@@ -243,6 +258,28 @@ def readCamerasFromTransforms(path, transformsfile, white_background, extension=
 
         image_path = os.path.join(path, cam_name) # .replace('hdImgs_unditorted', 'hdImgs_unditorted_rgba').replace('.jpg', '.png')
         image_name = Path(cam_name).stem
+
+        # features = torch.load(
+        #     os.path.join(features_folder, image_name.split('.')[0] + ".pt")
+        # ) if features_folder is not None else None
+        # masks = torch.load(
+        #     os.path.join(masks_folder, image_name.split('.')[0] + ".pt")
+        # ) if masks_folder is not None else None
+        # mask_scales = torch.load(
+        #     os.path.join(mask_scale_folder, image_name.split('.')[0] + ".pt")
+        # ) if mask_scale_folder is not None else None
+
+        # only path
+        assert dataloader
+        features = os.path.join(
+            features_folder, image_name.split('.')[0] + ".pt"
+        ) if features_folder is not None else None
+        masks = os.path.join(
+            masks_folder, image_name.split('.')[0] + ".pt"
+        ) if masks_folder is not None else None
+        mask_scales = os.path.join(
+            mask_scale_folder, image_name.split('.')[0] + ".pt"
+        ) if mask_scale_folder is not None else None
         
         if not dataloader:
             with Image.open(image_path) as image_load:
@@ -273,30 +310,37 @@ def readCamerasFromTransforms(path, transformsfile, white_background, extension=
             depth = None
         tbar.update(1)
         if 'fl_x' in frame and 'fl_y' in frame and 'cx' in frame and 'cy' in frame:
-            FovX = FovY = -1.0
             fl_x = frame['fl_x']
             fl_y = frame['fl_y']
             cx = frame['cx']
             cy = frame['cy']
+            FovX = FovY = -1.0
+            # FovY = focal2fov(fl_y, height)
+            # FovX = focal2fov(fl_x, width)
             return CameraInfo(uid=idx, R=R, T=T, FovY=FovY, FovX=FovX, image=image, depth=depth,
                         image_path=image_path, image_name=image_name, width=width, height=height, timestamp=timestamp,
-                        fl_x=fl_x, fl_y=fl_y, cx=cx, cy=cy)
+                        fl_x=fl_x, fl_y=fl_y, cx=cx, cy=cy,
+                        features=features, masks=masks, mask_scales=mask_scales)
             
         elif 'fl_x' in contents and 'fl_y' in contents and 'cx' in contents and 'cy' in contents:
-            FovX = FovY = -1.0
             fl_x = contents['fl_x']
             fl_y = contents['fl_y']
             cx = contents['cx']
             cy = contents['cy']
+            FovX = FovY = -1.0
+            # FovY = focal2fov(fl_y, height)
+            # FovX = focal2fov(fl_x, width)
             return CameraInfo(uid=idx, R=R, T=T, FovY=FovY, FovX=FovX, image=image, depth=depth,
                         image_path=image_path, image_name=image_name, width=width, height=height, timestamp=timestamp,
-                        fl_x=fl_x, fl_y=fl_y, cx=cx, cy=cy)
+                        fl_x=fl_x, fl_y=fl_y, cx=cx, cy=cy,
+                        features=features, masks=masks, mask_scales=mask_scales)
         else:
             fovy = focal2fov(fov2focal(fovx, width), height)
             FovY = fovy
             FovX = fovx
             return CameraInfo(uid=idx, R=R, T=T, FovY=FovY, FovX=FovX, image=image, depth=depth,
-                            image_path=image_path, image_name=image_name, width=width, height=height, timestamp=timestamp)
+                        image_path=image_path, image_name=image_name, width=width, height=height, timestamp=timestamp,
+                        features=features, masks=masks, mask_scales=mask_scales)
     
     with ThreadPool() as pool:
         cam_infos = pool.map(frame_read_fn, zip(list(range(len(frames))), frames))
@@ -307,10 +351,20 @@ def readCamerasFromTransforms(path, transformsfile, white_background, extension=
     
     return cam_infos
 
-def readNerfSyntheticInfo(path, white_background, eval, extension=".png", num_pts=100_000, time_duration=None, num_extra_pts=0, frame_ratio=1, dataloader=False):
+def readNerfSyntheticInfo(path, white_background, eval, extension=".png", num_pts=100_000, time_duration=None, num_extra_pts=0, frame_ratio=1, dataloader=False, need_features=False, need_masks=False):
     
     print("Reading Training Transforms")
-    train_cam_infos = readCamerasFromTransforms(path, "transforms_train.json", white_background, extension, time_duration=time_duration, frame_ratio=frame_ratio, dataloader=dataloader)
+
+    feature_dir = "clip_features"
+    mask_dir = "sam_masks"
+    mask_scale_dir = "mask_scales"
+
+    train_cam_infos = readCamerasFromTransforms(
+        path, "transforms_train.json", white_background, extension, time_duration=time_duration, frame_ratio=frame_ratio, dataloader=dataloader,
+        features_folder = os.path.join(path, feature_dir) if need_features else None,
+        masks_folder = os.path.join(path, mask_dir) if need_masks else None,
+        mask_scale_folder = os.path.join(path, mask_scale_dir) if need_masks else None
+    )
     print("Reading Test Transforms")
     test_cam_infos = readCamerasFromTransforms(path, "transforms_test.json" if not path.endswith('lego') else "transforms_val.json", white_background, extension, time_duration=time_duration, frame_ratio=frame_ratio, dataloader=dataloader)
     

@@ -21,3 +21,5 @@ eggs/
 .eggs/
 *.egg
 *.sh
+*.out
+diff-gaussian-rasterization_contrastive_f/diff-gaussian-rasterization_contrastive_f.egg-info

@@ -302,23 +302,6 @@ __device__ void computeColorFromSH_4D(int idx, int deg, int deg_t, int max_coeff
 					float t1 = cos(2 * MY_PI * dir_t / time_duration);
 					float dt1_dt = sin(2 * MY_PI * dir_t / time_duration) * 2 * MY_PI / time_duration;
 
-					dL_dsh[16] = t1 * l0m0 * dL_dRGB;
-					dL_dsh[17] = t1 * l1m1 * dL_dRGB;
-					dL_dsh[18] = t1 * l1m0 * dL_dRGB;
-					dL_dsh[19] = t1 * l1p1 * dL_dRGB;
-					dL_dsh[20] = t1 * l2m2 * dL_dRGB;
-					dL_dsh[21] = t1 * l2m1 * dL_dRGB;
-					dL_dsh[22] = t1 * l2m0 * dL_dRGB;
-					dL_dsh[23] = t1 * l2p1 * dL_dRGB;
-					dL_dsh[24] = t1 * l2p2 * dL_dRGB;
-					dL_dsh[25] = t1 * l3m3 * dL_dRGB;
-					dL_dsh[26] = t1 * l3m2 * dL_dRGB;
-					dL_dsh[27] = t1 * l3m1 * dL_dRGB;
-					dL_dsh[28] = t1 * l3m0 * dL_dRGB;
-					dL_dsh[29] = t1 * l3p1 * dL_dRGB;
-					dL_dsh[30] = t1 * l3p2 * dL_dRGB;
-					dL_dsh[31] = t1 * l3p3 * dL_dRGB;
-
 					dRGBdt = dt1_dt * (
 						l0m0 * sh[16] +
 						l1m1 * sh[17] +
@@ -382,23 +365,6 @@ __device__ void computeColorFromSH_4D(int idx, int deg, int deg_t, int max_coeff
 					if (deg_t > 1){
 						float t2 = cos(2 * MY_PI * dir_t * 2 / time_duration);
 						float dt2_dt = sin(2 * MY_PI * dir_t * 2 / time_duration) * 2 * MY_PI * 2 / time_duration;
-
-						dL_dsh[32] = t2 * l0m0 * dL_dRGB;
-						dL_dsh[33] = t2 * l1m1 * dL_dRGB;
-						dL_dsh[34] = t2 * l1m0 * dL_dRGB;
-						dL_dsh[35] = t2 * l1p1 * dL_dRGB;
-						dL_dsh[36] = t2 * l2m2 * dL_dRGB;
-						dL_dsh[37] = t2 * l2m1 * dL_dRGB;
-						dL_dsh[38] = t2 * l2m0 * dL_dRGB;
-						dL_dsh[39] = t2 * l2p1 * dL_dRGB;
-						dL_dsh[40] = t2 * l2p2 * dL_dRGB;
-						dL_dsh[41] = t2 * l3m3 * dL_dRGB;
-						dL_dsh[42] = t2 * l3m2 * dL_dRGB;
-						dL_dsh[43] = t2 * l3m1 * dL_dRGB;
-						dL_dsh[44] = t2 * l3m0 * dL_dRGB;
-						dL_dsh[45] = t2 * l3p1 * dL_dRGB;
-						dL_dsh[46] = t2 * l3p2 * dL_dRGB;
-						dL_dsh[47] = t2 * l3p3 * dL_dRGB;
 
 						dRGBdt = dt2_dt * (
 							l0m0 * sh[32] +
@@ -687,7 +653,7 @@ __device__ void computeCov3D(int idx, const glm::vec3 scale, float mod, const gl
 // Backward pass for the conversion of scale and rotation to a
 // 3D covariance matrix for each Gaussian.
 __device__ void computeCov3D_conditional(int idx, const glm::vec3 scale, const float scale_t, float mod,
-    const glm::vec4 rot, const glm::vec4 rot_r, const float prefilter_var, const float t, const float timestamp, const float opacity, bool& mask,
+    const glm::vec4 rot, const glm::vec4 rot_r, const float t, const float timestamp, const float opacity, bool& mask,
     const float* dL_dcov3Ds, const glm::vec3* dL_dmeans, float* dL_dopacity, float* dL_dts,
     glm::vec3* dL_dscales, float* dL_dscales_t,
     glm::vec4* dL_drots, glm::vec4* dL_drots_r)
@@ -709,32 +675,18 @@ __device__ void computeCov3D_conditional(int idx, const glm::vec3 scale, const f
 	float r = rot_r.z;
 	float s = rot_r.w;
 
-	// glm::mat4 M_l = glm::mat4(
-	// 	a, -b, -c, -d,
-	// 	b, a,-d, c,
-	// 	c, d, a,-b,
-	// 	d,-c, b, a
-	// );
-
-	// glm::mat4 M_r = glm::mat4(
-	// 	p, q, r, s,
-	// 	-q, p,-s, r,
-	// 	-r, s, p,-q,
-	// 	-s,-r, q, p
-	// );
-
 	glm::mat4 M_l = glm::mat4(
-		 a,  b, -c,  d,
-		-b,  a,  d,  c,
-		 c, -d,  a,  b,
-		-d, -c, -b,  a
+		a, -b, -c, -d,
+		b, a,-d, c,
+		c, d, a,-b,
+		d,-c, b, a
 	);
 
 	glm::mat4 M_r = glm::mat4(
-		p,  q, -r, -s,
-		-q, p,  s, -r,
-		r, -s,  p, -q,
-		s,  r,  q,  p
+		p, q, r, s,
+		-q, p,-s, r,
+		-r, s, p,-q,
+		-s,-r, q, p
 	);
 	// glm stores in column major
 	glm::mat4 R = M_r * M_l;
@@ -743,8 +695,7 @@ __device__ void computeCov3D_conditional(int idx, const glm::vec3 scale, const f
     glm::mat4 Sigma = glm::transpose(M) * M;
 
 	float cov_t = Sigma[3][3];
-	float cov_t_prefiltered = ((prefilter_var > 0.0) ? (prefilter_var + cov_t) : cov_t);
-	float marginal_t = __expf(-0.5*dt*dt/cov_t_prefiltered);
+	float marginal_t = __expf(-0.5*dt*dt/cov_t);
 	mask = marginal_t > 0.05;
 	if (!mask) return;
 
@@ -768,8 +719,8 @@ __device__ void computeCov3D_conditional(int idx, const glm::vec3 scale, const f
     // from opacity
 	float dL_dmarginal_t = dL_dopacity[idx] * opacity;
 	dL_dopacity[idx] *= marginal_t;
-	float dmarginalt_dcovt = marginal_t * dt * dt / 2 / (cov_t_prefiltered * cov_t_prefiltered);
-	float dmarginalt_dt = marginal_t * dt / cov_t_prefiltered;
+	float dmarginalt_dcovt = marginal_t * dt * dt / 2 / (cov_t * cov_t);
+	float dmarginalt_dt = marginal_t * dt / cov_t;
     dL_dcovt += dmarginalt_dcovt * dL_dmarginal_t;
     float dL_dt = dL_dmarginal_t * dmarginalt_dt;
 
@@ -809,25 +760,17 @@ __device__ void computeCov3D_conditional(int idx, const glm::vec3 scale, const f
 	glm::mat4 dL_dml_t = dL_dMt * M_r;
 // 	dL_dml_t = glm::transpose(dL_dml_t);
     glm::vec4 dL_drot(0.0f);
-	// dL_drot.x = dL_dml_t[0][0] + dL_dml_t[1][1] + dL_dml_t[2][2] + dL_dml_t[3][3];
-	// dL_drot.y = dL_dml_t[0][1] - dL_dml_t[1][0] + dL_dml_t[2][3] - dL_dml_t[3][2];
-	// dL_drot.z = dL_dml_t[0][2] - dL_dml_t[1][3] - dL_dml_t[2][0] + dL_dml_t[3][1];
-	// dL_drot.w = dL_dml_t[0][3] + dL_dml_t[1][2] - dL_dml_t[2][1] - dL_dml_t[3][0];
 	dL_drot.x = dL_dml_t[0][0] + dL_dml_t[1][1] + dL_dml_t[2][2] + dL_dml_t[3][3];
-	dL_drot.y = -dL_dml_t[0][1] + dL_dml_t[1][0] - dL_dml_t[2][3] + dL_dml_t[3][2];
+	dL_drot.y = dL_dml_t[0][1] - dL_dml_t[1][0] + dL_dml_t[2][3] - dL_dml_t[3][2];
 	dL_drot.z = dL_dml_t[0][2] - dL_dml_t[1][3] - dL_dml_t[2][0] + dL_dml_t[3][1];
-	dL_drot.w = -dL_dml_t[0][3] - dL_dml_t[1][2] + dL_dml_t[2][1] + dL_dml_t[3][0];
+	dL_drot.w = dL_dml_t[0][3] + dL_dml_t[1][2] - dL_dml_t[2][1] - dL_dml_t[3][0];
 
     glm::mat4 dL_dmr_t = M_l * dL_dMt;
     glm::vec4 dL_drot_r(0.0f);
-	// dL_drot_r.x = dL_dmr_t[0][0] + dL_dmr_t[1][1] + dL_dmr_t[2][2] + dL_dmr_t[3][3];
-	// dL_drot_r.y = -dL_dmr_t[0][1] + dL_dmr_t[1][0] + dL_dmr_t[2][3] - dL_dmr_t[3][2];
-	// dL_drot_r.z = -dL_dmr_t[0][2] - dL_dmr_t[1][3] + dL_dmr_t[2][0] + dL_dmr_t[3][1];
-	// dL_drot_r.w = -dL_dmr_t[0][3] + dL_dmr_t[1][2] - dL_dmr_t[2][1] + dL_dmr_t[3][0];
 	dL_drot_r.x = dL_dmr_t[0][0] + dL_dmr_t[1][1] + dL_dmr_t[2][2] + dL_dmr_t[3][3];
 	dL_drot_r.y = -dL_dmr_t[0][1] + dL_dmr_t[1][0] + dL_dmr_t[2][3] - dL_dmr_t[3][2];
-	dL_drot_r.z = dL_dmr_t[0][2] + dL_dmr_t[1][3] - dL_dmr_t[2][0] - dL_dmr_t[3][1];
-	dL_drot_r.w = dL_dmr_t[0][3] - dL_dmr_t[1][2] + dL_dmr_t[2][1] - dL_dmr_t[3][0];
+	dL_drot_r.z = -dL_dmr_t[0][2] - dL_dmr_t[1][3] + dL_dmr_t[2][0] + dL_dmr_t[3][1];
+	dL_drot_r.w = -dL_dmr_t[0][3] + dL_dmr_t[1][2] - dL_dmr_t[2][1] + dL_dmr_t[3][0];
 
     dL_drots[idx] = dL_drot;
     dL_drots_r[idx] = dL_drot_r;
@@ -850,7 +793,6 @@ __global__ void preprocessCUDA(
 	const float* scales_t,
 	const glm::vec4* rotations,
 	const glm::vec4* rotations_r,
-	const float prefilter_var,
 	const float scale_modifier,
 	const float* proj,
 	const glm::vec3* campos,
@@ -909,13 +851,13 @@ __global__ void preprocessCUDA(
 		if (rot_4d){
             bool time_mask=true;
             computeCov3D_conditional(idx, scales[idx], scales_t[idx], scale_modifier,
-                rotations[idx], rotations_r[idx], prefilter_var, ts[idx], timestamp, opacities[idx], time_mask,
+                rotations[idx], rotations_r[idx], ts[idx], timestamp, opacities[idx], time_mask,
                 dL_dcov3D, dL_dmeans, dL_dopacity, dL_dts, dL_dscale, dL_dscale_t, dL_drot, dL_drot_r);
             if (!time_mask) return;
 		}else{
 			computeCov3D(idx, scales[idx], scale_modifier, rotations[idx], dL_dcov3D, dL_dscale, dL_drot);
 			if (gaussian_dim == 4){
-				// TODO: marginal opacity
+				// marginal opacity
 			}
 		}
 
@@ -1151,7 +1093,6 @@ void BACKWARD::preprocess(
 	const glm::vec4* rotations_r,
 	const float scale_modifier,
 	const float* cov3Ds,
-	const float prefilter_var,
 	const float* viewmatrix,
 	const float* projmatrix,
 	const float focal_x, float focal_y,
@@ -1208,7 +1149,6 @@ void BACKWARD::preprocess(
 		scales_t,
 		(glm::vec4*)rotations,
 		(glm::vec4*)rotations_r,
-		prefilter_var,
 		scale_modifier,
 		projmatrix,
 		campos,

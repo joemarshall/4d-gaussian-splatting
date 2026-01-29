@@ -33,8 +33,9 @@ try:
     TENSORBOARD_FOUND = True
 except ImportError:
     TENSORBOARD_FOUND = False
+import gc
 
-def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoint, debug_from,
+def training(dataset: ModelParams, opt: OptimizationParams, pipe: PipelineParams, testing_iterations, saving_iterations, checkpoint, debug_from,
              gaussian_dim, time_duration, num_pts, num_pts_ratio, rot_4d, force_sh_3d, batch_size):
     
     if dataset.frame_ratio > 1:
@@ -43,7 +44,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
     first_iter = 0
     tb_writer = prepare_output_and_logger(dataset)
     gaussians = GaussianModel(dataset.sh_degree, gaussian_dim=gaussian_dim, time_duration=time_duration, rot_4d=rot_4d, force_sh_3d=force_sh_3d, sh_degree_t=2 if pipe.eval_shfs_4d else 0,
-                              prefilter_var=dataset.prefilter_var)
+                              max_hashmap = pipe.max_hashmap, mask_prune = pipe.mask_prune, vq_attributes = pipe.vq_attributes)
     scene = Scene(dataset, gaussians, num_pts=num_pts, num_pts_ratio=num_pts_ratio, time_duration=time_duration)
     gaussians.training_setup(opt)
     
@@ -115,6 +116,15 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 Ll1 = l1_loss(image, gt_image)
                 Lssim = 1.0 - ssim(image, gt_image)
                 loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * Lssim
+                
+                ###### prune mask Loss ######
+                if pipe.mask_prune and opt.lambda_prune_mask > 0:
+                    Lprune_mask = torch.mean((torch.sigmoid(gaussians._mask)))
+
+                    lambda_prune_mask = opt.lambda_prune_mask
+                    loss = loss + lambda_prune_mask * Lprune_mask
+                
+                ###### prune mask Loss ######
                 
                 ###### opa mask Loss ######
                 if opt.lambda_opa_mask > 0:
@@ -221,7 +231,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                     if test_psnr >= best_psnr:
                         best_psnr = test_psnr
                         print("\n[ITER {}] Saving best checkpoint".format(iteration))
-                        torch.save((gaussians.capture(), iteration), scene.model_path + "/chkpnt_best.pth")
+                        scene.save(iteration, ckpt_name="_best")
                         
                 if (iteration in saving_iterations):
                     print("\n[ITER {}] Saving Gaussians".format(iteration))
@@ -250,7 +260,76 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                     if pipe.env_map_res and iteration < pipe.env_optimize_until:
                         env_map_optimizer.step()
                         env_map_optimizer.zero_grad(set_to_none = True)
+                    if pipe.max_hashmap > 0:
+                        gaussians.optimizer_net.step()
+                        gaussians.optimizer_net.zero_grad(set_to_none = True)
+                        gaussians.scheduler_net.step()
+    
+    # TODO: 得从best ckpt开始
+    if gaussians.vq_attributes:
+        best_model_params = torch.load(scene.model_path + "/chkpnt_best.pth")[0]
+        gaussians.restore(best_model_params, opt)
+        if gaussians.max_hashmap > 0:
+            torch.nn.ModuleList([gaussians.recolor, gaussians.mlp_head]).load_state_dict(torch.load(scene.model_path + "/compact_best.pth"))
+        test_psnr = training_report(tb_writer, iteration, torch.tensor(0.0), torch.tensor(0.0), l1_loss, 0.0, [iteration], scene, render, (pipe, background), None)
+        gaussians.vector_quantization(opt)
+        test_psnr = training_report(tb_writer, iteration, torch.tensor(0.0), torch.tensor(0.0), l1_loss, 0.0, [iteration], scene, render, (pipe, background), None)
+        
+        progress_bar_finetune = tqdm(range(iteration, opt.iterations + pipe.vq_finetune_iters), desc="Training progress")
+        
+        if pipe.vq_finetune_iters > 0:
+            while iteration < opt.iterations + pipe.vq_finetune_iters + 1:
+                for batch_data in training_dataloader:
+                    iteration += 1
+                    if iteration > opt.iterations + pipe.vq_finetune_iters:
+                        break
+                    
+                    for batch_idx in range(batch_size):
+                        gt_image, viewpoint_cam = batch_data[batch_idx]
+                        gt_image = gt_image.cuda()
+                        viewpoint_cam = viewpoint_cam.cuda()
 
+                        render_pkg = render(viewpoint_cam, gaussians, pipe, background)
+                        image = render_pkg["render"]
+
+                        # Loss
+                        Ll1 = l1_loss(image, gt_image)
+                        Lssim = 1.0 - ssim(image, gt_image)
+                        loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * Lssim
+                        
+                        loss = loss / batch_size
+                        loss.backward()
+                        
+                    loss_dict = {"Ll1": Ll1,
+                                "Lssim": Lssim}
+                    
+                    if iteration % 10 == 0:
+                        postfix = {"Loss": f"{loss.item():.{7}f}",
+                                                # "PSNR": f"{psnr_for_log:.{2}f}",
+                                                "Ll1": f"{Ll1.item():.{4}f}",
+                                                "Lssim": f"{Lssim.item():.{4}f}",}
+                                
+                        progress_bar_finetune.set_postfix(postfix)
+                        progress_bar_finetune.update(10)
+                    if iteration == opt.iterations + pipe.vq_finetune_iters:
+                        progress_bar_finetune.close()
+                    
+                    test_psnr = training_report(tb_writer, iteration, Ll1, loss, l1_loss, 0.0, [i for i in range(opt.iterations, opt.iterations + pipe.vq_finetune_iters + 1, 500)]+[opt.iterations + pipe.vq_finetune_iters], scene, render, (pipe, background), None)
+                    if iteration < opt.iterations + pipe.vq_finetune_iters: # TODO: env map finetune
+                        gaussians.optimizer_codebook.step()
+                        gaussians.optimizer_codebook.zero_grad(set_to_none = True)
+                        gaussians.optimizer_others.step()
+                        gaussians.optimizer_others.zero_grad(set_to_none = True)
+                    gc.collect()
+                    torch.cuda.empty_cache()
+            storage = gaussians.final_prune(compress=pipe.compress)
+            with open(os.path.join(args.model_path, "storage"), 'w') as c:
+                c.write(storage)
+            print("psnr before compress: ", test_psnr)
+            final_psnr = training_report(tb_writer, iteration, torch.tensor(0.0), torch.tensor(0.0), l1_loss, 0.0, [iteration], scene, render, (pipe, background), None)
+            print("psnr after compress: ", final_psnr)
+            
+            
 def prepare_output_and_logger(args):    
     if not args.model_path:
         if os.getenv('OAR_JOB_ID'):
@@ -273,6 +352,7 @@ def prepare_output_and_logger(args):
         print("Tensorboard not available: not logging progress")
     return tb_writer
 
+@torch.no_grad()
 def training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_iterations, scene : Scene, renderFunc, renderArgs, loss_dict=None):
     if tb_writer:
         tb_writer.add_scalar('train_loss_patches/l1_loss', Ll1.item(), iteration)
@@ -328,6 +408,8 @@ def training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_i
                     psnr_test += psnr(image, gt_image).mean().double()
                     ssim_test += ssim(image, gt_image).mean().double()
                     msssim_test += msssim(image[None].cpu(), gt_image[None].cpu())
+                    gc.collect()
+                    torch.cuda.empty_cache()
                 psnr_test /= len(config['cameras'])
                 l1_test /= len(config['cameras']) 
                 ssim_test /= len(config['cameras'])     
@@ -341,7 +423,6 @@ def training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_i
                 if config['name'] == 'test':
                     psnr_test_iter = psnr_test.item()
                     
-    torch.cuda.empty_cache()
     return psnr_test_iter
 
 def setup_seed(seed):

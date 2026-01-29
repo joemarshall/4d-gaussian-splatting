@@ -1,99 +1,43 @@
-# Real-time Photorealistic Dynamic Scene Representation and Rendering with 4D Gaussian Splatting
-### [Project page](https://fudan-zvg.github.io/4d-gaussian-splatting/) | [Paper](https://arxiv.org/abs/2310.10642)
-> [**Real-time Photorealistic Dynamic Scene Representation and Rendering with 4D Gaussian Splatting**](https://arxiv.org/abs/2310.10642),  
-> Zeyu Yang, Hongye Yang, Zijie Pan, [Li Zhang](https://lzrobots.github.io)  
-> **Fudan University**  
-> **ICLR 2024**
+# Segmentation branch
 
-> [**4D Gaussian Splatting: Modeling Dynamic Scenes with Native 4D Primitives**](https://arxiv.org/abs/2412.20720),  
-> Zeyu Yang, Zijie Pan, Xiatian Zhu, [Li Zhang](https://lzrobots.github.io), Jianfeng Feng, Yu-Gang Jiang, Philip H.S. Torr  
-> **Fudan University, University of Surrey, University of Oxford**  
-> **Arxiv preprint**
+This branch is customized for segmentation of 4DGS.
 
+# Installation
 
-**This repository is the official implementation of "Real-time Photorealistic Dynamic Scene Representation and Rendering with 4D Gaussian Splatting".** In this paper, we propose coherent integrated modeling of the space and time dimensions for dynamic scenes by formulating unbiased 4D Gaussian primitives along with a dedicated rendering pipeline.
-
-
-## 🛠️ Pipeline
-<div align="center">
-  <img src="assets/pipeline.png"/>
-</div><br/>
-
-
-## Get started
-
-### Environment
-
-The hardware and software requirements are the same as those of the [3D Gaussian Splatting](https://github.com/graphdeco-inria/gaussian-splatting), which this code is built upon. To setup the environment, please run the following command:
-
-```shell
-git clone https://github.com/fudan-zvg/4d-gaussian-splatting
-cd 4d-gaussian-splatting
+```bash
+# skip this if you have installed the environment for original 4DGS
 conda env create --file environment.yml
 conda activate 4dgs
+
+# additional packages
+pip install hdbscan imageio
+pip install pytorch3d==0.7.1
+pip install ./diff-gaussian-rasterization_contrastive_f
+pip install third_party/segment-anything
 ```
 
-### Data preparation
+## Prepare Data
 
-**DyNeRF dataset:**
+Suppose we have trained a Gaussian model under `./output/N3V/sear_steak`, then
+following [SAGA](https://github.com/Jumpat/SegAnyGAussians) to prepare the data and SAM checkpoint required for segmentation.
 
-Download the [Neural 3D Video dataset](https://github.com/facebookresearch/Neural_3D_Video) and extract each scene to `data/N3V`. After that, preprocess the raw video by executing:
-
-```shell
-python scripts/n3v2blender.py data/N3V/$scene_name
+For example,
+```bash
+python extract_segment_everything_masks.py --image_root <path to the scene data> --sam_checkpoint_path <path to the pre-trained SAM model> --downsample <1/2/4/8>
+python get_scale.py --image_root <path to the scene data> --model_path ./output/N3V/sear_steak
 ```
 
-**DNeRF dataset:**
+## Running
 
-The dataset can be downloaded from [drive](https://drive.google.com/file/d/19Na95wk0uikquivC7uKWVqllmTx-mBHt/view?usp=sharing) or [dropbox](https://www.dropbox.com/s/0bf6fl0ye2vz3vr/data.zip?dl=0). Then, unzip each scene into `data/dnerf`.
-
-
-### Running
-
-After the installation and data preparation, you can train the model by running:
-
-```shell
-python train.py --config $config_path
+Train 4D Gaussian Affinity Features
+```bash
+python train_contrastive_feature.py -m ./output/N3V/sear_steak --iterations 10000 --num_sampled_rays 1000
 ```
 
-## 🎥 Videos
-
-### 🎞️ Demo
-
-[![Demo Video](https://i3.ytimg.com/vi/3cXC9e4CujM/maxresdefault.jpg)](https://www.youtube.com/embed/3cXC9e4CujM)
-
-### 🎞️ Dynamic novel view synthesis
-
-https://github.com/fudan-zvg/4d-gaussian-splatting/assets/45744267/5e163b88-4f70-4157-b9f5-8431b13c26b7
-
-### 🎞️ Bullet time
-
-https://github.com/fudan-zvg/4d-gaussian-splatting/assets/45744267/ac5bc3b2-dd17-446d-9ee6-6efcc871eb84
-
-### 🎞️ Free view synthesis from a teleporting camera
-
-https://github.com/fudan-zvg/4d-gaussian-splatting/assets/45744267/6bd0b57b-4857-4722-9851-61250a2521ab
-
-### 🎞️ Monocular dynamic scene reconstruction
-
-https://github.com/fudan-zvg/4d-gaussian-splatting/assets/45744267/2c79974c-1867-4ce6-848b-5d31679b6067
-
-
-## 📜 BibTex
-```bibtex
-@inproceedings{yang2023gs4d,
-  title={Real-time Photorealistic Dynamic Scene Representation and Rendering with 4D Gaussian Splatting},
-  author={Yang, Zeyu and Yang, Hongye and Pan, Zijie and Zhang, Li},
-  booktitle={International Conference on Learning Representations (ICLR)},
-  year={2024}
-}
+Visualize the segmentation
+```bash
+python vis_segment.py
 ```
 
-```bibtex
-@article{yang20244dgs,
-    title={4D Gaussian Splatting: Modeling Dynamic Scenes with Native 4D Primitives},
-    author={Yang, Zeyu and Pan, Zijie and Zhu, Xiatian and Zhang, Li and Feng, Jianfeng and Jiang, Yu-Gang and Torr, Philip HS},
-    journal={arXiv preprint},
-    year={2024},
-}
-```
+## Acknowledgement
+The implementation refers to [SAGA](https://github.com/Jumpat/SegAnyGAussians), and we sincerely thank them for their contributions to the community.

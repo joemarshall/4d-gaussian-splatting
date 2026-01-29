@@ -47,8 +47,11 @@ class ParamGroup:
 class ModelParams(ParamGroup): 
     def __init__(self, parser, sentinel=False):
         self.sh_degree = 3
+        self.feature_dim = 32
+        self.init_from_3dgs_pcd = False
         self._source_path = ""
         self._model_path = ""
+        self._feature_model_path = ""
         self._images = "images"
         self._resolution = -1
         self._white_background = False
@@ -58,8 +61,12 @@ class ModelParams(ParamGroup):
         self.num_extra_pts = 0
         self.loaded_pth = ""
         self.frame_ratio = 1
-        self.dataloader = False
-        self.prefilter_var = -1.0
+        self.dataloader = True
+
+        self.need_features = False
+        self.need_masks = False
+        self.allow_principle_point_shift = False
+
         super().__init__(parser, "Loading Parameters", sentinel)
 
     def extract(self, args):
@@ -70,12 +77,17 @@ class ModelParams(ParamGroup):
 class PipelineParams(ParamGroup):
     def __init__(self, parser):
         self.convert_SHs_python = False
-        self.compute_cov3D_python = False
+        self.compute_cov3D_python = True
         self.debug = False
         self.env_map_res = 0
         self.env_optimize_until = 1000000000
         self.env_optimize_from = 0
         self.eval_shfs_4d = False
+        self.vq_attributes = []
+        self.max_hashmap = 0 # 19 > 0 for ngp color
+        self.compress = False # run length encoding
+        self.mask_prune = False
+        self.vq_finetune_iters = 0
         super().__init__(parser, "Pipeline Parameters")
 
 class OptimizationParams(ParamGroup):
@@ -105,15 +117,40 @@ class OptimizationParams(ParamGroup):
         self.lambda_opa_mask = 0.0
         self.lambda_rigid = 0.0
         self.lambda_motion = 0.0
+        self.net_lr = 0.01
+        self.net_lr_step = [5_000, 15_000, 25_000]
+        self.lambda_prune_mask = 0.0
+
+        # Segmentation parameters
+        self.mask_lr = 1.0
+        self.optimization_times = 2
+        self.IoU_thresh = 0.5
+        self.IoA_thresh = 0.8
+        self.lamb = 0.3
+
+        # Training features
+        self.ray_sample_rate = 0
+        self.num_sampled_rays = -1
+        self.smooth_K = 16
+        self.scale_aware_dim = -1
+        self.rfn = 1.
         super().__init__(parser, "Optimization Parameters")
 
-def get_combined_args(parser : ArgumentParser):
+def get_combined_args(parser : ArgumentParser, target_cfg_file = None):
     cmdlne_string = sys.argv[1:]
     cfgfile_string = "Namespace()"
     args_cmdline = parser.parse_args(cmdlne_string)
 
+    if target_cfg_file is None:
+        if args_cmdline.target == 'seg':
+            target_cfg_file = "seg_cfg_args"
+        elif args_cmdline.target == 'scene' or args_cmdline.target == 'xyz':
+            target_cfg_file = "cfg_args"
+        elif args_cmdline.target == 'feature' or args_cmdline.target == 'coarse_seg_everything' or args_cmdline.target == 'contrastive_feature' :
+            target_cfg_file = "feature_cfg_args"
+
     try:
-        cfgfilepath = os.path.join(args_cmdline.model_path, "cfg_args")
+        cfgfilepath = os.path.join(args_cmdline.model_path, target_cfg_file)
         print("Looking for config file in", cfgfilepath)
         with open(cfgfilepath) as cfg_file:
             print("Config file found: {}".format(cfgfilepath))
