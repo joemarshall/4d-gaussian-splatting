@@ -1,43 +1,47 @@
-# Segmentation branch
+# Generation branch
 
-This branch is customized for segmentation of 4DGS.
+This branch is customized for video-to-4D task using 4DGS.
 
 # Installation
 
+Compared to original 4DGS (main branch), we require a higher version of Python (3.7 -> 3.10).
+
 ```bash
-# skip this if you have installed the environment for original 4DGS
 conda env create --file environment.yml
 conda activate 4dgs
-
-# additional packages
-pip install hdbscan imageio
-pip install pytorch3d==0.7.1
-pip install ./diff-gaussian-rasterization_contrastive_f
-pip install third_party/segment-anything
 ```
 
 ## Prepare Data
 
-Suppose we have trained a Gaussian model under `./output/N3V/sear_steak`, then
-following [SAGA](https://github.com/Jumpat/SegAnyGAussians) to prepare the data and SAM checkpoint required for segmentation.
+We prepare one case under `./data/feeding_squirrel` for reference. 
 
-For example,
-```bash
-python extract_segment_everything_masks.py --image_root <path to the scene data> --sam_checkpoint_path <path to the pre-trained SAM model> --downsample <1/2/4/8>
-python get_scale.py --image_root <path to the scene data> --model_path ./output/N3V/sear_steak
-```
+The `input` folder contains single-view video frames (e.g., [Consistent4D dataset](https://github.com/yanqinJiang/Consistent4D)).
+
+The `multi_view` folder contains multi-view images at some key frames (e.g., 
+[Efficient4D](https://github.com/fudan-zvg/Efficient4D), 
+[Diffusion^2](https://github.com/fudan-zvg/diffusion-square),
+[SV4D](https://github.com/Stability-AI/generative-models)).
+
 
 ## Running
 
-Train 4D Gaussian Affinity Features
 ```bash
-python train_contrastive_feature.py -m ./output/N3V/sear_steak --iterations 10000 --num_sampled_rays 1000
-```
-
-Visualize the segmentation
-```bash
-python vis_segment.py
+name=feeding_squirrel
+CUDA_VISIBLE_DEVICES=0 python main.py \
+  --config configs/video.yaml \
+  input=./data/${name}/input \
+  save_path=${name} \
+  outdir=logs/${name} \
+  multi_view=True \
+  multi_view_input=./data/${name}/multi_view \
+  data_mode=syncdreamer \
+  batch_size=16 \
+  iters=500
 ```
 
 ## Acknowledgement
-The implementation refers to [SAGA](https://github.com/Jumpat/SegAnyGAussians), and we sincerely thank them for their contributions to the community.
+The implementation refers to 
+[DreamGaussian](https://github.com/dreamgaussian/dreamgaussian), 
+[DreamGaussian4D](https://github.com/jiawei-ren/dreamgaussian4d), 
+[STAG4D](https://github.com/zeng-yifei/STAG4D), 
+and we sincerely thank them for their contributions to the community.

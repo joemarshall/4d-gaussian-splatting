@@ -1,0 +1,78 @@
+### Input
+# input rgba image path (default to None, can be load in GUI too)
+input:
+# input text prompt (default to None, can be input in GUI too)
+prompt:
+negative_prompt: ""
+# estimated elevation angle for input image
+elevation: 0
+azimuth: 0
+# reference image resolution
+ref_size: 256
+crop_size: 200
+
+data_mode: 'syncdreamer'
+lambda_mv: 10000
+multi_view: False
+multi_view_input: ???
+
+### Output
+outdir: logs
+mesh_format: obj
+save_path: ???
+
+### Training
+refine_stage: False
+# use mvdream instead of sd 2.1
+mvdream: False
+# use imagedream
+imagedream: False
+# use stable-zero123 instead of zero123-xl
+stable_zero123: True
+# guidance loss weights (0 to disable)
+lambda_sd: 0
+lambda_zero123: 10
+lambda_svd: 0
+# warmup rgb supervision for image-to-3d
+warmup_rgb_loss: True
+# training batch size per iter
+batch_size: 16 # == #frames
+n_views: 1
+# training iterations for stage 1
+iters: 500
+# whether to linearly anneal timestep
+anneal_timestep: True
+# training camera radius
+radius: 2.5
+# training camera fovy
+fovy: 49.1
+# training camera min elevation
+min_ver: -30
+# training camera max elevation
+max_ver: 30
+# checkpoint to load for stage 1 (should be a ply file)
+load:
+
+pgc: 0.1
+t_max: 0.5
+
+### Gaussian splatting
+density_start_iter: 0
+density_end_iter: 0
+opacity_reset_interval: 10000  # not reset
+num_pts: 50000
+sh_degree: 0
+position_lr_init: 0.001
+position_lr_final: 0.00002
+position_lr_delay_mult: 0.02
+position_lr_max_steps: 300
+position_t_lr_init: -1.0
+feature_lr: 0.01
+opacity_lr: 0.05
+scaling_lr: 0.005
+rotation_lr: 0.005
+percent_dense: 0.05
+densification_interval: 100
+densify_grad_threshold: 0.2
+lambda_point_opa: 0.0
+lambda_time_smooth: 0.0
