@@ -9,6 +9,8 @@ import math
 import shutil
 import sqlite3
 
+import time
+
 IS_PYTHON3 = sys.version_info[0] >= 3
 MAX_IMAGE_ID = 2**31 - 1
 
@@ -173,6 +175,8 @@ def camTodatabase(txtfile, database_path):
                 paramsList.append(params)
                 camera_id = db.update_camera(cameraModel, width, height, params, cameraId)
 
+    db.execute("update images set camera_id=1")
+
     # Commit the data to the file.
     db.commit()
     # Read and check cameras.
@@ -222,6 +226,7 @@ if __name__ == '__main__':
     parser.add_argument("path", default="", help="input path to the video")
     args = parser.parse_args()
 
+    args.path=os.path.abspath(args.path)
     # path must end with / to make sure image path is relative
     if args.path[-1] != '/':
         args.path += '/'
@@ -229,11 +234,12 @@ if __name__ == '__main__':
     # extract images
     videos = [os.path.join(args.path, vname) for vname in os.listdir(args.path) if vname.endswith(".mp4")]
     images_path = os.path.join(args.path, "images/")
-    os.makedirs(images_path, exist_ok=True)
-    
-    for video in videos:
-        cam_name = video.split('/')[-1].split('.')[-2]
-        do_system(f"ffmpeg -i {video} -start_number 0 {images_path}/{cam_name}_%04d.png")
+    images_path = os.path.abspath(images_path)
+    if not os.path.exists(images_path):
+        os.makedirs(images_path, exist_ok=True)
+        for video in videos:
+            cam_name = video.split('/')[-1].split('.')[-2]
+            do_system(f"ffmpeg -i {video} -start_number 0 {images_path}/{cam_name}_%04d.png")
         
     # load data
     images = [f[len(args.path):] for f in sorted(glob.glob(os.path.join(args.path, "images/", "*"))) if f.lower().endswith('png') or f.lower().endswith('jpg') or f.lower().endswith('jpeg')]
@@ -305,6 +311,8 @@ if __name__ == '__main__':
             test_frames += cam_frames
         else:
             train_frames += cam_frames
+    print("Train: ",len(train_frames))
+    print("Test: ",len(test_frames))
 
     train_transforms = {
         'w': W,
@@ -327,19 +335,27 @@ if __name__ == '__main__':
 
     train_output_path = os.path.join(args.path, 'transforms_train.json')
     test_output_path = os.path.join(args.path, 'transforms_test.json')
-    print(f'[INFO] write to {train_output_path} and {test_output_path}')
+    
+    print(f'[INFO] write to {train_output_path}[{len(train_frames)}] and {test_output_path}[{len(test_frames)}]')
     with open(train_output_path, 'w') as f:
         json.dump(train_transforms, f, indent=2)
     with open(test_output_path, 'w') as f:
         json.dump(test_transforms, f, indent=2)
     
     colmap_workspace = os.path.join(args.path, 'tmp')
+    os.makedirs(colmap_workspace,exist_ok=True)
+    os.chdir(colmap_workspace)
+
+
     blender2opencv = np.array([[1, 0, 0, 0], [0, -1, 0, 0], [0, 0, -1, 0], [0, 0, 0, 1]])
     W, H, cx, cy, fx, fy = int(W), int(H), train_transforms['cx'], train_transforms['cy'], train_transforms['fl_x'], train_transforms['fl_y']
-    os.makedirs(os.path.join(colmap_workspace, 'created', 'sparse'), exist_ok=True)
+    os.makedirs('created/sparse', exist_ok=True)
+    os.makedirs('created/sparse2', exist_ok=True)
+
+
     
     fname2pose = {}
-    with open(os.path.join(colmap_workspace, 'created/sparse/cameras.txt'), 'w') as f:
+    with open('created/sparse/cameras.txt', 'w') as f:
         f.write(f'1 PINHOLE {W} {H} {fx} {fy} {cx} {cy}')
         for frame in train_frames:
             if frame['time'] == 0:
@@ -347,11 +363,16 @@ if __name__ == '__main__':
                 pose = np.array(frame['transform_matrix']) @ blender2opencv
                 fname2pose.update({fname: pose})
                 
-    os.makedirs(os.path.join(colmap_workspace, 'images'), exist_ok=True)
+    print("FNAMETOPOSE:",len(fname2pose))
+    os.makedirs('images', exist_ok=True)
     for fname in fname2pose.keys():
-        os.symlink(os.path.abspath(os.path.join(images_path, fname)), os.path.join(colmap_workspace, 'images', fname))
+        try:
+            # make hard links because colmap follows symlinks and does bad things to the database
+            os.link(os.path.join(images_path, fname), os.path.join('images', fname))
+        except:
+            print(f"Couldn't symlink {fname}, probably exists")
                 
-    with open(os.path.join(colmap_workspace, 'created/sparse/images.txt'), 'w') as f:
+    with open('created/sparse/images.txt', 'w') as f:
         idx = 1
         for fname in fname2pose.keys():
             pose = fname2pose[fname]
@@ -365,48 +386,54 @@ if __name__ == '__main__':
             f.write(f'{idx} {q0} {q1} {q2} {q3} {T[0]} {T[1]} {T[2]} 1 {fname}\n\n')
             idx += 1
     
-    with open(os.path.join(colmap_workspace, 'created/sparse/points3D.txt'), 'w') as f:
+    with open('created/sparse/points3D.txt','w') as f:
         f.write('')
     
-    db_path = os.path.join(colmap_workspace, 'database.db')
+    db_path = 'database.db'
     
     do_system(f"colmap feature_extractor \
                 --database_path {db_path} \
-                --image_path {os.path.join(colmap_workspace, 'images')}")
+                --image_path images\
+                --ImageReader.camera_model PINHOLE\
+                --ImageReader.single_camera 1\
+                --ImageReader.camera_params {fx},{fy},{cx},{cy}")
     
-    camTodatabase(os.path.join(colmap_workspace, 'created/sparse/cameras.txt'), db_path)
+    #camTodatabase('created/sparse/cameras.txt', db_path)
     
     do_system(f"colmap exhaustive_matcher  \
                 --database_path {db_path}")
     
-    os.makedirs(os.path.join(colmap_workspace, 'triangulated', 'sparse'), exist_ok=True)
+    os.makedirs('triangulated/sparse', exist_ok=True)
     
     do_system(f"colmap point_triangulator   \
                 --database_path {db_path} \
-                --image_path {os.path.join(colmap_workspace, 'images')} \
-                --input_path  {os.path.join(colmap_workspace, 'created/sparse')} \
-                --output_path  {os.path.join(colmap_workspace, 'triangulated/sparse')}")
+                --image_path images \
+                --input_path  created/sparse \
+                --clear_points 1\
+                --output_path  triangulated/sparse")
     
     do_system(f"colmap model_converter \
-                --input_path  {os.path.join(colmap_workspace, 'triangulated/sparse')} \
-                --output_path  {os.path.join(colmap_workspace, 'created/sparse')} \
+                --input_path  triangulated/sparse \
+                --output_path  created/sparse2 \
                 --output_type TXT")
     
-    os.makedirs(os.path.join(colmap_workspace, 'dense'), exist_ok=True)
+    os.makedirs('dense', exist_ok=True)
     
     do_system(f"colmap image_undistorter  \
-                --image_path  {os.path.join(colmap_workspace, 'images')} \
-                --input_path  {os.path.join(colmap_workspace, 'created/sparse')} \
-                --output_path  {os.path.join(colmap_workspace, 'dense')}")
+                --image_path  images \
+                --input_path  triangulated/sparse \
+                --output_path  dense")
     
-    do_system(f"colmap patch_match_stereo   \
-                --workspace_path   {os.path.join(colmap_workspace, 'dense')}")
+    do_system(f"colmap patch_match_stereo --PatchMatchStereo.write_consistency_graph 1\
+                --PatchMatchStereo.geom_consistency 1\
+                --workspace_path dense")
     
     do_system(f"colmap stereo_fusion    \
-                --workspace_path {os.path.join(colmap_workspace, 'dense')} \
+                --workspace_path dense \
+                --StereoFusion.min_num_pixels 1 \
                 --output_path {os.path.join(args.path, 'points3d.ply')}")
     
-    shutil.rmtree(colmap_workspace)
-    os.remove(os.path.join(args.path, 'points3d.ply.vis'))
+    #shutil.rmtree(colmap_workspace)
+    #os.remove(os.path.join(args.path, 'points3d.ply.vis'))
     
     print(f"[INFO] Initial point cloud is saved in {os.path.join(args.path, 'points3d.ply')}.")

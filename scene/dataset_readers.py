@@ -254,9 +254,11 @@ def readCamerasFromTransforms(path, transformsfile, white_background, extension=
             arr = norm_data[:,:,:3] * norm_data[:, :, 3:4] + bg * (1 - norm_data[:, :, 3:4])
             if norm_data[:, :, 3:4].min() < 1:
                 arr = np.concatenate([arr, norm_data[:, :, 3:4]], axis=2)
-                image = Image.fromarray(np.array(arr*255.0, dtype=np.byte), "RGBA")
+                print(image_path,arr.shape)
+                image = Image.fromarray(np.array(arr*255.0, dtype=np.uint8), "RGBA")
             else:
-                image = Image.fromarray(np.array(arr*255.0, dtype=np.byte), "RGB")
+                print(image_path,arr.shape)
+                image = Image.fromarray(np.array(arr*255.0, dtype=np.uint8), "RGB")
 
             width, height = image.size[0], image.size[1]
         else:
@@ -298,10 +300,11 @@ def readCamerasFromTransforms(path, transformsfile, white_background, extension=
             return CameraInfo(uid=idx, R=R, T=T, FovY=FovY, FovX=FovX, image=image, depth=depth,
                             image_path=image_path, image_name=image_name, width=width, height=height, timestamp=timestamp)
     
-    with ThreadPool() as pool:
-        cam_infos = pool.map(frame_read_fn, zip(list(range(len(frames))), frames))
-        pool.close()
-        pool.join()
+    cam_infos = [frame_read_fn((i,f)) for i,f in enumerate(frames)]
+#    with ThreadPool() as pool:
+#        cam_infos = pool.map(frame_read_fn, zip(list(range(len(frames))), frames))
+#        pool.close()
+#        pool.join()
         
     cam_infos = [cam_info for cam_info in cam_infos if cam_info is not None]
     

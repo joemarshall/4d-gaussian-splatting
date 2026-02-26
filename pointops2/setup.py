@@ -1,5 +1,6 @@
 import os
 from setuptools import setup
+import torch
 from torch.utils.cpp_extension import BuildExtension, CUDAExtension
 from distutils.sysconfig import get_config_vars
 
