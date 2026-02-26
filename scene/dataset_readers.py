@@ -76,12 +76,12 @@ def getNerfppNorm(cam_info):
 
     return {"translate": translate, "radius": radius}
 
-def readColmapCameras(cam_extrinsics, cam_intrinsics, images_folder):
+def readColmapCameras(cam_extrinsics, cam_intrinsics, images_folder,dataloader):
     cam_infos = []
     for idx, key in enumerate(cam_extrinsics):
         sys.stdout.write('\r')
         # the exact output you're looking for:
-        sys.stdout.write("Reading camera {}/{}".format(idx+1, len(cam_extrinsics)))
+        sys.stdout.write("Reading camera {}/{}\n".format(idx+1, len(cam_extrinsics)))
         sys.stdout.flush()
 
         extr = cam_extrinsics[key]
@@ -104,14 +104,33 @@ def readColmapCameras(cam_extrinsics, cam_intrinsics, images_folder):
             FovX = focal2fov(focal_length_x, width)
         else:
             assert False, "Colmap camera model not handled: only undistorted datasets (PINHOLE or SIMPLE_PINHOLE cameras) supported!"
+# TODO hardcoded
+        image_name = os.path.basename(extr.name).split(".")[0]
+        image_ext = os.path.basename(extr.name).split(".")[-1]
+        image_basename = "_".join(image_name.split("_")[:-1])
+        for frame in range(300):
+            this_image_name = image_basename+"_%05d"%frame
+            this_image_path = os.path.join(images_folder, this_image_name)+"."+image_ext
+            if not dataloader:
+                this_image = Image.open(this_image_path)                
+            else:
+                this_image=None
+            cx= width*0.5
+            cy= height*0.5
+        #         if 'depth_path' in frame:
+        #     depth_name = frame["depth_path"]
+        #     if not extension in frame["depth_path"]:
+        #         depth_name = frame["depth_path"] + extension
+        #     depth_path = os.path.join(path, depth_name)
+        #     depth = Image.open(depth_path).copy()
+        # else:
+        #     depth = None
 
-        image_path = os.path.join(images_folder, os.path.basename(extr.name))
-        image_name = os.path.basename(image_path).split(".")[0]
-        image = Image.open(image_path)
-
-        cam_info = CameraInfo(uid=uid, R=R, T=T, FovY=FovY, FovX=FovX, image=image,
-                              image_path=image_path, image_name=image_name, width=width, height=height)
-        cam_infos.append(cam_info)
+            depth=None 
+            cam_info = CameraInfo(uid=idx, R=R, T=T, FovY=FovY, FovX=FovX, image=this_image, depth=depth,
+                        image_path=this_image_path, image_name=this_image_name, width=width, height=height, timestamp=0,
+                        fl_x=focal_length_x, fl_y=focal_length_y, cx=cx, cy=cy)
+            cam_infos.append(cam_info)
     sys.stdout.write('\n')
     return cam_infos
 
@@ -147,7 +166,8 @@ def storePly(path, xyz, rgb):
     ply_data = PlyData([vertex_element])
     ply_data.write(path)
 
-def readColmapSceneInfo(path, images, eval, llffhold=8, num_pts_ratio=1.0):
+def readColmapSceneInfo(path, images, eval, llffhold=8, num_pts_ratio=1.0,dataloader=False):
+    print("Reading scene info: ",path,dataloader)
     try:
         cameras_extrinsic_file = os.path.join(path, "sparse/0", "images.bin")
         cameras_intrinsic_file = os.path.join(path, "sparse/0", "cameras.bin")
@@ -160,7 +180,7 @@ def readColmapSceneInfo(path, images, eval, llffhold=8, num_pts_ratio=1.0):
         cam_intrinsics = read_intrinsics_text(cameras_intrinsic_file)
 
     reading_dir = "images" if images == None else images
-    cam_infos_unsorted = readColmapCameras(cam_extrinsics=cam_extrinsics, cam_intrinsics=cam_intrinsics, images_folder=os.path.join(path, reading_dir))
+    cam_infos_unsorted = readColmapCameras(cam_extrinsics=cam_extrinsics, cam_intrinsics=cam_intrinsics, images_folder=os.path.join(path, reading_dir),dataloader=dataloader)
     cam_infos = sorted(cam_infos_unsorted.copy(), key = lambda x : x.image_name)
 
     if eval:
@@ -300,11 +320,10 @@ def readCamerasFromTransforms(path, transformsfile, white_background, extension=
             return CameraInfo(uid=idx, R=R, T=T, FovY=FovY, FovX=FovX, image=image, depth=depth,
                             image_path=image_path, image_name=image_name, width=width, height=height, timestamp=timestamp)
     
-    cam_infos = [frame_read_fn((i,f)) for i,f in enumerate(frames)]
-#    with ThreadPool() as pool:
-#        cam_infos = pool.map(frame_read_fn, zip(list(range(len(frames))), frames))
-#        pool.close()
-#        pool.join()
+    with ThreadPool() as pool:
+        cam_infos = pool.map(frame_read_fn, zip(list(range(len(frames))), frames))
+        pool.close()
+        pool.join()
         
     cam_infos = [cam_info for cam_info in cam_infos if cam_info is not None]
     

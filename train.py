@@ -10,6 +10,7 @@
 #
 
 import os
+import signal
 import random
 import torch
 from torch import nn
@@ -19,6 +20,7 @@ import sys
 from scene import Scene, GaussianModel
 from utils.general_utils import safe_state, knn
 import uuid
+from pathlib  import Path
 from tqdm import tqdm
 from utils.image_utils import psnr, easy_cmap
 from argparse import ArgumentParser, Namespace
@@ -46,9 +48,19 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                               prefilter_var=dataset.prefilter_var)
     scene = Scene(dataset, gaussians, num_pts=num_pts, num_pts_ratio=num_pts_ratio, time_duration=time_duration)
     gaussians.training_setup(opt)
-    
+
+
+    if checkpoint=="auto_latest":
+        all_checkpoints = [(x,x.stat().st_mtime) for x in Path(dataset.model_path).glob("chkpnt_*.pth")]
+        if len(all_checkpoints) !=0:
+            checkpoint = max(all_checkpoints, key=lambda x: x[1])[0]
+            print("Loading latest checkpoint:", checkpoint)
+        else:
+            checkpoint = None
+            print("No latest checkpoint found in", dataset.model_path)
+
     if checkpoint:
-        (model_params, first_iter) = torch.load(checkpoint)
+        (model_params, first_iter) = torch.load(checkpoint,weights_only=False)
         gaussians.restore(model_params, opt)
 
     bg_color = [1, 1, 1] if dataset.white_background else [0, 0, 0]
@@ -65,7 +77,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
     for lambda_name in lambda_all:
         vars()[f"ema_{lambda_name.replace('lambda_','')}_for_log"] = 0.0
     
-    progress_bar = tqdm(range(first_iter, opt.iterations), desc="Training progress")
+    progress_bar = tqdm(range(0, opt.iterations), desc="Training progress",initial =first_iter)
     first_iter += 1
         
     if pipe.env_map_res:
@@ -77,10 +89,20 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
     gaussians.env_map = env_map
         
     training_dataset = scene.getTrainCameras()
+    print(len(training_dataset))
     training_dataloader = DataLoader(training_dataset, batch_size=batch_size, shuffle=True, num_workers=12 if dataset.dataloader else 0, collate_fn=lambda x: x, drop_last=True)
      
+    stop_iteration=False
+    def stop_handler(signum, frame):
+        nonlocal stop_iteration
+        print ('CTRL+C received, saving checkpoint and exiting')
+        stop_iteration = True
+
+    # Set the signal handler
+    signal.signal(signal.SIGINT, stop_handler)
+
     iteration = first_iter
-    while iteration < opt.iterations + 1:
+    while not stop_iteration and iteration < opt.iterations + 1:
         for batch_data in training_dataloader:
             iteration += 1
             if iteration > opt.iterations:
@@ -102,6 +124,8 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             batch_radii = []
             
             for batch_idx in range(batch_size):
+                if stop_iteration:
+                    break
                 gt_image, viewpoint_cam = batch_data[batch_idx]
                 gt_image = gt_image.cuda()
                 viewpoint_cam = viewpoint_cam.cuda()
@@ -186,6 +210,9 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             loss_dict = {"Ll1": Ll1,
                         "Lssim": Lssim}
 
+            if stop_iteration:
+                break
+
             with torch.no_grad():
                 psnr_for_log = psnr(image, gt_image).mean().double()
                 # Progress bar
@@ -212,6 +239,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                             
                     progress_bar.set_postfix(postfix)
                     progress_bar.update(10)
+                    print(f"stop_iteration={stop_iteration}")
                 if iteration == opt.iterations:
                     progress_bar.close()
 
@@ -250,6 +278,11 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                     if pipe.env_map_res and iteration < pipe.env_optimize_until:
                         env_map_optimizer.step()
                         env_map_optimizer.zero_grad(set_to_none = True)
+    if stop_iteration:
+        print("\n[ITER {}] Saving checkpoint before exiting".format(iteration))
+        torch.save((gaussians.capture(), iteration), scene.model_path + "/chkpnt_resume.pth")
+        sys.exit(0)
+
 
 def prepare_output_and_logger(args):    
     if not args.model_path:
@@ -400,6 +433,8 @@ if __name__ == "__main__":
     safe_state(args.quiet)
 
     torch.autograd.set_detect_anomaly(args.detect_anomaly)
+
+    print(args.test_iterations)
     training(lp.extract(args), op.extract(args), pp.extract(args), args.test_iterations, args.save_iterations, args.start_checkpoint, args.debug_from,
              args.gaussian_dim, args.time_duration, args.num_pts, args.num_pts_ratio, args.rot_4d, args.force_sh_3d, args.batch_size)
 
