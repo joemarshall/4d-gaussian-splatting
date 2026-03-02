@@ -143,12 +143,13 @@ for video_path in args.video_folder.glob("*.mp4"):
 colmap_path = args.output_folder / "colmap"
 colmap_path.mkdir(exist_ok=True)
 
-# 3) copy *_00000.png into colmap_path/images
+# 3) copy *_00000.png into colmap_path/images, except for camera 0, saved for testing purposes
 image_folder = args.output_folder / "images"
 colmap_images_folder = colmap_path / "images"
 colmap_images_folder.mkdir(exist_ok=True)
 for image in image_folder.glob("*_00000.png"):
-    shutil.copy(image, colmap_images_folder)
+    if split_frame_name(image.name)[1] != 0:
+        shutil.copy(image, colmap_images_folder)
 
 colmap_database = colmap_path / "database.db"
 
@@ -190,7 +191,6 @@ for x in frames_data:
     transform_matrix[:3, :3] = quat_to_rot(qw, qx, qy, qz)
     transform_matrix[:3, 3] = [tx, ty, tz]
     poses[pose_index] = transform_matrix.tolist()
-#    print(transform_matrix)
 
 
 camera_data = camera_data[0]
