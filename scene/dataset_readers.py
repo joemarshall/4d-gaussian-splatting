@@ -104,33 +104,29 @@ def readColmapCameras(cam_extrinsics, cam_intrinsics, images_folder,dataloader):
             FovX = focal2fov(focal_length_x, width)
         else:
             assert False, "Colmap camera model not handled: only undistorted datasets (PINHOLE or SIMPLE_PINHOLE cameras) supported!"
-# TODO hardcoded
         image_name = os.path.basename(extr.name).split(".")[0]
         image_ext = os.path.basename(extr.name).split(".")[-1]
         image_basename = "_".join(image_name.split("_")[:-1])
-        for frame in range(300):
+        frame = 0
+        while True:
             this_image_name = image_basename+"_%05d"%frame
             this_image_path = os.path.join(images_folder, this_image_name)+"."+image_ext
+            if not os.path.exists(this_image_path):
+                break
             if not dataloader:
-                this_image = Image.open(this_image_path)                
+                this_image = Image.open(this_image_path) 
+                print("Warning - loading everything into memory")               
             else:
                 this_image=None
             cx= width*0.5
             cy= height*0.5
-        #         if 'depth_path' in frame:
-        #     depth_name = frame["depth_path"]
-        #     if not extension in frame["depth_path"]:
-        #         depth_name = frame["depth_path"] + extension
-        #     depth_path = os.path.join(path, depth_name)
-        #     depth = Image.open(depth_path).copy()
-        # else:
-        #     depth = None
 
             depth=None 
             cam_info = CameraInfo(uid=idx, R=R, T=T, FovY=FovY, FovX=FovX, image=this_image, depth=depth,
                         image_path=this_image_path, image_name=this_image_name, width=width, height=height, timestamp=0,
                         fl_x=focal_length_x, fl_y=focal_length_y, cx=cx, cy=cy)
             cam_infos.append(cam_info)
+            frame+=1
     sys.stdout.write('\n')
     return cam_infos
 
