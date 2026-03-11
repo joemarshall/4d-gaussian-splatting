@@ -60,6 +60,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument("-c", "--colmap_path", type=str, default="../colmap")
 parser.add_argument("video_folder", type=Path)
 parser.add_argument("-o", "--output_folder", type=Path)
+parser.add_argument("-nf", "--num_frames", type=int, default=-1)
 
 
 class ColmapRunner:
@@ -117,12 +118,23 @@ colmap = ColmapRunner(os.getcwd())
 
 args.output_folder.mkdir(parents=True, exist_ok=True)
 
+if args.num_frames > 0:
+    ffmpeg_time_limit = ["-t",str(args.num_frames / 30)]
+else:
+    ffmpeg_time_limit = []    
+
+def camera_id_from_path(video_path,index):
+    match = re.match(r"(\D)*(\d+)*", video_path.stem)
+    if match:
+        return int(match.groups()[1])
+    return str(index)
+
 # 1) for each mp4 in video folder, ffmpeg to extract frames into subfolder called images if the frames don't exist
-for video_path in args.video_folder.glob("*.mp4"):
+for i,video_path in enumerate(sorted(args.video_folder.glob("*.mp4"))):
     image_folder = args.output_folder / "images"
     if (
         not image_folder.exists()
-        or not (image_folder / f"{video_path.stem}_00000.png").exists()
+        or not (image_folder / f"cam{camera_id_from_path(video_path,i)}_00000.png").exists()
     ):
         print(f"Extracting frames from {video_path} to {image_folder}")
         image_folder.mkdir(exist_ok=True)
@@ -133,7 +145,8 @@ for video_path in args.video_folder.glob("*.mp4"):
                 str(video_path),
                 "-start_number",
                 "0",
-                str(image_folder / f"{video_path.stem}_%05d.png"),
+            ] + ffmpeg_time_limit + [
+                str(image_folder / f"cam{camera_id_from_path(video_path,i)}_%05d.png"),
             ]
         )
     else:
@@ -155,11 +168,11 @@ colmap_database = colmap_path / "database.db"
 
 
 # use colmap auto reconstruction
-# colmap.run_cmd(["colmap", "automatic_reconstructor", "--workspace_path", str(colmap_path),"--image_path",str(colmap_images_folder),"--single_camera","1"])
+colmap.run_cmd(["colmap", "automatic_reconstructor", "--workspace_path", str(colmap_path),"--image_path",str(colmap_images_folder),"--single_camera","1"])
 
-# convert the final model to text format so we can read the focal length etc.
-# (colmap_path / "text_model").mkdir(exist_ok=True)
-# colmap.run_cmd(["colmap", "model_converter", "--input_path", str(colmap_path / "sparse/0"), "--output_type", "TXT","--output_path",str(colmap_path / "text_model")])
+#convert the final model to text format so we can read the focal length etc.
+(colmap_path / "text_model").mkdir(exist_ok=True)
+colmap.run_cmd(["colmap", "model_converter", "--input_path", str(colmap_path / "sparse/0"), "--output_type", "TXT","--output_path",str(colmap_path / "text_model")])
 
 # make json file for train and test split
 # read the data from the colmap cameras.txt file
@@ -202,12 +215,15 @@ cx = float(camera_data[6])
 cy = float(camera_data[7])
 
 all_camera_ids = sorted(list(camera_id_to_pose_index.keys()))
-
+print("All camera ids:", all_camera_ids)
+first_camera_id = all_camera_ids[0]
 
 train_frames = []
 test_frames = []
 all_frames = {split_frame_name(x.name)[1:3]: x for x in image_folder.glob("*.png")}
 max_frame_idx = 0
+min_frame_idx = 0
+
 while True:
     missing_frame = False
     for cam_id in all_camera_ids:
@@ -224,6 +240,7 @@ frame_valid = sorted([x[0] for x in frame_valid if x[1] == 0])
 print(frame_valid)
 print(all_camera_ids)
 
+
 for frame_idx in range(max_frame_idx):
     for camera_id in all_camera_ids:
         if (camera_id, frame_idx) not in all_frames:
@@ -239,7 +256,7 @@ for frame_idx in range(max_frame_idx):
             "transform_matrix": poses[camera_id_to_pose_index[camera_id]],
             "time": frame_idx / 30,
         }
-        if camera_id == 0:
+        if camera_id == first_camera_id:
             test_frames.append(frame_data)
         else:
             train_frames.append(frame_data)
@@ -270,10 +287,10 @@ ModelParams:
   source_path: "{args.output_folder}"
   model_path: "{args.output_folder}/model_output"
   images: "images"
-  resolution: 2
+  resolution: 1
   white_background: False
   data_device: "cuda"
-  eval: True
+  eval: False
   extension: ".png"
   num_extra_pts: 0
   loaded_pth: ""

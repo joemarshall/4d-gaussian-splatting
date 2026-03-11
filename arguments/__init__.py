@@ -107,10 +107,13 @@ class OptimizationParams(ParamGroup):
         self.lambda_motion = 0.0
         super().__init__(parser, "Optimization Parameters")
 
-def get_combined_args(parser : ArgumentParser):
-    cmdlne_string = sys.argv[1:]
+def get_combined_args(parser : ArgumentParser,cmdlne_string = None):
+    if cmdlne_string is None:
+        cmdlne_string = sys.argv[1:]
     cfgfile_string = "Namespace()"
+    print(parser)
     args_cmdline = parser.parse_args(cmdlne_string)
+    print("GOtcha")
 
     try:
         cfgfilepath = os.path.join(args_cmdline.model_path, "cfg_args")

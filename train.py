@@ -671,6 +671,10 @@ if __name__ == "__main__":
 
     #torch._logging.set_logs(graph_code=True)
 
+    print("Arguments:")
+    for arg in vars(args):
+        print(f"  {arg}: {getattr(args, arg)}")
+
     training(
         lp.extract(args),
         op.extract(args),
