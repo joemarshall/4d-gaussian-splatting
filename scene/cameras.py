@@ -12,7 +12,14 @@
 import torch
 from torch import nn
 import numpy as np
-from utils.graphics_utils import getWorld2View2, getProjectionMatrix, getProjectionMatrixCenterShift
+from utils.graphics_utils import (
+    getWorld2View2,
+    getProjectionMatrix,
+    getProjectionMatrixCenterShift,
+    rotation_matrix_to_quaternion,
+    quaternion_to_rotation_matrix,
+    quaternion_slerp,
+)
 from kornia import create_meshgrid
 from copy import deepcopy
 
@@ -39,6 +46,8 @@ class Camera:
         self.image = image
         self.gt_alpha_mask = gt_alpha_mask
         self.meta_only = meta_only
+        self.trans = trans
+        self.scale = scale
         
         try:
             self.data_device = torch.device(data_device)
@@ -59,18 +68,31 @@ class Camera:
         self.zfar = 100.0
         self.znear = 0.01
 
-        self.trans = trans
-        self.scale = scale
+        self.update_projection()
 
-        self.world_view_transform = torch.tensor(getWorld2View2(R, T, trans, scale)).transpose(0, 1)
-        if cx > 0:
-            self.projection_matrix = getProjectionMatrixCenterShift(self.znear, self.zfar, cx, cy, fl_x, fl_y, self.image_width, self.image_height).transpose(0,1)
+        self.timestamp = timestamp
+    def update_projection(self):
+        self.world_view_transform = torch.tensor(getWorld2View2(self.R, self.T, self.trans, self.scale)).transpose(0, 1)
+        if self.cx > 0:
+            self.projection_matrix = getProjectionMatrixCenterShift(self.znear, self.zfar, self.cx, self.cy, self.fl_x, self.fl_y, self.image_width, self.image_height).transpose(0,1)
         else:
             self.projection_matrix = getProjectionMatrix(znear=self.znear, zfar=self.zfar, fovX=self.FoVx, fovY=self.FoVy).transpose(0,1)
         self.full_proj_transform = (self.world_view_transform.unsqueeze(0).bmm(self.projection_matrix.unsqueeze(0))).squeeze(0)
         self.camera_center = self.world_view_transform.inverse()[3, :3]
-        
-        self.timestamp = timestamp
+
+
+
+
+    def lerp_transform(self,camera_source,camera_target, lerp_factor):
+        #self.R
+        self.T = camera_source.T * (1-lerp_factor) + camera_target.T * lerp_factor
+        source_quaternion = rotation_matrix_to_quaternion(camera_source.R)
+        target_quaternion = rotation_matrix_to_quaternion(camera_target.R)
+        self.R = quaternion_to_rotation_matrix(
+            quaternion_slerp(source_quaternion, target_quaternion, lerp_factor)
+        )
+        self.update_projection()
+
         
     def get_rays(self):
         grid = create_meshgrid(self.image_height, self.image_width, normalized_coordinates=False)[0] + 0.5

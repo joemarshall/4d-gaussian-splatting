@@ -173,7 +173,7 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
         tu = torch.atan2(xyz_inter[...,1:2], xyz_inter[...,0:1]) / (2 * torch.pi) + 0.5 # theta
         tv = torch.acos(xyz_inter[...,2:3] / R) / torch.pi
         texcoord = torch.cat([tu, tv], dim=-1) * 2 - 1
-        bg_color_from_envmap = F.grid_sample(pc.env_map[None], texcoord[None])[0] # 3,H,W
+        bg_color_from_envmap = F.grid_sample(pc.env_map[None], texcoord[None], align_corners=False)[0] # 3,H,W
         # mask2 = (0 < xyz_inter[...,0]) & (xyz_inter[...,1] > 0) # & (xyz_inter[...,2] > -19)
         rendered_image = rendered_image + (1 - alpha) * bg_color_from_envmap # * mask2[None]
     
