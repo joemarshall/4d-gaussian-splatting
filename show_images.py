@@ -19,7 +19,7 @@ parser.add_argument("output_folder", help="Output folder path")
 parser.add_argument("-r", "--render", action="store_true", help="Render mode")
 parser.add_argument("--test", action="store_true", help="Test mode")
 parser.add_argument("--train", action="store_true", help="Training mode")
-parser.add_argument("--limit", type=int, default=20)
+parser.add_argument("--limit", type=int, default=-1)
 parser.add_argument(
     "--render_camera",
     "-c",
@@ -51,7 +51,10 @@ def render_set(model_path, name, iteration, views, gaussians, pipeline, backgrou
         x.unlink()
     for idx, view in enumerate(tqdm(views, desc="Rendering progress")):
         print(view[1].timestamp)
-        rendering = render(view[1].cuda(), gaussians, pipeline, background)["render"]
+        @torch.compile
+        def render_wrapper(args):
+            return render(*args)
+        rendering = render_wrapper((view[1].cuda(), gaussians, pipeline, background))["render"]
         gt = view[0][0:3, :, :]
         torchvision.utils.save_image(rendering, render_path / f"{idx:05d}.png")
         torchvision.utils.save_image(gt, gts_path / f"{idx:05d}.png")
@@ -149,4 +152,4 @@ if args.train:
                # subprocess.run(["timg", "-p", "s"] + all_files)
                 files_in_order.extend(all_files)
 
-subprocess.run(["mpv","--no-correct-pts","--merge-files=yes","-mf-fps=30",*files_in_order,"-fps=30","--loop=10"])
+subprocess.run(["mpv","--no-correct-pts","--merge-files=yes","-mf-fps=30",*files_in_order,"--loop=10"])
