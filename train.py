@@ -31,6 +31,9 @@ from omegaconf import OmegaConf
 from omegaconf.dictconfig import DictConfig
 from torch.utils.data import DataLoader
 
+torch.set_float32_matmul_precision('high')
+
+
 try:
     from torch.utils.tensorboard import SummaryWriter
 
@@ -151,6 +154,8 @@ def run_batch(batch_data, batch_size, gaussians, pipe, background, opt):
             batch_t_grad = gaussians._t.grad.clone().detach()
     return (Ll1, Lssim, loss, image, gt_image,visibility_filter,radii,batch_viewspace_point_grad,batch_t_grad)
 
+def collate_fn(x):
+    return x
 
 def training(
     dataset,
@@ -255,9 +260,10 @@ def training(
         batch_size=batch_size,
         shuffle=True,
         num_workers=12 if dataset.dataloader else 0,
-        collate_fn=lambda x: x,
+        collate_fn=collate_fn, # don't make a lambda as isn't pickleable for num_workers>0
         drop_last=True,
     )
+
 
     stop_iteration = False
 

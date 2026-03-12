@@ -79,15 +79,15 @@ class ColmapRunner:
         except ValueError:
             pass
         args = [
-            x.replace(self.root_path, "/working") if x.startswith(self.root_path) else x
+            x.replace(self.root_path, "/working").replace("\\", "/") if x.startswith(self.root_path) else x
             for x in args
         ]
-        args = [
+        args = ["wsl",
             "docker",
             "run",
             "--runtime=nvidia",
             f"-v",
-            f"{self.root_path}:/working",
+            f".:/working",
             "colmap/colmap:latest",
         ] + args
         print("Running colmap command:", args)
@@ -99,14 +99,14 @@ class ColmapRunner:
             "--runtime=nvidia",
             "-it",
             f"-v",
-            f"{self.root_path}:/working",
+            f".:/working",
             "colmap/colmap:latest",
             "chown",
             "-R",
-            f"{os.getuid()}:{os.getgid()}",
+            #f"{os.getuid()}:{os.getgid()}",
             "/working",
         ]
-        result = subprocess.run(args, text=True)
+        #result = subprocess.run(args, text=True)
         print("Chown done")
 
 
