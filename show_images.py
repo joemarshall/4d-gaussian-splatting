@@ -56,7 +56,6 @@ def render_set(model_path, iteration, views, gaussians, pipeline, background):
         makedirs(render_path, exist_ok=True)
         makedirs(gts_path, exist_ok=True)
 
-        print(view[1].timestamp)
         @torch.compile
         def render_wrapper(args):
             return render(*args)
