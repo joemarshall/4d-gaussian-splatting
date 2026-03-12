@@ -332,5 +332,5 @@ OptimizationParams:
   lambda_opa_mask: 0.0
   lambda_rigid: 0.0
   lambda_motion: 0.0
-"""
+""".replace("\\","\\\\")
 (args.output_folder / "config.yaml").write_text(train_file_data)
