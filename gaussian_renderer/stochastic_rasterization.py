@@ -6,26 +6,27 @@
 # GaussianRasterizer using stochastic Gaussian rendering in pure PyTorch
 # (no C extensions required).
 #
-# Algorithm:
-#   For each pixel p, instead of deterministically compositing ALL Gaussians
-#   in depth order (standard approach), we stochastically sample K Gaussians
-#   proportional to their contribution weights alpha_i * T_i and estimate the
-#   pixel colour as:
+# Stochastic Algorithm (paper Listing 1):
+#   For each pixel p:
+#     z ← ∞,  C ← c_background
+#     for each Gaussian i in unsorted order do
+#         Compute α_i and depth z_i
+#         Sample u ~ U(0, 1)
+#         if u < α_i  AND  z_i < z  then
+#             C ← c_i
+#             z ← z_i
+#         end if
+#     end for
 #
-#     C_hat(p) = Z * mean(c_{j_1}, ..., c_{j_K}) + T_N * bg
+#   This is an unbiased estimator of the standard alpha-compositing render:
+#     E[C] = Σ_i  c_i · α_i · T_i  +  T_N · bg
+#   where T_i = ∏_{j<i} (1 − α_j) (front-to-back transmittance).
 #
-#   where:
-#     Z       = 1 - T_N = accumulated foreground alpha
-#     T_N     = final transmittance after all Gaussians
-#     j_k     ~ Categorical( alpha_i * T_i / Z )  (K i.i.d. samples)
-#     T_i     = prod_{j < i} (1 - alpha_j)         (front-to-back transmittance)
+#   No sorting is required; gradients flow through both the accepted colour
+#   and the alpha weights via PyTorch autograd.
 #
-#   E[C_hat(p)] = C(p)  (unbiased estimator of the deterministic render)
-#
-#   Forward + backward are handled fully by PyTorch autograd.
-#   The multinomial sampling step uses a straight-through estimator:
-#   gradients flow through the gathered sample colours and through Z / T_N,
-#   but NOT through the sampling distribution itself.
+# Deterministic fallback (num_samples <= 0):
+#   Standard depth-sorted alpha compositing identical to the CUDA renderer.
 #
 # Usage:
 #   from gaussian_renderer.stochastic_rasterization import (
@@ -284,82 +285,80 @@ def _evaluate_sh_colors(
 # ---------------------------------------------------------------------------
 
 def _stochastic_rasterize(
-    means2D: torch.Tensor,    # [N, 2]  screen coords (used for grad flow)
-    means2D_proj: torch.Tensor,  # [N, 2]  actual projected coords
-    cov2D: torch.Tensor,       # [N, 2, 2]
-    depths: torch.Tensor,      # [N]
-    colors: torch.Tensor,      # [N, 3]
-    opacities: torch.Tensor,   # [N, 1] or [N]
-    flow_2d: torch.Tensor,     # [N, 2]
-    radii: torch.Tensor,       # [N] int
+    means2D: torch.Tensor,       # [N, 2]  screenspace_points (for grad flow)
+    means2D_proj: torch.Tensor,  # [N, 2]  actual projected screen coords
+    cov2D: torch.Tensor,         # [N, 2, 2]
+    depths: torch.Tensor,        # [N]
+    colors: torch.Tensor,        # [N, 3]
+    opacities: torch.Tensor,     # [N, 1] or [N]
+    flow_2d: torch.Tensor,       # [N, 2]
+    radii: torch.Tensor,         # [N] int
     H: int, W: int,
-    bg_color: torch.Tensor,    # [3]
+    bg_color: torch.Tensor,      # [3]
     num_samples: int,
     tile_size: int = 16,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor,
            torch.Tensor, torch.Tensor]:
-    """Tile-based stochastic Gaussian rasterisation.
+    """Tile-based Gaussian rasterisation.
 
-    When ``num_samples > 0`` the renderer is stochastic: for every pixel it
-    draws ``num_samples`` Gaussians from the distribution
+    Stochastic path (``num_samples > 0``) — paper Listing 1:
+        z ← ∞,  C ← c_background
+        for each Gaussian i in **unsorted** order do
+            compute α_i and depth z_i
+            sample u ~ U(0, 1)
+            if u < α_i  AND  z_i < z  then
+                C ← c_i ;  z ← z_i
+            end if
+        end for
 
-        p_i = alpha_i * T_i / Z
+    Vectorised over all pixels simultaneously per tile.
+    When ``num_samples > 1`` we average ``num_samples`` independent runs.
 
-    and estimates the colour as  Z * mean(c_sampled) + T_N * bg.
-
-    When ``num_samples <= 0`` the full deterministic compositing is used
-    (equivalent to the CUDA renderer with ``num_samples = infinity``).
-
-    The key extra arg ``means2D`` (the zero-initialised ``screenspace_points``
-    from ``render()``) is added to ``means2D_proj`` so that autograd writes
-    the 2-D projection gradients into ``means2D.grad`` for densification.
+    Deterministic path (``num_samples <= 0``):
+        Standard depth-sorted alpha compositing.
 
     Returns
     -------
-    out_color   : [3, H, W]
-    radii_out   : [N]        (int, 0 for invisible Gaussians)
-    out_depth   : [1, H, W]
-    out_alpha   : [1, H, W]
-    out_flow    : [2, H, W]
-    covs_com    : [N, 6]     (3-D covariance; empty tensor placeholder)
+    out_color : [3, H, W]
+    radii_out : [N]         (0 = invisible)
+    out_depth : [1, H, W]
+    out_alpha : [1, H, W]
+    out_flow  : [2, H, W]
+    covs_com  : [N, 6]      (placeholder zeros)
     """
     N = means2D_proj.shape[0]
     device = means2D_proj.device
     dtype = colors.dtype
 
-    # ---- connect projection to screenspace_points for grad flow --------
-    # means2D starts at 0; adding means2D_proj keeps the same numerical
-    # value but makes autograd send ∂loss/∂means2D_proj → means2D.grad
-    effective_means2D = means2D[:, :2] + means2D_proj
+    # Tie projected coords back to screenspace_points for grad-flow
+    effective_means2D = means2D[:, :2] + means2D_proj   # [N, 2]
 
     if opacities.dim() == 2:
-        opacities = opacities.squeeze(-1)   # [N]
+        opacities = opacities.squeeze(-1)               # [N]
 
-    # Depth sort (ascending = front first)
-    sort_idx = torch.argsort(depths)
-    means2D_s    = effective_means2D[sort_idx]   # [N, 2]
-    cov2D_s      = cov2D[sort_idx]               # [N, 2, 2]
-    colors_s     = colors[sort_idx]              # [N, 3]
-    opac_s       = opacities[sort_idx]           # [N]
-    flow_s       = flow_2d[sort_idx]             # [N, 2]
-    depths_s     = depths[sort_idx]              # [N]
-    radii_s      = radii[sort_idx]               # [N]
+    # Conic inverse-covariance coefficients [N]
+    det    = (cov2D[:, 0, 0] * cov2D[:, 1, 1]
+              - cov2D[:, 0, 1].pow(2)).clamp(min=1e-8)
+    inv_d  = 1.0 / det
+    ca     = cov2D[:, 1, 1] * inv_d
+    cb     = -cov2D[:, 0, 1] * inv_d
+    cc     = cov2D[:, 0, 0] * inv_d
 
-    # Conic form (inverse covariance) for speed: [[a,b],[b,c]] = Sigma^{-1}
-    det = (cov2D_s[:, 0, 0] * cov2D_s[:, 1, 1]
-           - cov2D_s[:, 0, 1].pow(2)).clamp(min=1e-8)   # [N]
-    inv_det = 1.0 / det
-    conic_a = cov2D_s[:, 1, 1] * inv_det   # [N]
-    conic_b = -cov2D_s[:, 0, 1] * inv_det  # [N]
-    conic_c = cov2D_s[:, 0, 0] * inv_det   # [N]
+    # Depth-sorted versions (needed for deterministic path)
+    sort_idx  = torch.argsort(depths)
+    eff_s     = effective_means2D[sort_idx]
+    col_s     = colors[sort_idx]
+    opac_s    = opacities[sort_idx]
+    flow_s    = flow_2d[sort_idx]
+    dep_s     = depths[sort_idx]
+    rad_s     = radii[sort_idx]
+    ca_s, cb_s, cc_s = ca[sort_idx], cb[sort_idx], cc[sort_idx]
 
     # Output buffers
     out_color = torch.zeros(3, H, W, device=device, dtype=dtype)
     out_depth = torch.zeros(1, H, W, device=device, dtype=dtype)
     out_flow  = torch.zeros(2, H, W, device=device, dtype=dtype)
     out_T     = torch.ones( 1, H, W, device=device, dtype=dtype)
-
-    # Radii output (0 = invisible)
     radii_out = torch.zeros(N, dtype=torch.int32, device=device)
 
     n_ty = (H + tile_size - 1) // tile_size
@@ -367,123 +366,167 @@ def _stochastic_rasterize(
 
     for ty in range(n_ty):
         for tx in range(n_tx):
-            y0 = ty * tile_size
-            y1 = min(y0 + tile_size, H)
-            x0 = tx * tile_size
-            x1 = min(x0 + tile_size, W)
-            tH = y1 - y0
-            tW = x1 - x0
+            y0, y1 = ty * tile_size, min((ty + 1) * tile_size, H)
+            x0, x1 = tx * tile_size, min((tx + 1) * tile_size, W)
+            tH, tW = y1 - y0, x1 - x0
 
-            # ---- find Gaussians overlapping this tile ------------------
-            r_f = radii_s.float()
-            tile_mask = (
-                (means2D_s[:, 0] + r_f >= x0)
-                & (means2D_s[:, 0] - r_f < x1)
-                & (means2D_s[:, 1] + r_f >= y0)
-                & (means2D_s[:, 1] - r_f < y1)
-            )
+            if num_samples > 0:
+                # Stochastic: use UNSORTED order (no sorting needed)
+                r_f = radii.float()
+                tmask = (
+                    (effective_means2D[:, 0] + r_f >= x0)
+                    & (effective_means2D[:, 0] - r_f <  x1)
+                    & (effective_means2D[:, 1] + r_f >= y0)
+                    & (effective_means2D[:, 1] - r_f <  y1)
+                )
+                orig_idx = tmask.nonzero(as_tuple=False).squeeze(1)
+                t_xy   = effective_means2D[tmask]
+                t_col  = colors[tmask]
+                t_op   = opacities[tmask]
+                t_ca   = ca[tmask]; t_cb = cb[tmask]; t_cc = cc[tmask]
+                t_dep  = depths[tmask]
+                t_flow = flow_2d[tmask]
+                t_rad  = radii[tmask]
+            else:
+                # Deterministic: use depth-sorted order
+                r_f = rad_s.float()
+                tmask = (
+                    (eff_s[:, 0] + r_f >= x0) & (eff_s[:, 0] - r_f <  x1)
+                    & (eff_s[:, 1] + r_f >= y0) & (eff_s[:, 1] - r_f <  y1)
+                )
+                orig_idx = sort_idx[tmask]
+                t_xy   = eff_s[tmask]
+                t_col  = col_s[tmask]
+                t_op   = opac_s[tmask]
+                t_ca   = ca_s[tmask]; t_cb = cb_s[tmask]; t_cc = cc_s[tmask]
+                t_dep  = dep_s[tmask]
+                t_flow = flow_s[tmask]
+                t_rad  = rad_s[tmask]
 
-            if not tile_mask.any():
-                # No Gaussians: fill with background
+            if not tmask.any():
                 out_color[:, y0:y1, x0:x1] = (
                     bg_color.view(3, 1, 1).expand(3, tH, tW))
                 continue
 
-            # Extract tile Gaussians (already depth-sorted)
-            t_means   = means2D_s[tile_mask]   # [M, 2]
-            t_colors  = colors_s[tile_mask]    # [M, 3]
-            t_opac    = opac_s[tile_mask]      # [M]
-            t_ca      = conic_a[tile_mask]     # [M]
-            t_cb      = conic_b[tile_mask]     # [M]
-            t_cc      = conic_c[tile_mask]     # [M]
-            t_depths  = depths_s[tile_mask]    # [M]
-            t_flow    = flow_s[tile_mask]      # [M, 2]
-            t_radii   = radii_s[tile_mask]     # [M]
-            M = t_means.shape[0]
+            M = t_xy.shape[0]
 
-            # ---- per-pixel Gaussian contributions ----------------------
+            # Per-pixel Gaussian footprint
             y_px = torch.arange(y0, y1, device=device, dtype=torch.float32)
             x_px = torch.arange(x0, x1, device=device, dtype=torch.float32)
-            yy, xx = torch.meshgrid(y_px, x_px, indexing='ij')  # [tH, tW]
+            yy, xx = torch.meshgrid(y_px, x_px, indexing='ij')   # [tH, tW]
 
-            # Displacement from each Gaussian mean to each pixel [tH, tW, M]
-            dx = xx.unsqueeze(2) - t_means[:, 0].reshape(1, 1, M)
-            dy = yy.unsqueeze(2) - t_means[:, 1].reshape(1, 1, M)
+            dx = xx.unsqueeze(2) - t_xy[:, 0].view(1, 1, M)       # [tH, tW, M]
+            dy = yy.unsqueeze(2) - t_xy[:, 1].view(1, 1, M)
 
-            # Mahalanobis power: -0.5*(a*dx^2 + 2b*dx*dy + c*dy^2)
             power = -0.5 * (
                 t_ca.view(1, 1, M) * dx * dx
                 + 2.0 * t_cb.view(1, 1, M) * dx * dy
                 + t_cc.view(1, 1, M) * dy * dy
             )  # [tH, tW, M]
 
-            # alpha = opacity * exp(power)  clamped to [0, 0.99]
-            alpha = (t_opac.view(1, 1, M)
+            alpha = (t_op.view(1, 1, M)
                      * torch.exp(power.clamp(max=0.0))).clamp(max=0.99)
-            # Discard very small contributions (same threshold as CUDA)
-            alpha = alpha * (alpha >= (1.0 / 255.0)).float()  # [tH, tW, M]
+            alpha = alpha * (alpha >= (1.0 / 255.0)).float()       # [tH, tW, M]
 
-            # ---- transmittance (front-to-back) -------------------------
-            # T_after[..., i] = prod_{j <= i} (1 - alpha_j)
-            one_minus_alpha = (1.0 - alpha).clamp(min=1e-8)
-            T_after  = torch.cumprod(one_minus_alpha, dim=-1)      # [tH, tW, M]
-            T_before = torch.cat(
-                [torch.ones(tH, tW, 1, device=device, dtype=dtype),
-                 T_after[..., :-1]], dim=-1)                        # [tH, tW, M]
-            T_final  = T_after[..., -1:]                            # [tH, tW, 1]
+            if num_samples > 0:
+                # ----------------------------------------------------------
+                # STOCHASTIC PATH  –  Listing 1 of arXiv:2503.24366
+                #
+                # For each pixel (vectorised), iterate over all M overlapping
+                # Gaussians in their original (unsorted) order.  For each
+                # Gaussian sample u ~ U(0,1).  Accept (update colour and z)
+                # if u < α_i  AND  depth_i < current_z.
+                #
+                # Equivalently: the winner is the *accepted* Gaussian
+                # (u < α_i) with the minimum depth.
+                #
+                # Repeat num_samples times and average to reduce variance.
+                # ----------------------------------------------------------
+                bg = bg_color.to(dtype)
+                INF = float('inf')
 
-            # Weight for each Gaussian: w_i = alpha_i * T_before_i
-            weights = alpha * T_before                              # [tH, tW, M]
-            Z = weights.sum(dim=-1, keepdim=True)                   # [tH, tW, 1]
+                # [tH, tW, M] depth tensor (no grad needed)
+                dep_exp = t_dep.view(1, 1, M).expand(tH, tW, M)
+                # [tH, tW, M, 3] and [tH, tW, M, 2] views
+                col_exp = t_col.view(1, 1, M, 3).expand(tH, tW, M, 3)
+                flo_exp = t_flow.view(1, 1, M, 2).expand(tH, tW, M, 2)
 
-            # ---- colour estimate --------------------------------------
-            if num_samples > 0 and M > 0:
-                # --- stochastic path ---
-                # Sample K indices from the categorical distribution p_i = w_i / Z
-                Z_safe = Z.clamp(min=1e-8)
-                probs = (weights / Z_safe).clamp(min=0.0)          # [tH, tW, M]
-                # Renormalize for numerical safety
-                probs = probs / probs.sum(dim=-1, keepdim=True).clamp(min=1e-8)
+                color_sum = torch.zeros(tH, tW, 3, device=device, dtype=dtype)
+                depth_sum = torch.zeros(tH, tW,    device=device, dtype=dtype)
+                flow_sum  = torch.zeros(tH, tW, 2, device=device, dtype=dtype)
+                acc_sum   = torch.zeros(tH, tW,    device=device, dtype=dtype)
 
-                K = min(num_samples, M)
-                # multinomial requires 2-D input [batch, classes]
-                probs_2d = probs.reshape(-1, M)                    # [tH*tW, M]
-                idx = torch.multinomial(probs_2d, K, replacement=True)  # [tH*tW, K]
+                for _ in range(num_samples):
+                    u = torch.rand(tH, tW, M, device=device, dtype=dtype)
 
-                # Gather sampled colours: [tH*tW, K, 3]
-                sampled = t_colors[idx]                             # [tH*tW, K, 3]
-                mean_c  = sampled.mean(dim=1).reshape(tH, tW, 3)   # [tH, tW, 3]
+                    # Accept: stochastic test  u < α_i
+                    accept = u < alpha                              # [tH, tW, M]
 
-                # C_hat = Z * mean(c_sampled) + T_N * bg
-                bg = bg_color.view(1, 1, 3).to(dtype)
-                tile_color = Z * mean_c + T_final * bg              # [tH, tW, 3]
+                    # Depth competition: winner = accepted Gaussian w/ min depth
+                    masked_dep = torch.where(accept, dep_exp,
+                                             dep_exp.new_full((), INF).expand_as(dep_exp))
+                    min_dep, best = masked_dep.min(dim=-1)          # [tH, tW]
+
+                    any_accepted = min_dep < INF                    # [tH, tW] bool
+
+                    # Gather winner colour
+                    best3 = best.unsqueeze(-1).unsqueeze(-1).expand(tH, tW, 1, 3)
+                    win_col = col_exp.gather(2, best3).squeeze(2)   # [tH, tW, 3]
+
+                    # Gather winner flow
+                    best2 = best.unsqueeze(-1).unsqueeze(-1).expand(tH, tW, 1, 2)
+                    win_flo = flo_exp.gather(2, best2).squeeze(2)   # [tH, tW, 2]
+
+                    acc_f = any_accepted.to(dtype)                  # [tH, tW]
+                    # For rejected pixels use background colour
+                    pixel_col = (win_col * acc_f.unsqueeze(-1)
+                                 + bg.view(1, 1, 3) * (1.0 - acc_f).unsqueeze(-1))
+
+                    color_sum = color_sum + pixel_col
+                    depth_sum = depth_sum + torch.where(
+                        any_accepted, min_dep, torch.zeros_like(min_dep))
+                    flow_sum  = flow_sum  + win_flo * acc_f.unsqueeze(-1)
+                    acc_sum   = acc_sum   + acc_f
+
+                tile_color = color_sum / num_samples                # [tH, tW, 3]
+                tile_depth = (depth_sum / num_samples).unsqueeze(-1)# [tH, tW, 1]
+                tile_flow  = flow_sum  / num_samples                # [tH, tW, 2]
+                tile_T     = (1.0 - acc_sum / num_samples).unsqueeze(-1)
 
             else:
-                # --- deterministic path (full compositing) ---
-                # C = sum_i c_i * alpha_i * T_before_i + T_N * bg
+                # ----------------------------------------------------------
+                # DETERMINISTIC PATH – depth-sorted alpha compositing
+                # ----------------------------------------------------------
+                one_m_a = (1.0 - alpha).clamp(min=1e-8)
+                T_after  = torch.cumprod(one_m_a, dim=-1)           # [tH, tW, M]
+                T_before = torch.cat(
+                    [torch.ones(tH, tW, 1, device=device, dtype=dtype),
+                     T_after[..., :-1]], dim=-1)
+                T_final  = T_after[..., -1:]                         # [tH, tW, 1]
+
+                weights = alpha * T_before                           # [tH, tW, M]
+
                 bg = bg_color.view(1, 1, 3).to(dtype)
                 tile_color = (
-                    (t_colors.view(1, 1, M, 3) * weights.unsqueeze(-1)).sum(2)
-                    + T_final * bg
-                )  # [tH, tW, 3]
+                    (t_col.view(1, 1, M, 3) * weights.unsqueeze(-1)).sum(2)
+                    + T_final * bg)
+                tile_depth = (t_dep.view(1, 1, M) * weights
+                              ).sum(-1, keepdim=True)
+                tile_flow  = (t_flow.view(1, 1, M, 2)
+                              * weights.unsqueeze(-1)).sum(2)
+                tile_T     = T_final
 
-            # ---- auxiliary outputs (always deterministic) -------------
-            tile_depth = (t_depths.view(1, 1, M) * weights).sum(-1, keepdim=True)
-            tile_flow  = (t_flow.view(1, 1, M, 2) * weights.unsqueeze(-1)).sum(2)
-
-            # ---- write outputs ----------------------------------------
+            # Write tile outputs
             out_color[:, y0:y1, x0:x1] = tile_color.permute(2, 0, 1)
             out_depth[0, y0:y1, x0:x1] = tile_depth[..., 0]
             out_flow[:, y0:y1, x0:x1]  = tile_flow.permute(2, 0, 1)
-            out_T[0, y0:y1, x0:x1]     = T_final[..., 0]
+            out_T[0, y0:y1, x0:x1]     = tile_T[..., 0]
 
-            # Mark Gaussians in this tile as visible
-            orig_indices = sort_idx[tile_mask]
-            radii_out[orig_indices] = torch.max(
-                radii_out[orig_indices], t_radii)
+            # Mark overlapping Gaussians as visible
+            radii_out[orig_idx] = torch.max(radii_out[orig_idx], t_rad)
 
     out_alpha = 1.0 - out_T
-    covs_com  = torch.zeros(N, 6, device=device, dtype=dtype)  # placeholder
+    covs_com  = torch.zeros(N, 6, device=device, dtype=dtype)
 
     return out_color, radii_out, out_depth, out_alpha, out_flow, covs_com
 
@@ -500,13 +543,23 @@ class StochasticGaussianRasterizer(nn.Module):
     ``forward()`` signature.  Additionally accepts ``num_samples`` to control
     the stochastic approximation.
 
+    Implements **Listing 1** from arXiv:2503.24366:
+        z ← ∞,  C ← c_background
+        for each Gaussian i in unsorted order do
+            compute α_i,  z_i
+            sample u ~ U(0, 1)
+            if u < α_i  AND  z_i < z  then
+                C ← c_i ;  z ← z_i
+            end if
+        end for
+
     Parameters
     ----------
     raster_settings : GaussianRasterizationSettings
     num_samples : int
-        Number of Gaussian samples per pixel.
+        Number of independent Listing-1 passes per pixel (results are averaged).
         * ``num_samples > 0``  → stochastic rendering (paper algorithm)
-        * ``num_samples <= 0`` → deterministic (full alpha compositing)
+        * ``num_samples <= 0`` → deterministic full alpha compositing
         Default: 4
     tile_size : int
         Tile side length in pixels.  16 works well for most scenes.

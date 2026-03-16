@@ -253,10 +253,11 @@ class TestStochasticUnbiasedness:
     """Mean of many stochastic renders should converge to deterministic."""
 
     def test_stochastic_converges_to_deterministic(self):
+        """Paper Listing 1 is an unbiased estimator of alpha-compositing."""
         torch.manual_seed(0)
         rs       = _make_raster_settings(H=16, W=16)
         rz_det   = StochasticGaussianRasterizer(rs, num_samples=-1)
-        rz_stoch = StochasticGaussianRasterizer(rs, num_samples=8)
+        rz_stoch = StochasticGaussianRasterizer(rs, num_samples=1)
 
         means3D, _, scales, rots, opacities, colors = _make_gaussians(N=10, seed=7)
 
@@ -272,8 +273,8 @@ class TestStochasticUnbiasedness:
         # Deterministic baseline
         det_color = rz_det(**kwargs)[0].detach()
 
-        # Average 200 stochastic renders
-        n_trials = 200
+        # Average 500 stochastic renders (Listing 1 is high-variance)
+        n_trials = 500
         stoch_sum = torch.zeros_like(det_color)
         for _ in range(n_trials):
             stoch_sum = stoch_sum + rz_stoch(**kwargs)[0].detach()
@@ -288,21 +289,32 @@ class TestStochasticUnbiasedness:
 class TestGradientFlow:
     """Loss gradients must reach Gaussian parameters."""
 
+    def _make_scene(self, N=5, seed=0):
+        """Create simple on-axis Gaussians that are guaranteed to be visible."""
+        torch.manual_seed(seed)
+        # Place Gaussians on-axis at z=1..2, so they project to image centre
+        means3D = torch.zeros(N, 3)
+        means3D[:, 2] = torch.linspace(1.0, 2.0, N)
+        # Slight xy spread but small enough to stay in a 64x64 view
+        means3D[:, :2] = torch.randn(N, 2) * 0.05
+        return means3D
+
     def test_color_gradients(self):
-        rs  = _make_raster_settings(H=16, W=16)
+        rs  = _make_raster_settings(H=64, W=64)
         rz  = StochasticGaussianRasterizer(rs, num_samples=-1)
 
-        means3D   = torch.randn(10, 3) * 0.5
-        means3D[:, 2] += 2.0
-        means2D   = torch.zeros(10, 3, requires_grad=True)
-        scales    = torch.ones(10, 3) * 0.3
-        rotations = torch.zeros(10, 4); rotations[:, 0] = 1.0
-        opacities = torch.ones(10, 1) * 0.5
-        colors    = torch.rand(10, 3, requires_grad=True)
+        means3D   = self._make_scene()
+        N = means3D.shape[0]
+        means2D   = torch.zeros(N, 3, requires_grad=True)
+        scales    = torch.ones(N, 3) * 0.5
+        rotations = torch.zeros(N, 4); rotations[:, 0] = 1.0
+        opacities = torch.ones(N, 1) * 0.8
+        colors    = torch.rand(N, 3, requires_grad=True)
 
-        color, *_ = rz(means3D=means3D, means2D=means2D,
-                       opacities=opacities, colors_precomp=colors,
-                       scales=scales, rotations=rotations)
+        color, radii, *_ = rz(means3D=means3D, means2D=means2D,
+                               opacities=opacities, colors_precomp=colors,
+                               scales=scales, rotations=rotations)
+        assert radii.sum() > 0, "No Gaussians visible — check camera setup"
         loss = color.sum()
         loss.backward()
 
@@ -310,20 +322,22 @@ class TestGradientFlow:
         assert colors.grad.abs().sum() > 0, "Color gradient is all-zeros"
 
     def test_opacity_gradients(self):
-        rs  = _make_raster_settings(H=16, W=16)
+        rs  = _make_raster_settings(H=64, W=64)
         rz  = StochasticGaussianRasterizer(rs, num_samples=-1)
 
-        means3D   = torch.randn(10, 3) * 0.5
-        means3D[:, 2] += 2.0
-        means2D   = torch.zeros(10, 3, requires_grad=True)
-        scales    = torch.ones(10, 3) * 0.3
-        rotations = torch.zeros(10, 4); rotations[:, 0] = 1.0
-        opacities = torch.ones(10, 1, requires_grad=True) * 0.5
-        colors    = torch.rand(10, 3)
+        means3D   = self._make_scene()
+        N = means3D.shape[0]
+        means2D   = torch.zeros(N, 3, requires_grad=True)
+        scales    = torch.ones(N, 3) * 0.5
+        rotations = torch.zeros(N, 4); rotations[:, 0] = 1.0
+        # Use full() so requires_grad=True tensor IS the leaf
+        opacities = torch.full((N, 1), 0.8, requires_grad=True)
+        colors    = torch.rand(N, 3)
 
-        color, *_ = rz(means3D=means3D, means2D=means2D,
-                       opacities=opacities, colors_precomp=colors,
-                       scales=scales, rotations=rotations)
+        color, radii, *_ = rz(means3D=means3D, means2D=means2D,
+                               opacities=opacities, colors_precomp=colors,
+                               scales=scales, rotations=rotations)
+        assert radii.sum() > 0, "No Gaussians visible — check camera setup"
         loss = color.sum()
         loss.backward()
 
@@ -331,22 +345,22 @@ class TestGradientFlow:
 
     def test_screenspace_grad(self):
         """screenspace_points.grad must be set after backward."""
-        rs  = _make_raster_settings(H=16, W=16)
+        rs  = _make_raster_settings(H=64, W=64)
         rz  = StochasticGaussianRasterizer(rs, num_samples=-1)
 
-        means3D   = torch.randn(10, 3) * 0.5
-        means3D[:, 2] += 2.0
-        means2D   = torch.zeros(10, 3, requires_grad=True)
+        means3D   = self._make_scene()
+        N = means3D.shape[0]
+        means2D   = torch.zeros(N, 3, requires_grad=True)
         means2D.retain_grad()
+        scales    = torch.ones(N, 3) * 0.5
+        rotations = torch.zeros(N, 4); rotations[:, 0] = 1.0
+        opacities = torch.ones(N, 1) * 0.8
+        colors    = torch.rand(N, 3)
 
-        scales    = torch.ones(10, 3) * 0.3
-        rotations = torch.zeros(10, 4); rotations[:, 0] = 1.0
-        opacities = torch.ones(10, 1) * 0.5
-        colors    = torch.rand(10, 3)
-
-        color, *_ = rz(means3D=means3D, means2D=means2D,
-                       opacities=opacities, colors_precomp=colors,
-                       scales=scales, rotations=rotations)
+        color, radii, *_ = rz(means3D=means3D, means2D=means2D,
+                               opacities=opacities, colors_precomp=colors,
+                               scales=scales, rotations=rotations)
+        assert radii.sum() > 0, "No Gaussians visible — check camera setup"
         loss = color.sum()
         loss.backward()
 
