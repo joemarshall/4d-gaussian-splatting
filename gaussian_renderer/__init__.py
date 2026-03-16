@@ -16,7 +16,42 @@ from .diff_gaussian_rasterization import GaussianRasterizationSettings, Gaussian
 from scene.gaussian_model import GaussianModel
 from utils.sh_utils import eval_sh, eval_shfs_4d
 
+# Cache for stochastic renderer instances (keyed by (num_samples, tile_size))
+_stochastic_renderers = {}
+
+
 def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, scaling_modifier = 1.0, override_color = None):
+    """
+    Render the scene.
+
+    Dispatches to the stochastic transparency renderer when
+    ``pipe.renderer == "stochastic"``, otherwise uses the original
+    CUDA-based rasterizer.
+
+    The stochastic renderer is a pure-PyTorch drop-in replacement that
+    implements the algorithm from
+    "Stochastic Transparency for Gaussian Splatting"
+    (https://arxiv.org/abs/2503.24366).
+    Select it by passing ``--renderer stochastic`` (and optionally
+    ``--num_samples N``, ``--tile_size T``) on the command line.
+    """
+    renderer_type = getattr(pipe, "renderer", "original")
+    if renderer_type == "stochastic":
+        from .stochastic_renderer import StochasticTransparencyRenderer
+        num_samples = int(getattr(pipe, "num_samples", 8))
+        tile_size   = int(getattr(pipe, "tile_size",   16))
+        key = (num_samples, tile_size)
+        if key not in _stochastic_renderers:
+            _stochastic_renderers[key] = StochasticTransparencyRenderer(
+                num_samples=num_samples, tile_size=tile_size
+            )
+        return _stochastic_renderers[key].render(
+            viewpoint_camera, pc, pipe, bg_color, scaling_modifier, override_color
+        )
+    return _render_cuda(viewpoint_camera, pc, pipe, bg_color, scaling_modifier, override_color)
+
+
+def _render_cuda(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, scaling_modifier = 1.0, override_color = None):
     """
     Render the scene. 
     

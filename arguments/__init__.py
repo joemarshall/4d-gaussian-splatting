@@ -76,6 +76,9 @@ class PipelineParams(ParamGroup):
         self.env_optimize_until = 1000000000
         self.env_optimize_from = 0
         self.eval_shfs_4d = False
+        self.renderer = "original"  # choices: "original", "stochastic"
+        self.num_samples = 8        # samples per pixel for stochastic renderer
+        self.tile_size = 16         # tile size for stochastic renderer
         super().__init__(parser, "Pipeline Parameters")
 
 class OptimizationParams(ParamGroup):
