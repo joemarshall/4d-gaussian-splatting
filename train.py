@@ -172,6 +172,8 @@ def training(
     rot_4d,
     force_sh_3d,
     batch_size,
+    prune_short_timespan_iters=None,
+    generate_prefilter_masks=False,
 ):
 
     if dataset.frame_ratio > 1:
@@ -382,6 +384,15 @@ def training(
                     print("\n[ITER {}] Saving Gaussians".format(iteration))
                     scene.save(iteration)
 
+                # Short timespan Gaussian pruning
+                if (
+                    prune_short_timespan_iters
+                    and iteration in prune_short_timespan_iters
+                    and opt.prune_min_t_scale > 0
+                    and gaussians.gaussian_dim == 4
+                ):
+                    gaussians.prune_short_timespan(opt.prune_min_t_scale)
+
                 # Densification
                 if iteration < opt.densify_until_iter and (
                     opt.densify_until_num_points < 0
@@ -432,12 +443,41 @@ def training(
                     if pipe.env_map_res and iteration < pipe.env_optimize_until:
                         env_map_optimizer.step()
                         env_map_optimizer.zero_grad(set_to_none=True)
+
+    # Generate prefilter masks at end of training (including early stop via Ctrl+C)
+    if generate_prefilter_masks and gaussians.gaussian_dim == 4:
+        _save_prefilter_masks(gaussians, scene, dataset)
+
     if stop_iteration:
         print("\n[ITER {}] Saving checkpoint before exiting".format(iteration))
         torch.save(
             (gaussians.capture(), iteration), scene.model_path + "/chkpnt_resume.pth"
         )
         sys.exit(0)
+
+
+def _save_prefilter_masks(gaussians, scene, dataset):
+    """Generate and save per-timestamp active Gaussian masks for prefiltering.
+
+    For each unique timestamp in the training cameras, computes a boolean mask of
+    which Gaussians have a marginal temporal weight above 0.05 (the threshold used
+    in the renderer). Saves the result to ``<model_path>/prefilter_masks.pt`` as a
+    dict mapping float timestamp to a boolean numpy array of shape (num_gaussians,).
+    """
+    print("\nGenerating prefilter masks for all training timestamps...")
+    train_cameras = scene.getTrainCameras()
+    # Collect unique timestamps from (gt_image, camera) pairs
+    timestamps = sorted(set(float(cam.timestamp) for _, cam in train_cameras))
+    masks = gaussians.generate_prefilter_masks(timestamps)
+    save_path = os.path.join(dataset.model_path, "prefilter_masks.pt")
+    torch.save(masks, save_path)
+    total_active = sum(int(m.sum()) for m in masks.values())
+    total_possible = len(timestamps) * gaussians.get_xyz.shape[0]
+    print(
+        f"[Prefilter masks] Saved {len(masks)} timestamp masks to {save_path} "
+        f"(avg {total_active / max(len(masks), 1):.0f}/{gaussians.get_xyz.shape[0]} "
+        f"active Gaussians per frame, {100.0 * total_active / max(total_possible, 1):.1f}% total)"
+    )
 
 
 def prepare_output_and_logger(args):
@@ -644,6 +684,21 @@ if __name__ == "__main__":
     parser.add_argument("--batch_size", type=int, default=1)
     parser.add_argument("--seed", type=int, default=6666)
     parser.add_argument("--exhaust_test", action="store_true")
+    parser.add_argument(
+        "--prune_short_timespan_iters",
+        nargs="+",
+        type=int,
+        default=[],
+        help="Iterations at which to prune 4D Gaussians with temporal scale below "
+             "--prune_min_t_scale (set in OptimizationParams).",
+    )
+    parser.add_argument(
+        "--generate_prefilter_masks",
+        action="store_true",
+        default=False,
+        help="After training, generate per-timestamp active Gaussian masks and save "
+             "to <model_path>/prefilter_masks.pt.",
+    )
 
     args = parser.parse_args(sys.argv[1:])
     args.save_iterations.append(args.iterations)
@@ -696,6 +751,8 @@ if __name__ == "__main__":
         args.rot_4d,
         args.force_sh_3d,
         args.batch_size,
+        prune_short_timespan_iters=args.prune_short_timespan_iters,
+        generate_prefilter_masks=args.generate_prefilter_masks,
     )
 
     # All done

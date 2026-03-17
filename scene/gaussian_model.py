@@ -576,6 +576,46 @@ class GaussianModel:
 
         torch.cuda.empty_cache()
 
+    def prune_short_timespan(self, min_t_scale):
+        """Prune 4D Gaussians whose temporal extent is below min_t_scale.
+        
+        Args:
+            min_t_scale: Minimum allowed temporal scale (actual scale value in time units).
+                         Gaussians with get_scaling_t < min_t_scale are removed.
+        """
+        if self.gaussian_dim != 4:
+            return
+        prune_mask = (self.get_scaling_t < min_t_scale).squeeze()
+        num_pruned = prune_mask.sum().item()
+        print(f"\n[Prune short timespan] Removing {num_pruned} Gaussians with scaling_t < {min_t_scale:.6f}")
+        self.prune_points(prune_mask)
+        torch.cuda.empty_cache()
+
+    def generate_prefilter_masks(self, timestamps, threshold=0.05):
+        """Compute per-timestamp active Gaussian masks for prefiltering during rendering.
+
+        For each timestamp, a boolean mask is computed indicating which Gaussians have
+        a marginal temporal weight above the given threshold. These masks can be saved
+        and used to skip inactive Gaussians during inference.
+
+        Args:
+            timestamps: Iterable of float timestamps to generate masks for.
+            threshold: Marginal temporal weight threshold (default 0.05, matching renderer).
+
+        Returns:
+            dict mapping each timestamp (float) to a 1-D boolean numpy array of shape
+            (num_gaussians,) where True marks Gaussians active at that timestamp.
+        """
+        if self.gaussian_dim != 4:
+            return {}
+        masks = {}
+        with torch.no_grad():
+            for ts in timestamps:
+                marginal_t = self.get_marginal_t(ts)
+                mask = (marginal_t[:, 0] > threshold).cpu().numpy()
+                masks[float(ts)] = mask
+        return masks
+
     def add_densification_stats(self, viewspace_point_tensor, update_filter, avg_t_grad=None):
         self.xyz_gradient_accum[update_filter] += torch.norm(viewspace_point_tensor.grad[update_filter,:2], dim=-1, keepdim=True)
         self.denom[update_filter] += 1
