@@ -71,7 +71,8 @@ namespace FORWARD
 		const float* bg_color,
 		float* out_color,
 		float* out_flow,
-		float* out_depth);
+		float* out_depth,
+		float* gauss_contrib = nullptr);
 }
 
 

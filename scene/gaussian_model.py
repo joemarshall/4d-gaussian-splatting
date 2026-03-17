@@ -576,18 +576,63 @@ class GaussianModel:
 
         torch.cuda.empty_cache()
 
-    def prune_short_timespan(self, min_t_scale):
-        """Prune 4D Gaussians whose temporal extent is below min_t_scale.
-        
+    def compute_temporal_score(self, timestamps):
+        """Compute per-Gaussian temporal score (Eq. 5-6 from arXiv 2503.16422).
+
+        The temporal score measures how much each 4D Gaussian contributes across
+        the set of training timestamps.  For each timestamp t_j the marginal
+        temporal weight marginal_t_i(t_j) = exp(-0.5*(t_i - t_j)^2 / sigma_t_i^2)
+        is evaluated, and the scores are averaged over all timestamps.
+
         Args:
-            min_t_scale: Minimum allowed temporal scale (actual scale value in time units).
-                         Gaussians with get_scaling_t < min_t_scale are removed.
+            timestamps: 1-D float tensor (or list) of training timestamps.
+
+        Returns:
+            Tensor of shape (N,) with temporal scores in [0, 1].
+            Returns a tensor of ones when gaussian_dim != 4.
+        """
+        if self.gaussian_dim != 4:
+            return torch.ones(self.get_xyz.shape[0], device="cuda")
+        ts = torch.tensor(timestamps, dtype=torch.float32, device="cuda")  # (T,)
+        with torch.no_grad():
+            # marginal_t: (N, T) – temporal Gaussian weight for each Gaussian at each ts
+            sigma = self.get_cov_t()  # (N, 1)
+            if self.prefilter_var > 0.0:
+                sigma = sigma + self.prefilter_var
+            dt = self.get_t - ts.unsqueeze(0)  # (N, T)
+            marginal_t = torch.exp(-0.5 * dt ** 2 / sigma)  # (N, T)
+            temporal_score = marginal_t.mean(dim=1)  # (N,)
+        return temporal_score
+
+    def prune_by_spatio_temporal_score(self, spatial_contribs, timestamps, score_threshold):
+        """Prune 4D Gaussians by combined spatio-temporal importance score (Eq. 7).
+
+        The spatial score (Eq. 4) is the aggregated pixel contribution obtained by
+        rendering each training view with compute_contrib=True and summing the
+        per-Gaussian contributions.  The temporal score (Eq. 5-6) measures temporal
+        coverage.  Their product is the spatio-temporal score; Gaussians below
+        score_threshold are removed.
+
+        Args:
+            spatial_contribs: 1-D float tensor of shape (N,) with accumulated pixel
+                contributions across all training views.
+            timestamps: List/tensor of unique training timestamps used to evaluate
+                the temporal score.
+            score_threshold: Gaussians with spatio_temporal_score < score_threshold
+                are pruned.
         """
         if self.gaussian_dim != 4:
             return
-        prune_mask = (self.get_scaling_t < min_t_scale).squeeze()
+        with torch.no_grad():
+            spatial_score = spatial_contribs.to("cuda")
+            temporal_score = self.compute_temporal_score(timestamps)
+            st_score = spatial_score * temporal_score
+            prune_mask = st_score < score_threshold
         num_pruned = prune_mask.sum().item()
-        print(f"\n[Prune short timespan] Removing {num_pruned} Gaussians with scaling_t < {min_t_scale:.6f}")
+        print(
+            f"\n[Spatio-temporal prune] score_threshold={score_threshold:.2e}  "
+            f"removing {num_pruned}/{prune_mask.shape[0]} Gaussians"
+        )
         self.prune_points(prune_mask)
         torch.cuda.empty_cache()
 

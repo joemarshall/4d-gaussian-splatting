@@ -33,7 +33,7 @@ std::function<char*(size_t N)> resizeFunctional(torch::Tensor& t) {
     return lambda;
 }
 
-std::tuple<int, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
+std::tuple<int, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
 RasterizeGaussiansCUDA(
 	const torch::Tensor& background,
 	const torch::Tensor& means3D,
@@ -64,7 +64,8 @@ RasterizeGaussiansCUDA(
 	const int gaussian_dim,
 	const bool force_sh_3d,
 	const bool prefiltered,
-	const bool debug)
+	const bool debug,
+	const bool compute_contrib)
 {
   if (means3D.ndimension() != 2 || means3D.size(1) != 3) {
     AT_ERROR("means3D must have dimensions (num_points, 3)");
@@ -83,6 +84,16 @@ RasterizeGaussiansCUDA(
   torch::Tensor out_T = torch::full({1, H, W}, 0.0, float_opts);
   torch::Tensor radii = torch::full({P}, 0, means3D.options().dtype(torch::kInt32));
   torch::Tensor out_means3D = means3D.clone();
+
+  // Allocate per-Gaussian pixel-contribution buffer only when requested.
+  // Returns an empty tensor when compute_contrib is false so the caller
+  // always receives a consistent tuple size.
+  torch::Tensor gauss_contrib = compute_contrib && P > 0
+      ? torch::zeros({P}, float_opts)
+      : torch::zeros({0}, float_opts);
+  float* gauss_contrib_ptr = (compute_contrib && P > 0)
+      ? gauss_contrib.contiguous().data<float>()
+      : nullptr;
   
   torch::Device device(torch::kCUDA);
   torch::TensorOptions options(torch::kByte);
@@ -139,13 +150,14 @@ RasterizeGaussiansCUDA(
 		out_depth.contiguous().data<float>(),
 		out_T.contiguous().data<float>(),
 		radii.contiguous().data<int>(),
-		debug);
+		debug,
+		gauss_contrib_ptr);
   }
   char* geo_ptr = reinterpret_cast<char*>(geomBuffer.contiguous().data_ptr());
   CudaRasterizer::GeometryState geoState = CudaRasterizer::GeometryState::fromChunk(geo_ptr, P);
 
   torch::Tensor covs3D_com = torch::from_blob(geoState.cov3D, {P, 6}, float_opts);
-  return std::make_tuple(rendered, out_color, out_flow, out_depth, out_T, radii, geomBuffer, binningBuffer, imgBuffer, covs3D_com, out_means3D);
+  return std::make_tuple(rendered, out_color, out_flow, out_depth, out_T, radii, geomBuffer, binningBuffer, imgBuffer, covs3D_com, out_means3D, gauss_contrib);
 }
 
 std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>

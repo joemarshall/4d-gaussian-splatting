@@ -62,7 +62,8 @@ namespace CudaRasterizer
 			float* out_depth,
 			float* out_T,
 			int* radii = nullptr,
-			bool debug = false);
+			bool debug = false,
+			float* gauss_contrib = nullptr);
 
 		static void backward(
 			const int P, int D, int D_t, int M, int R,
