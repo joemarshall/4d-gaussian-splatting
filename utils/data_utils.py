@@ -32,11 +32,15 @@ class CameraDataset(Dataset):
     def __init__(self, viewpoint_stack, white_background):
         self.viewpoint_stack = viewpoint_stack
         self.bg = np.array([1,1,1]) if white_background else np.array([0, 0, 0])
+        self.names_only = False
+
+    def set_names_only(self, names_only):
+        self.names_only = names_only
 
         
     def __getitem__(self, index):
         viewpoint_cam = self.viewpoint_stack[index]
-        if viewpoint_cam.meta_only:
+        if viewpoint_cam.meta_only and not self.names_only:
             cached = ImageCache.get_image_for_file(viewpoint_cam.image_path, viewpoint_cam.image_width)
             if cached is not None:
 #                print("Using cached image:", viewpoint_cam.image_path)
@@ -56,7 +60,9 @@ class CameraDataset(Dataset):
             else:
                 viewpoint_image *= torch.ones((1, viewpoint_cam.image_height, viewpoint_cam.image_width))
             ImageCache.set_image_for_file(viewpoint_cam.image_path, viewpoint_cam.image_width, viewpoint_image)
-        return viewpoint_image, viewpoint_cam
+            return viewpoint_image, viewpoint_cam
+        if self.names_only:
+            return None, viewpoint_cam
     
     def __len__(self):
         return len(self.viewpoint_stack)
