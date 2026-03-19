@@ -35,6 +35,8 @@ from torch.utils.data import DataLoader
 
 torch.set_float32_matmul_precision('high')
 #torch.backends.fp32_precision = "tf32"
+torch._dynamo.config.force_parameter_static_shapes = False 
+
 
 TRACK_MEMORY = False
 CLEAR_CACHE = False        
@@ -464,16 +466,6 @@ def training(
                         try_save(gaussians, iteration, scene,"not-best")
 
 
-                # Spatio-temporal Gaussian pruning (paper Eq. 4-7)
-                if (
-                    prune_short_timespan_iters
-                    and iteration in prune_short_timespan_iters
-                    and opt.prune_st_score_threshold > 0
-                    and gaussians.gaussian_dim == 4
-                ):
-                    _prune_by_spatio_temporal_score(
-                        gaussians, scene, pipe, background, opt
-                    )
 
                 # Densification
                 if iteration < opt.densify_until_iter and (
@@ -517,6 +509,17 @@ def training(
                             opt.densify_grad_t_threshold,
                         )
 
+                        # Spatio-temporal Gaussian pruning (paper Eq. 4-7)
+                        if (
+                            prune_short_timespan_iters
+                            and opt.prune_st_score_threshold > 0
+                            and gaussians.gaussian_dim == 4
+                        ):
+                            _prune_by_spatio_temporal_score(
+                                gaussians, scene, pipe, background, opt
+                            )
+
+
                     if iteration % opt.opacity_reset_interval == 0 or (
                         dataset.white_background and iteration == opt.densify_from_iter
                     ):
@@ -526,6 +529,8 @@ def training(
                         torch.cuda.empty_cache()
                     if TRACK_MEMORY:
                         torch.cuda.memory._dump_snapshot(f"temp.pickle")
+
+
 
 
                 # Optimizer step
@@ -750,13 +755,13 @@ def training_report(
                     psnr_test += psnr(image, gt_image).mean().double()
                     ssim_test += ssim(image, gt_image).mean().double()
                     msssim_test += msssim(image[None].cpu(), gt_image[None].cpu())
-                psnr_test /= len(config["cameras"])
-                l1_test /= len(config["cameras"])
-                ssim_test /= len(config["cameras"])
-                msssim_test /= len(config["cameras"])
+                psnr_test /= len(config["range"])
+                l1_test /= len(config["range"])
+                ssim_test /= len(config["range"])
+                msssim_test /= len(config["range"])
                 print(
-                    "\n[ITER {}] Evaluating {}: L1 {} PSNR {}".format(
-                        iteration, config["name"], l1_test, psnr_test
+                    "\n[ITER {}] Evaluating {}[{}]: L1 {} PSNR {}".format(
+                        iteration, config["name"],len(config["cameras"]), l1_test, psnr_test
                     )
                 )
                 if tb_writer:
