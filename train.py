@@ -28,6 +28,12 @@ from utils.image_utils import psnr, easy_cmap
 from argparse import ArgumentParser, Namespace
 from arguments import ModelParams, PipelineParams, OptimizationParams
 from torchvision.utils import make_grid
+
+try:
+    from utils.fast_utils import compute_gaussian_score_fastgs, sampling_cameras
+    _FAST_UTILS_AVAILABLE = True
+except ImportError:
+    _FAST_UTILS_AVAILABLE = False
 import numpy as np
 from omegaconf import OmegaConf
 from omegaconf.dictconfig import DictConfig
@@ -496,13 +502,35 @@ def training(
                         size_threshold = (
                             20 if iteration > opt.opacity_reset_interval else None
                         )
-                        gaussians.densify_and_prune(
-                            opt.densify_grad_threshold,
-                            opt.thresh_opa_prune,
-                            scene.cameras_extent,
-                            size_threshold,
-                            opt.densify_grad_t_threshold,
+                        use_fastgs = (
+                            getattr(opt, 'use_fastgs_densification', False)
+                            and _FAST_UTILS_AVAILABLE
                         )
+                        if use_fastgs:
+                            mult = getattr(opt, 'fastgs_mult', 0.5)
+                            num_cams = getattr(opt, 'fastgs_num_sample_cams', 10)
+                            my_viewpoint_stack = scene.getTrainCameras().copy()
+                            camlist = sampling_cameras(my_viewpoint_stack, num_cams)
+                            importance_score, pruning_score = compute_gaussian_score_fastgs(
+                                camlist, gaussians, pipe, background, opt, DENSIFY=True
+                            )
+                            gaussians.densify_and_prune_fastgs(
+                                max_screen_size=size_threshold,
+                                min_opacity=opt.thresh_opa_prune,
+                                extent=scene.cameras_extent,
+                                radii=radii,
+                                args=opt,
+                                importance_score=importance_score,
+                                pruning_score=pruning_score,
+                            )
+                        else:
+                            gaussians.densify_and_prune(
+                                opt.densify_grad_threshold,
+                                opt.thresh_opa_prune,
+                                scene.cameras_extent,
+                                size_threshold,
+                                opt.densify_grad_t_threshold,
+                            )
 
                     if iteration % opt.opacity_reset_interval == 0 or (
                         dataset.white_background and iteration == opt.densify_from_iter
@@ -513,6 +541,28 @@ def training(
                         torch.cuda.empty_cache()
                     if TRACK_MEMORY:
                         torch.cuda.memory._dump_snapshot(f"temp.pickle")
+
+                # FastGS final-stage pruning (runs after the main densification phase).
+                fastgs_final_from = getattr(opt, 'fastgs_final_prune_from_iter', -1)
+                if (
+                    fastgs_final_from > 0
+                    and iteration > fastgs_final_from
+                    and iteration % getattr(opt, 'fastgs_final_prune_interval', 3000) == 0
+                    and iteration < getattr(opt, 'fastgs_final_prune_until_iter', 30000)
+                    and _FAST_UTILS_AVAILABLE
+                    and getattr(opt, 'use_fastgs_densification', False)
+                ):
+                    mult = getattr(opt, 'fastgs_mult', 0.5)
+                    num_cams = getattr(opt, 'fastgs_num_sample_cams', 10)
+                    my_viewpoint_stack = scene.getTrainCameras().copy()
+                    camlist = sampling_cameras(my_viewpoint_stack, num_cams)
+                    _, pruning_score = compute_gaussian_score_fastgs(
+                        camlist, gaussians, pipe, background, opt
+                    )
+                    gaussians.final_prune_fastgs(
+                        min_opacity=getattr(opt, 'fastgs_final_prune_min_opacity', 0.1),
+                        pruning_score=pruning_score,
+                    )
 
 
                 # Optimizer step

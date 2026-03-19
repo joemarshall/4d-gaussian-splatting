@@ -74,7 +74,9 @@ class GaussianModel:
         self._opacity = torch.empty(0)
         self.max_radii2D = torch.empty(0)
         self.xyz_gradient_accum = torch.empty(0)
+        self.xyz_gradient_accum_abs = torch.empty(0)
         self.denom = torch.empty(0)
+        self.tmp_radii = None
         self.optimizer = None
         self.percent_dense = 0
         self.spatial_lr_scale = 0
@@ -340,6 +342,7 @@ class GaussianModel:
     def training_setup(self, training_args):
         self.percent_dense = training_args.percent_dense
         self.xyz_gradient_accum = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
+        self.xyz_gradient_accum_abs = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
         self.denom = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
 
         l = [
@@ -445,9 +448,13 @@ class GaussianModel:
         self._rotation = self._prune_optimizer_single_tensor(valid_points_mask, "rotation")
 
         self.xyz_gradient_accum = self.xyz_gradient_accum[valid_points_mask]
+        if self.xyz_gradient_accum_abs.shape[0] == mask.shape[0]:
+            self.xyz_gradient_accum_abs = self.xyz_gradient_accum_abs[valid_points_mask]
 
         self.denom = self.denom[valid_points_mask]
         self.max_radii2D = self.max_radii2D[valid_points_mask]
+        if self.tmp_radii is not None and self.tmp_radii.shape[0] == mask.shape[0]:
+            self.tmp_radii = self.tmp_radii[valid_points_mask]
         
         if self.gaussian_dim == 4:
             self._t = self._prune_optimizer_single_tensor(valid_points_mask, "t")
@@ -562,6 +569,7 @@ class GaussianModel:
         #     self.t_gradient_accum = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
 
         self.xyz_gradient_accum = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
+        self.xyz_gradient_accum_abs = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
         self.denom = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
         self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device="cuda")
 
@@ -662,6 +670,12 @@ class GaussianModel:
 
     def add_densification_stats(self, viewspace_point_tensor, update_filter, avg_t_grad=None):
         self.xyz_gradient_accum[update_filter] += torch.norm(viewspace_point_tensor.grad[update_filter,:2], dim=-1, keepdim=True)
+        # Track absolute-value gradients for FastGS split criterion (columns 2:4 of the
+        # 4-component screenspace tensor, when using render_fastgs).
+        if viewspace_point_tensor.grad is not None and viewspace_point_tensor.grad.shape[-1] >= 4:
+            self.xyz_gradient_accum_abs[update_filter] += torch.norm(
+                viewspace_point_tensor.grad[update_filter, 2:4], dim=-1, keepdim=True
+            )
         self.denom[update_filter] += 1
         if self.gaussian_dim == 4:
             self.t_gradient_accum[update_filter] += avg_t_grad[update_filter]
@@ -671,3 +685,200 @@ class GaussianModel:
         self.denom[update_filter] += 1
         if self.gaussian_dim == 4:
             self.t_gradient_accum[update_filter] += avg_t_grad[update_filter]
+
+    # ------------------------------------------------------------------
+    # FastGS densification and pruning methods
+    # ------------------------------------------------------------------
+
+    def densify_and_clone_fastgs(self, metric_mask, filter_mask):
+        """Clone Gaussians that satisfy both the gradient filter and the
+        multi-view metric mask (FastGS criterion)."""
+        selected_pts_mask = torch.logical_and(metric_mask, filter_mask)
+
+        new_xyz = self._xyz[selected_pts_mask]
+        new_features_dc = self._features_dc[selected_pts_mask]
+        new_features_rest = self._features_rest[selected_pts_mask]
+        new_opacities = self._opacity[selected_pts_mask]
+        new_scaling = self._scaling[selected_pts_mask]
+        new_rotation = self._rotation[selected_pts_mask]
+        new_t = None
+        new_scaling_t = None
+        new_rotation_r = None
+        if self.gaussian_dim == 4:
+            new_t = self._t[selected_pts_mask]
+            new_scaling_t = self._scaling_t[selected_pts_mask]
+            if self.rot_4d:
+                new_rotation_r = self._rotation_r[selected_pts_mask]
+
+        self.densification_postfix(
+            new_xyz, new_features_dc, new_features_rest,
+            new_opacities, new_scaling, new_rotation,
+            new_t, new_scaling_t, new_rotation_r,
+        )
+
+    def densify_and_split_fastgs(self, metric_mask, filter_mask, N=2):
+        """Split Gaussians that satisfy both the gradient filter and the
+        multi-view metric mask (FastGS criterion)."""
+        n_init_points = self.get_xyz.shape[0]
+
+        selected_pts_mask = torch.zeros(n_init_points, dtype=torch.bool, device="cuda")
+        combined = torch.logical_and(metric_mask, filter_mask)
+        selected_pts_mask[:combined.shape[0]] = combined
+
+        stds = self.get_scaling[selected_pts_mask].repeat(N, 1)
+        means = torch.zeros((stds.size(0), 3), device="cuda")
+        samples = torch.normal(mean=means, std=stds)
+        rots = build_rotation(self._rotation[selected_pts_mask]).repeat(N, 1, 1)
+        new_xyz = torch.bmm(rots, samples.unsqueeze(-1)).squeeze(-1) + \
+                  self.get_xyz[selected_pts_mask].repeat(N, 1)
+        new_scaling = self.scaling_inverse_activation(
+            self.get_scaling[selected_pts_mask].repeat(N, 1) / (0.8 * N)
+        )
+        new_rotation = self._rotation[selected_pts_mask].repeat(N, 1)
+        new_features_dc = self._features_dc[selected_pts_mask].repeat(N, 1, 1)
+        new_features_rest = self._features_rest[selected_pts_mask].repeat(N, 1, 1)
+        new_opacity = self._opacity[selected_pts_mask].repeat(N, 1)
+        new_t = None
+        new_scaling_t = None
+        new_rotation_r = None
+        if self.gaussian_dim == 4:
+            new_t = self._t[selected_pts_mask].repeat(N, 1)
+            new_scaling_t = self.scaling_inverse_activation(
+                self.get_scaling_t[selected_pts_mask].repeat(N, 1) / (0.8 * N)
+            )
+            if self.rot_4d:
+                new_rotation_r = self._rotation_r[selected_pts_mask].repeat(N, 1)
+
+        self.densification_postfix(
+            new_xyz, new_features_dc, new_features_rest,
+            new_opacity, new_scaling, new_rotation,
+            new_t, new_scaling_t, new_rotation_r,
+        )
+
+        prune_filter = torch.cat((
+            selected_pts_mask,
+            torch.zeros(N * selected_pts_mask.sum(), device="cuda", dtype=torch.bool),
+        ))
+        self.prune_points(prune_filter)
+
+    def densify_and_prune_fastgs(self, max_screen_size, min_opacity, extent, radii,
+                                  args, importance_score=None, pruning_score=None):
+        """FastGS multi-view consistent densification and pruning.
+
+        Steps:
+        1. Candidates for densification are selected by gradient thresholds.
+        2. The multi-view importance score further filters which Gaussians to
+           clone/split – only those visible in many high-error views are densified.
+        3. Standard opacity/size pruning with budget-controlled removal guided by
+           the pruning score.
+
+        Args:
+            max_screen_size (int or None): maximum screen-space radius for pruning.
+            min_opacity (float): opacity threshold below which Gaussians are pruned.
+            extent (float): scene extent used for size thresholding.
+            radii (Tensor): per-Gaussian screen-space radii from the last render.
+            args: optimisation args with ``grad_thresh``, ``grad_abs_thresh``,
+                  and ``dense`` attributes.
+            importance_score (Tensor or None): per-Gaussian integer counts from
+                :func:`~utils.fast_utils.compute_gaussian_score_fastgs`.
+            pruning_score (Tensor or None): normalised per-Gaussian pruning score.
+        """
+        grad_vars = self.xyz_gradient_accum / self.denom
+        grad_vars[grad_vars.isnan()] = 0.0
+        self.tmp_radii = radii
+
+        grads_abs = self.xyz_gradient_accum_abs / self.denom
+        grads_abs[grads_abs.isnan()] = 0.0
+
+        grad_qualifiers = torch.where(
+            torch.norm(grad_vars, dim=-1) >= args.densify_grad_threshold, True, False
+        )
+        # Fall back to densify_grad_threshold for abs if not configured separately.
+        # The default multiplier of 6 comes from the FastGS paper where
+        # grad_abs_thresh ≈ 0.0012 ≈ 6 × grad_thresh ≈ 6 × 0.0002.
+        grad_abs_thresh = getattr(args, 'densify_grad_abs_threshold', args.densify_grad_threshold * 6)
+        grad_qualifiers_abs = torch.where(
+            torch.norm(grads_abs, dim=-1) >= grad_abs_thresh, True, False
+        )
+        clone_qualifiers = torch.max(self.get_scaling, dim=1).values <= args.percent_dense * extent
+        split_qualifiers = torch.max(self.get_scaling, dim=1).values > args.percent_dense * extent
+
+        all_clones = torch.logical_and(clone_qualifiers, grad_qualifiers)
+        all_splits = torch.logical_and(split_qualifiers, grad_qualifiers_abs)
+
+        if importance_score is not None:
+            # Gaussians must appear in > fastgs_importance_threshold views to
+            # be considered for densification.  Default of 5 comes from the
+            # FastGS paper (multi-view consistency with 10 sampled views).
+            importance_threshold = getattr(args, 'fastgs_importance_threshold', 5)
+            metric_mask = importance_score > importance_threshold
+        else:
+            # Fall back: densify all gradient-selected Gaussians.
+            metric_mask = torch.ones(self.get_xyz.shape[0], dtype=torch.bool, device="cuda")
+
+        self.densify_and_clone_fastgs(metric_mask, all_clones)
+        self.densify_and_split_fastgs(metric_mask, all_splits)
+
+        prune_mask = (self.get_opacity < min_opacity).squeeze()
+        if max_screen_size:
+            big_points_vs = self.max_radii2D > max_screen_size
+            big_points_ws = self.get_scaling.max(dim=1).values > 0.1 * extent
+            prune_mask = torch.logical_or(torch.logical_or(prune_mask, big_points_vs), big_points_ws)
+
+        if pruning_score is not None:
+            scores = 1.0 - pruning_score
+            to_remove = torch.sum(prune_mask)
+            # Only remove 50 % of eligible Gaussians per step (budget-controlled
+            # pruning from FastGS) to avoid over-aggressive scene degradation.
+            remove_budget = int(0.5 * to_remove)
+
+            if remove_budget > 0:
+                n_init_points = self.get_xyz.shape[0]
+                padded_importance = torch.zeros(n_init_points, dtype=torch.float32, device="cuda")
+                n = min(scores.shape[0], n_init_points)
+                padded_importance[:n] = 1.0 / (1e-6 + scores[:n].squeeze())
+                selected_pts_mask = torch.zeros(n_init_points, dtype=torch.bool, device="cuda")
+                sampled_indices = torch.multinomial(padded_importance, remove_budget, replacement=False)
+                selected_pts_mask[sampled_indices] = True
+                final_prune = torch.logical_and(prune_mask, selected_pts_mask)
+                self.prune_points(final_prune)
+            else:
+                self.prune_points(prune_mask)
+        else:
+            self.prune_points(prune_mask)
+
+        # Clamp opacities to avoid them exploding after densification.
+        opacities_new = inverse_sigmoid(
+            torch.min(self.get_opacity, torch.ones_like(self.get_opacity) * 0.8)
+        )
+        optimizable_tensors = self.replace_tensor_to_optimizer(opacities_new, "opacity")
+        self._opacity = optimizable_tensors["opacity"]
+        self.tmp_radii = None
+
+        torch.cuda.empty_cache()
+
+    def final_prune_fastgs(self, min_opacity, pruning_score=None):
+        """Final-stage pruning: remove Gaussians based on opacity and multi-view
+        consistency score.
+
+        This is called after the main training phase (e.g., every 3 000 iterations
+        between iterations 15 000–30 000) to aggressively remove Gaussians that
+        are no longer needed.
+
+        Args:
+            min_opacity (float): remove Gaussians with opacity below this value.
+            pruning_score (Tensor or None): normalised per-Gaussian pruning score
+                from :func:`~utils.fast_utils.compute_gaussian_score_fastgs`.
+                Gaussians with score > 0.9 are also pruned.
+        """
+        prune_mask = (self.get_opacity < min_opacity).squeeze()
+        if pruning_score is not None:
+            n = min(pruning_score.shape[0], self.get_xyz.shape[0])
+            scores_mask = torch.zeros(self.get_xyz.shape[0], dtype=torch.bool, device="cuda")
+            # Prune Gaussians with very high reconstruction inconsistency score
+            # (top 10 % of the [0, 1] range, i.e., score > 0.9).
+            scores_mask[:n] = pruning_score[:n].squeeze() > 0.9
+            prune_mask = torch.logical_or(prune_mask, scores_mask)
+        self.prune_points(prune_mask)
+        print("FastGS final prune: removed {} points. Remaining: {}".format(
+            prune_mask.sum(), self.get_xyz.shape[0]))

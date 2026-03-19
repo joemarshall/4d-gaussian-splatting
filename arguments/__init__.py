@@ -105,6 +105,17 @@ class OptimizationParams(ParamGroup):
         self.lambda_opa_mask = 0.0
         self.lambda_rigid = 0.0
         self.lambda_motion = 0.0
+        # FastGS parameters
+        self.use_fastgs_densification = False
+        self.fastgs_mult = 0.5
+        self.fastgs_loss_thresh = 0.1
+        self.densify_grad_abs_threshold = 0.0012
+        self.fastgs_importance_threshold = 5
+        self.fastgs_final_prune_from_iter = -1
+        self.fastgs_final_prune_interval = 3000
+        self.fastgs_final_prune_until_iter = 30000
+        self.fastgs_final_prune_min_opacity = 0.1
+        self.fastgs_num_sample_cams = 10
         super().__init__(parser, "Optimization Parameters")
 
 def get_combined_args(parser : ArgumentParser,cmdlne_string = None):
