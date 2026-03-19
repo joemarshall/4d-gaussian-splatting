@@ -263,9 +263,9 @@ def render_set(model_path, iteration, views, gaussians, pipeline, background):
         makedirs(render_path, exist_ok=True)
         makedirs(gts_path, exist_ok=True)
         rendering = render_wrapper((view[1].cuda(), gaussians, pipeline, background))["render"]
-        gt = view[0][0:3, :, :]
+        #gt = view[0][0:3, :, :]
         torchvision.utils.save_image(rendering, render_path / f"{idx:05d}.png")
-        torchvision.utils.save_image(gt, gts_path / f"{idx:05d}.png")
+        #torchvision.utils.save_image(gt, gts_path / f"{idx:05d}.png")
 
 try:
     if args.render or args.graph_camera_positions:
@@ -322,6 +322,7 @@ try:
             print("BOO")
             for name, cameras in camera_sets:
                 if master_camera is not None:
+                    cameras.set_names_only(True)
                     for x in cameras:
                         print("Cam:",x[1])
                         camera_id, frame_id = camera_id_and_frame_from_path(x[1].image_name)

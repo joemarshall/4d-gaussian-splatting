@@ -668,6 +668,91 @@ class GaussianModel:
 
         torch.cuda.empty_cache()
 
+    def compute_temporal_score(self, timestamps):
+        """Compute per-Gaussian temporal score (Eq. 5-6 from arXiv 2503.16422).
+
+        The temporal score measures how much each 4D Gaussian contributes across
+        the set of training timestamps.  For each timestamp t_j the marginal
+        temporal weight marginal_t_i(t_j) = exp(-0.5*(t_i - t_j)^2 / sigma_t_i^2)
+        is evaluated, and the scores are averaged over all timestamps.
+
+        Args:
+            timestamps: 1-D float tensor (or list) of training timestamps.
+
+        Returns:
+            Tensor of shape (N,) with temporal scores in [0, 1].
+            Returns a tensor of ones when gaussian_dim != 4.
+        """
+        if self.gaussian_dim != 4:
+            return torch.ones(self.get_xyz.shape[0], device="cuda")
+        ts = torch.tensor(timestamps, dtype=torch.float32, device="cuda")  # (T,)
+        with torch.no_grad():
+            # marginal_t: (N, T) – temporal Gaussian weight for each Gaussian at each ts
+            sigma = self.get_cov_t()  # (N, 1)
+            if self.prefilter_var > 0.0:
+                sigma = sigma + self.prefilter_var
+            dt = self.get_t - ts.unsqueeze(0)  # (N, T)
+            marginal_t = torch.exp(-0.5 * dt ** 2 / sigma)  # (N, T)
+            temporal_score = marginal_t.mean(dim=1)  # (N,)
+        return temporal_score
+
+    def prune_by_spatio_temporal_score(self, spatial_contribs, timestamps, score_threshold):
+        """Prune 4D Gaussians by combined spatio-temporal importance score (Eq. 7).
+
+        The spatial score (Eq. 4) is the aggregated pixel contribution obtained by
+        rendering each training view with compute_contrib=True and summing the
+        per-Gaussian contributions.  The temporal score (Eq. 5-6) measures temporal
+        coverage.  Their product is the spatio-temporal score; Gaussians below
+        score_threshold are removed.
+
+        Args:
+            spatial_contribs: 1-D float tensor of shape (N,) with accumulated pixel
+                contributions across all training views.
+            timestamps: List/tensor of unique training timestamps used to evaluate
+                the temporal score.
+            score_threshold: Gaussians with spatio_temporal_score < score_threshold
+                are pruned.
+        """
+        if self.gaussian_dim != 4:
+            return
+        with torch.no_grad():
+            spatial_score = spatial_contribs.to("cuda")
+            temporal_score = self.compute_temporal_score(timestamps)
+            st_score = spatial_score * temporal_score
+            prune_mask = st_score < score_threshold
+        num_pruned = prune_mask.sum().item()
+        print(
+            f"\n[Spatio-temporal prune] score_threshold={score_threshold:.2e}  "
+            f"removing {num_pruned}/{prune_mask.shape[0]} Gaussians"
+        )
+        self.prune_points(prune_mask)
+        torch.cuda.empty_cache()
+
+    def generate_prefilter_masks(self, timestamps, threshold=0.05):
+        """Compute per-timestamp active Gaussian masks for prefiltering during rendering.
+
+        For each timestamp, a boolean mask is computed indicating which Gaussians have
+        a marginal temporal weight above the given threshold. These masks can be saved
+        and used to skip inactive Gaussians during inference.
+
+        Args:
+            timestamps: Iterable of float timestamps to generate masks for.
+            threshold: Marginal temporal weight threshold (default 0.05, matching renderer).
+
+        Returns:
+            dict mapping each timestamp (float) to a 1-D boolean numpy array of shape
+            (num_gaussians,) where True marks Gaussians active at that timestamp.
+        """
+        if self.gaussian_dim != 4:
+            return {}
+        masks = {}
+        with torch.no_grad():
+            for ts in timestamps:
+                marginal_t = self.get_marginal_t(ts)
+                mask = (marginal_t[:, 0] > threshold).cpu().numpy()
+                masks[float(ts)] = mask
+        return masks
+
     def add_densification_stats(self, viewspace_point_tensor, update_filter, avg_t_grad=None):
         self.xyz_gradient_accum[update_filter] += torch.norm(viewspace_point_tensor.grad[update_filter,:2], dim=-1, keepdim=True)
         # Track absolute-value gradients for FastGS split criterion (columns 2:4 of the

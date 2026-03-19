@@ -8,7 +8,7 @@
 #
 # For inquiries contact  george.drettakis@inria.fr
 #
-# MAKE IT LAUNCH THE VIEWER/ RENDERER in subprocess each 100 iterations or so
+# MAKE IT LAUNCH THE VIEWER/ RENDERER in subprocess each 100 iterations or so# MAKE IT LAUNCH THE VIEWER/ RENDERER in subprocess each 100 iterations or so
 import os
 import signal
 import random
@@ -41,6 +41,8 @@ from torch.utils.data import DataLoader
 
 torch.set_float32_matmul_precision('high')
 #torch.backends.fp32_precision = "tf32"
+torch._dynamo.config.force_parameter_static_shapes = False 
+
 
 TRACK_MEMORY = False
 CLEAR_CACHE = False        
@@ -239,6 +241,8 @@ def training(
     rot_4d,
     force_sh_3d,
     batch_size,
+    prune_short_timespan_iters=None,
+    generate_prefilter_masks=False,
 ):
 
     if dataset.frame_ratio > 1:
@@ -468,6 +472,7 @@ def training(
                         try_save(gaussians, iteration, scene,"not-best")
 
 
+
                 # Densification
                 if iteration < opt.densify_until_iter and (
                     opt.densify_until_num_points < 0
@@ -532,6 +537,17 @@ def training(
                                 opt.densify_grad_t_threshold,
                             )
 
+                        # Spatio-temporal Gaussian pruning (paper Eq. 4-7)
+                        if (
+                            prune_short_timespan_iters
+                            and opt.prune_st_score_threshold > 0
+                            and gaussians.gaussian_dim == 4
+                        ):
+                            _prune_by_spatio_temporal_score(
+                                gaussians, scene, pipe, background, opt
+                            )
+
+
                     if iteration % opt.opacity_reset_interval == 0 or (
                         dataset.white_background and iteration == opt.densify_from_iter
                     ):
@@ -565,6 +581,8 @@ def training(
                     )
 
 
+
+
                 # Optimizer step
                 if iteration < opt.iterations:
                     gaussians.optimizer.step()
@@ -572,10 +590,81 @@ def training(
                     if pipe.env_map_res and iteration < pipe.env_optimize_until:
                         env_map_optimizer.step()
                         env_map_optimizer.zero_grad(set_to_none=True)
+
+    # Generate prefilter masks at end of training (including early stop via Ctrl+C)
+    if generate_prefilter_masks and gaussians.gaussian_dim == 4:
+        _save_prefilter_masks(gaussians, scene, dataset)
+
     if stop_iteration:
         print("\n[ITER {}] Saving checkpoint before exiting".format(iteration))
         try_save(gaussians, iteration, scene,name="resume")
         sys.exit(0)
+
+
+def _prune_by_spatio_temporal_score(gaussians, scene, pipe, background, opt):
+    """Compute spatio-temporal scores and prune low-scoring 4D Gaussians.
+
+    Spatial score (Eq. 4):  For each training view, render with compute_contrib=True
+        to obtain per-Gaussian pixel contributions (alpha * T summed over all pixels
+        in that view).  These are accumulated across all views then averaged.
+    Temporal score (Eq. 5-6):  Average marginal temporal weight over all unique
+        training timestamps.
+    Combined score (Eq. 7):  spatial_score * temporal_score.  Gaussians with
+        combined score < opt.prune_st_score_threshold are removed.
+    """
+    print("\n[ST-prune] Accumulating spatial contributions across all training views…")
+    train_cameras = scene.getTrainCameras()
+    P = gaussians.get_xyz.shape[0]
+    spatial_accum = torch.zeros(P, device="cuda")
+    num_views = 0
+
+    with torch.no_grad():
+        for gt_image, viewpoint_cam in train_cameras:
+            viewpoint_cam = viewpoint_cam.cuda()
+            render_pkg = render(viewpoint_cam, gaussians, pipe, background, compute_contrib=True)
+            contrib = render_pkg["gauss_contrib"]
+            if contrib.shape[0] == P:
+                spatial_accum += contrib
+            elif contrib.shape[0] > 0:
+                print(
+                    f"[ST-prune] Warning: gauss_contrib size {contrib.shape[0]} != "
+                    f"num_gaussians {P}; skipping this view's contributions."
+                )
+            num_views += 1
+
+    # Average over views so score is independent of dataset size
+    if num_views > 0:
+        spatial_accum /= num_views
+
+    # Unique timestamps for temporal score computation
+    timestamps = sorted(set(float(cam.timestamp) for _, cam in train_cameras))
+    gaussians.prune_by_spatio_temporal_score(
+        spatial_accum, timestamps, opt.prune_st_score_threshold
+    )
+
+
+def _save_prefilter_masks(gaussians, scene, dataset):
+    """Generate and save per-timestamp active Gaussian masks for prefiltering.
+
+    For each unique timestamp in the training cameras, computes a boolean mask of
+    which Gaussians have a marginal temporal weight above 0.05 (the threshold used
+    in the renderer). Saves the result to ``<model_path>/prefilter_masks.pt`` as a
+    dict mapping float timestamp to a boolean numpy array of shape (num_gaussians,).
+    """
+    print("\nGenerating prefilter masks for all training timestamps...")
+    train_cameras = scene.getTrainCameras()
+    # Collect unique timestamps from (gt_image, camera) pairs
+    timestamps = sorted(set(float(cam.timestamp) for _, cam in train_cameras))
+    masks = gaussians.generate_prefilter_masks(timestamps)
+    save_path = os.path.join(dataset.model_path, "prefilter_masks.pt")
+    torch.save(masks, save_path)
+    total_active = sum(int(m.sum()) for m in masks.values())
+    total_possible = len(timestamps) * gaussians.get_xyz.shape[0]
+    print(
+        f"[Prefilter masks] Saved {len(masks)} timestamp masks to {save_path} "
+        f"(avg {total_active / max(len(masks), 1):.0f}/{gaussians.get_xyz.shape[0]} "
+        f"active Gaussians per frame, {100.0 * total_active / max(total_possible, 1):.1f}% total)"
+    )
 
 
 def prepare_output_and_logger(args):
@@ -716,13 +805,13 @@ def training_report(
                     psnr_test += psnr(image, gt_image).mean().double()
                     ssim_test += ssim(image, gt_image).mean().double()
                     msssim_test += msssim(image[None].cpu(), gt_image[None].cpu())
-                psnr_test /= len(config["cameras"])
-                l1_test /= len(config["cameras"])
-                ssim_test /= len(config["cameras"])
-                msssim_test /= len(config["cameras"])
+                psnr_test /= len(config["range"])
+                l1_test /= len(config["range"])
+                ssim_test /= len(config["range"])
+                msssim_test /= len(config["range"])
                 print(
-                    "\n[ITER {}] Evaluating {}: L1 {} PSNR {}".format(
-                        iteration, config["name"], l1_test, psnr_test
+                    "\n[ITER {}] Evaluating {}[{}]: L1 {} PSNR {}".format(
+                        iteration, config["name"],len(config["cameras"]), l1_test, psnr_test
                     )
                 )
                 if tb_writer:
@@ -783,6 +872,21 @@ if __name__ == "__main__":
     parser.add_argument("--batch_size", type=int, default=1)
     parser.add_argument("--seed", type=int, default=6666)
     parser.add_argument("--exhaust_test", action="store_true")
+    parser.add_argument(
+        "--prune_short_timespan_iters",
+        nargs="+",
+        type=int,
+        default=[],
+        help="Iterations at which to prune 4D Gaussians by spatio-temporal score "
+             "(set threshold via --prune_st_score_threshold in OptimizationParams).",
+    )
+    parser.add_argument(
+        "--generate_prefilter_masks",
+        action="store_true",
+        default=False,
+        help="After training, generate per-timestamp active Gaussian masks and save "
+             "to <model_path>/prefilter_masks.pt.",
+    )
 
     args = parser.parse_args(sys.argv[1:])
     args.save_iterations.append(args.iterations)
@@ -823,7 +927,6 @@ if __name__ == "__main__":
     for arg in vars(args):
         print(f"  {arg}: {getattr(args, arg)}")
 
-
     try:
         training(
             lp.extract(args),
@@ -840,6 +943,8 @@ if __name__ == "__main__":
             args.rot_4d,
             args.force_sh_3d,
             args.batch_size,
+            prune_short_timespan_iters=args.prune_short_timespan_iters,
+            generate_prefilter_masks=args.generate_prefilter_masks,
         )
         # All done
         print("\nTraining complete.")

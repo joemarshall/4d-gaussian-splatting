@@ -15,6 +15,10 @@
 #include <cooperative_groups/reduce.h>
 namespace cg = cooperative_groups;
 
+// Minimum remaining transmittance below which pixel contribution is negligible
+// (mirrors the T < 0.0001 early-exit in the main rendering loop).
+static constexpr float CONTRIB_T_THRESHOLD = 0.0001f;
+
 // Forward method for converting the input spherical harmonics
 // coefficients of each Gaussian to a simple RGB color.
 __device__ glm::vec3 computeColorFromSH(int idx, int deg, int max_coeffs, const glm::vec3* means, glm::vec3 campos, const float* shs, bool* clamped)
@@ -514,7 +518,8 @@ renderCUDA(
 	const float* __restrict__ bg_color,
 	float* __restrict__ out_color,
 	float* __restrict__ out_flow,
-	float* __restrict__ out_depth)
+	float* __restrict__ out_depth,
+	float* __restrict__ gauss_contrib)
 {
 	// Identify current tile and associated min/max pixel range.
 	auto block = cg::this_thread_block();
@@ -623,6 +628,59 @@ renderCUDA(
 			out_flow[ch * H * W + pix_id] = Flow[ch];
 		out_depth[pix_id] = D;
 	}
+
+	// Optional second pass: accumulate per-Gaussian pixel contributions (front-to-back,
+	// same traversal order as the main render above) for spatio-temporal importance scoring.
+	// Each valid pixel atomically adds alpha*T for each Gaussian it processes into
+	// gauss_contrib[gaussian_id], which is later aggregated across all views.
+	if (gauss_contrib != nullptr)
+	{
+		float T_c = 1.0f;
+		bool done_c = !inside;
+		int toDo_c = range.y - range.x;
+
+		for (int i = 0; i < rounds; i++, toDo_c -= BLOCK_SIZE)
+		{
+			int num_done_c = __syncthreads_count(done_c);
+			if (num_done_c == BLOCK_SIZE)
+				break;
+
+			// Collectively fetch per-Gaussian data from global to shared memory
+			int progress = i * BLOCK_SIZE + block.thread_rank();
+			if (range.x + progress < range.y)
+			{
+				int coll_id = point_list[range.x + progress];
+				collected_id[block.thread_rank()] = coll_id;
+				collected_xy[block.thread_rank()] = points_xy_image[coll_id];
+				collected_conic_opacity[block.thread_rank()] = conic_opacity[coll_id];
+			}
+			block.sync();
+
+			for (int j = 0; !done_c && j < min(BLOCK_SIZE, toDo_c); j++)
+			{
+				float2 xy = collected_xy[j];
+				float2 d = { xy.x - pixf.x, xy.y - pixf.y };
+				float4 con_o = collected_conic_opacity[j];
+				float power = -0.5f * (con_o.x * d.x * d.x + con_o.z * d.y * d.y) - con_o.y * d.x * d.y;
+				if (power > 0.0f)
+					continue;
+
+				float alpha = min(0.99f, con_o.w * __expf(power));
+				if (alpha < 1.0f / 255.0f)
+					continue;
+
+				// Pixel contribution of this Gaussian: alpha * remaining transmittance
+				atomicAdd(&gauss_contrib[collected_id[j]], alpha * T_c);
+
+				T_c *= (1.0f - alpha);
+				// Early exit: pixel is effectively saturated, remaining Gaussians
+				// will have negligible contribution and can safely be skipped.
+				if (T_c < CONTRIB_T_THRESHOLD)
+					done_c = true;
+			}
+		}
+	}
+
 }
 
 void FORWARD::render(
@@ -640,7 +698,8 @@ void FORWARD::render(
 	const float* bg_color,
 	float* out_color,
 	float* out_flow,
-	float* out_depth)
+	float* out_depth,
+	float* gauss_contrib)
 {
 	renderCUDA<NUM_CHANNELS> << <grid, block >> > (
 		ranges,
@@ -656,7 +715,8 @@ void FORWARD::render(
 		bg_color,
 		out_color,
 		out_flow,
-		out_depth);
+		out_depth,
+		gauss_contrib);
 }
 
 void FORWARD::preprocess(int P, int D, int D_t, int M,
