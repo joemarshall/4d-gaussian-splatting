@@ -8,11 +8,13 @@
 #
 # For inquiries contact  george.drettakis@inria.fr
 #
-
+# MAKE IT LAUNCH THE VIEWER/ RENDERER in subprocess each 100 iterations or so
 import os
 import signal
 import random
 import torch
+import subprocess
+import threading
 from torch import nn
 from utils.loss_utils import l1_loss, ssim, msssim
 from gaussian_renderer import render
@@ -32,7 +34,20 @@ from omegaconf.dictconfig import DictConfig
 from torch.utils.data import DataLoader
 
 torch.set_float32_matmul_precision('high')
+#torch.backends.fp32_precision = "tf32"
 
+TRACK_MEMORY = False
+CLEAR_CACHE = False        
+
+if TRACK_MEMORY:
+    torch.cuda.memory._record_memory_history(
+        max_entries=1000000
+        )
+
+
+
+#from torch.utils.viz._cycles import warn_tensor_cycles
+#warn_tensor_cycles()
 
 try:
     from torch.utils.tensorboard import SummaryWriter
@@ -41,9 +56,25 @@ try:
 except ImportError:
     TENSORBOARD_FOUND = False
 
+def viewer_thread(args,name):
+    process = subprocess.run(args,capture_output=True,text=True)
+    if process.returncode ==0:
+        print(f"Written mp4 {name}")
+    else:
+        print(f"Error rendering video {name}: {process.stdout} {process.stderr}")
 
+
+def launch_viewer(args, name):
+   print("Render video in subprocess with args: {}".format(args))
+   threading.Thread(target=viewer_thread, args=(args,name),daemon=True).start()
+
+
+
+#@torch.compiler.set_stance("aot_eager_then_compile")
 @torch.compile
 def run_batch(batch_data, batch_size, gaussians, pipe, background, opt):
+
+    
     batch_point_grad = []
     batch_visibility_filter = []
     batch_radii = []
@@ -127,7 +158,7 @@ def run_batch(batch_data, batch_size, gaussians, pipe, background, opt):
         )
         batch_radii.append(radii)
         batch_visibility_filter.append(visibility_filter)
-
+    batch_viewspace_point_grad = None
     if batch_size > 1:
         visibility_count = torch.stack(batch_visibility_filter, 1).sum(1)
         visibility_filter = visibility_count > 0
@@ -149,13 +180,43 @@ def run_batch(batch_data, batch_size, gaussians, pipe, background, opt):
                 / visibility_count[visibility_filter]
             )
             batch_t_grad = batch_t_grad.unsqueeze(1)
+        return (Ll1, Lssim, loss, image, gt_image,visibility_filter,radii,batch_viewspace_point_grad,batch_t_grad,None)
     else:
         if gaussians.gaussian_dim == 4:
             batch_t_grad = gaussians._t.grad.clone().detach()
-    return (Ll1, Lssim, loss, image, gt_image,visibility_filter,radii,batch_viewspace_point_grad,batch_t_grad)
+        return (Ll1, Lssim, loss, image, gt_image,visibility_filter,radii,None,batch_t_grad,viewspace_point_tensor)
 
 def collate_fn(x):
     return x
+
+def try_save(gaussians, iteration, scene,name):
+    print("\n[ITER {}] Saving checkpoint ({} gaussians) [{}]".format(iteration,gaussians.get_xyz.shape[0], name))
+    try:
+        with torch.no_grad():
+            torch.save(
+                (gaussians.capture(), iteration),
+                scene.model_path + f"/chkpnt_{name}.pth",
+            )
+            # empty cache after save or bad things happen
+            if CLEAR_CACHE:
+                torch.cuda.empty_cache()
+                print("Saved and emptied cache")
+            else:
+                print("Saved")
+        # if name.startswith("iter"): 
+        #     # render a video of the output (in a subprocess)
+        #     mp4_path = f"training_{iteration}.mp4"
+        #     args = [ 
+        #         sys.executable,
+        #        "show_images.py",
+        #        scene.model_path,
+        #        "-f",mp4_path,
+        #        "-c","2,4,8",
+        #        "-r"]
+        #     launch_viewer(args, mp4_path)
+    except Exception as e:
+        print("Error during saving checkpoint:", e)
+
 
 def training(
     dataset,
@@ -207,16 +268,25 @@ def training(
             (x, x.stat().st_mtime)
             for x in Path(dataset.model_path).glob("chkpnt_*.pth")
         ]
-        if len(all_checkpoints) != 0:
-            checkpoint = max(all_checkpoints, key=lambda x: x[1])[0]
-            print("Loading latest checkpoint:", checkpoint)
-        else:
-            checkpoint = None
-            print("No latest checkpoint found in", dataset.model_path)
-
-    if checkpoint:
+        try_checkpoints = sorted(all_checkpoints, key=lambda x: x[1], reverse=True)
+        loaded = False
+        for checkpoint,mtime in try_checkpoints:
+            try:
+                (model_params, first_iter) = torch.load(checkpoint, weights_only=False)
+                gaussians.restore(model_params, opt)
+                model_params = None
+                print(f"Loaded checkpoint {checkpoint} modified at {mtime}")
+                break
+            except RuntimeError as e:
+                print(f"Error loading checkpoint {checkpoint}: {e}")
+                continue
+    elif checkpoint is not None:
         (model_params, first_iter) = torch.load(checkpoint, weights_only=False)
         gaussians.restore(model_params, opt)
+        model_params = None
+        
+
+
 
     bg_color = [1, 1, 1] if dataset.white_background else [0, 0, 0]
     background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
@@ -256,12 +326,30 @@ def training(
     gaussians.env_map = env_map
 
     training_dataset = scene.getTrainCameras()
-    print(len(training_dataset))
+
+    # estimate rough number of num workers based on initial point count to avoid OOM when loading things for large scenes
+    initial_size = gaussians.get_xyz.shape[0]
+
+    # if initial_size> 100_000:
+    #     print(f"Initial point count {initial_size} is large, setting num_workers to 0 to avoid OOM")
+    #     num_workers = 0;
+    # else:
+    #     # estimate 100000 points can run 10 workers
+    #     # > 100000 points < 10 workers
+    #     num_workers = int((100000/ initial_size) * 10)
+    #     num_workers = min(os.cpu_count(), num_workers)
+    #     num_workers = min(8, num_workers)
+    #     print(f"Setting num_workers to {num_workers} based on initial point count {initial_size}")
+    # loading time doesn't seem to dominate at least on my PC
+    # so there's little point in worker threads
+    num_workers = 0
+
     training_dataloader = DataLoader(
         training_dataset,
         batch_size=batch_size,
         shuffle=True,
-        num_workers=12 if dataset.dataloader else 0,
+#        num_workers=2 if dataset.dataloader else 0,
+        num_workers=num_workers,
         collate_fn=collate_fn, # don't make a lambda as isn't pickleable for num_workers>0
         drop_last=True,
     )
@@ -277,8 +365,10 @@ def training(
     # Set the signal handler
     signal.signal(signal.SIGINT, stop_handler)
 
+
     iteration = first_iter
     while not stop_iteration and iteration < opt.iterations + 1:
+
         for batch_data in training_dataloader:
             iteration += 1
             if iteration > opt.iterations:
@@ -297,9 +387,9 @@ def training(
             else:
                 pipe.debug = False
                 
+            
 
-
-            Ll1, Lssim, loss, image, gt_image,visibility_filter,radii,batch_viewspace_point_grad,batch_t_grad = run_batch(
+            Ll1, Lssim, loss, image, gt_image,visibility_filter,radii,batch_viewspace_point_grad,batch_t_grad,viewspace_point_tensor = run_batch(
                 batch_data, batch_size, gaussians, pipe, background, opt
             )
             loss_dict = {"Ll1": Ll1, "Lssim": Lssim}
@@ -364,25 +454,15 @@ def training(
                     (pipe, background),
                     loss_dict,
                 )
-                if iteration in testing_iterations:
+                if iteration in saving_iterations:
+                    try_save(gaussians, iteration, scene,f"iter_{iteration}")
+                elif iteration in testing_iterations:
                     if test_psnr >= best_psnr:
                         best_psnr = test_psnr
-                        print("\n[ITER {}] Saving best checkpoint".format(iteration))
-                        torch.save(
-                            (gaussians.capture(), iteration),
-                            scene.model_path + "/chkpnt_best.pth",
-                        )
+                        try_save(gaussians, iteration, scene,"best")
                     else:
-                        print(
-                            "\n[ITER {}] Saving not best checkpoint".format(iteration)
-                        )
-                        torch.save(
-                            (gaussians.capture(), iteration),
-                            scene.model_path + f"/chkpnt_{iteration}.pth",
-                        )
-                if iteration in saving_iterations:
-                    print("\n[ITER {}] Saving Gaussians".format(iteration))
-                    scene.save(iteration)
+                        try_save(gaussians, iteration, scene,"not-best")
+
 
                 # Spatio-temporal Gaussian pruning (paper Eq. 4-7)
                 if (
@@ -400,6 +480,10 @@ def training(
                     opt.densify_until_num_points < 0
                     or gaussians.get_xyz.shape[0] < opt.densify_until_num_points
                 ):
+                    if TRACK_MEMORY:
+                        torch.cuda.memory._dump_snapshot(f"temp.pickle")
+
+#                    print(f"[ITER {iteration}] Densifying Gaussians: {gaussians.get_xyz.shape[0]}")
                     # Keep track of max radii in image-space for pruning
                     gaussians.max_radii2D[visibility_filter] = torch.max(
                         gaussians.max_radii2D[visibility_filter],
@@ -437,6 +521,12 @@ def training(
                         dataset.white_background and iteration == opt.densify_from_iter
                     ):
                         gaussians.reset_opacity()
+                    
+                    if CLEAR_CACHE:
+                        torch.cuda.empty_cache()
+                    if TRACK_MEMORY:
+                        torch.cuda.memory._dump_snapshot(f"temp.pickle")
+
 
                 # Optimizer step
                 if iteration < opt.iterations:
@@ -452,9 +542,7 @@ def training(
 
     if stop_iteration:
         print("\n[ITER {}] Saving checkpoint before exiting".format(iteration))
-        torch.save(
-            (gaussians.capture(), iteration), scene.model_path + "/chkpnt_resume.pth"
-        )
+        try_save(gaussians, iteration, scene,name="resume")
         sys.exit(0)
 
 
@@ -689,7 +777,8 @@ def training_report(
                 if config["name"] == "test":
                     psnr_test_iter = psnr_test.item()
 
-    torch.cuda.empty_cache()
+    if CLEAR_CACHE:
+        torch.cuda.empty_cache()
     return psnr_test_iter
 
 
@@ -714,10 +803,10 @@ if __name__ == "__main__":
         "--test_iterations", nargs="+", type=int, default=[7_000, 30_000]
     )
     parser.add_argument(
-        "--save_iterations", nargs="+", type=int, default=[7_000, 30_000]
+        "--save_iterations", nargs="+", type=int, default=[]
     )
     parser.add_argument("--quiet", action="store_true")
-    parser.add_argument("--start_checkpoint", type=str, default=None)
+    parser.add_argument("--start_checkpoint", type=str, default="auto_latest")
 
     parser.add_argument("--gaussian_dim", type=int, default=3)
     parser.add_argument("--time_duration", nargs=2, type=float, default=[-0.5, 0.5])
@@ -762,6 +851,9 @@ if __name__ == "__main__":
 
     if args.exhaust_test:
         args.test_iterations = args.test_iterations + [
+            i for i in range(0, op.iterations, 100)
+        ]
+        args.save_iterations =  [
             i for i in range(0, op.iterations, 500)
         ]
 
@@ -780,24 +872,30 @@ if __name__ == "__main__":
     for arg in vars(args):
         print(f"  {arg}: {getattr(args, arg)}")
 
-    training(
-        lp.extract(args),
-        op.extract(args),
-        pp.extract(args),
-        args.test_iterations,
-        args.save_iterations,
-        args.start_checkpoint,
-        args.debug_from,
-        args.gaussian_dim,
-        args.time_duration,
-        args.num_pts,
-        args.num_pts_ratio,
-        args.rot_4d,
-        args.force_sh_3d,
-        args.batch_size,
-        prune_short_timespan_iters=args.prune_short_timespan_iters,
-        generate_prefilter_masks=args.generate_prefilter_masks,
-    )
+    try:
+        training(
+            lp.extract(args),
+            op.extract(args),
+            pp.extract(args),
+            args.test_iterations,
+            args.save_iterations,
+            args.start_checkpoint,
+            args.debug_from,
+            args.gaussian_dim,
+            args.time_duration,
+            args.num_pts,
+            args.num_pts_ratio,
+            args.rot_4d,
+            args.force_sh_3d,
+            args.batch_size,
+            prune_short_timespan_iters=args.prune_short_timespan_iters,
+            generate_prefilter_masks=args.generate_prefilter_masks,
+        )
+        # All done
+        print("\nTraining complete.")
+    except torch.OutOfMemoryError as e:
+        print("CUDA Out of Memory error during training: {}".format(e))
+    finally:
+        if TRACK_MEMORY:
+            torch.cuda.memory._dump_snapshot(f"temp.pickle")
 
-    # All done
-    print("\nTraining complete.")
