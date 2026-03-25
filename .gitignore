@@ -23,3 +23,9 @@ eggs/
 *.sh
 *.pt
 *.deb
+*.pdb
+*.o
+*.obj
+
+logs/
+results/

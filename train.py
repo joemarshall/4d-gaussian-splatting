@@ -212,7 +212,9 @@ def try_save(gaussians, iteration, scene,name):
         #        "-r"]
         #     launch_viewer(args, mp4_path)
     except Exception as e:
-        print("Error during saving checkpoint:", e)
+        import traceback
+        print("Error saving checkpoint:")
+        traceback.print_exc(e)
 
 
 def training(
