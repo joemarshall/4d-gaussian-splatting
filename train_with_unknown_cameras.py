@@ -798,7 +798,8 @@ OptimizationParams:
   position_lr_final: 0.0000016
   position_lr_delay_mult: 0.01
   position_lr_max_steps: 30_000
-  feature_lr: 0.0025
+  lowfeature_lr: 0.0025
+  highfeature_lr: 0.005
   opacity_lr: 0.05
   scaling_lr: 0.005
   rotation_lr: 0.001

@@ -19,10 +19,14 @@ import os
 from torch.utils.cpp_extension import load
 
 _parent_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "diff-gaussian-rasterization-fastgs")
-_glm_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "diff-gaussian-rasterization", "third_party", "glm")
+_glm_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "diff-gaussian-rasterization-fastgs", "third_party", "glm")
+torch_include_dir = os.path.join(os.getenv("CONDA_PREFIX"), "Library", "include", "torch", "csrc", "api", "include")
+torch_lib_dir = os.path.join(os.getenv("CONDA_PREFIX"), "Library", "lib")
 _C = load(
     name='diff_gaussian_rasterization_fastgs',
-    extra_cuda_cflags=["-I " + _glm_dir, "-g"],
+    extra_cflags=["-I " + _glm_dir, "-I" + torch_include_dir, "-g"],
+    extra_cuda_cflags=["-I " + _glm_dir, "-I" + torch_include_dir, "-g"],
+    extra_ldflags=["-L " + torch_lib_dir],
     sources=[
         os.path.join(_parent_dir, "cuda_rasterizer/rasterizer_impl.cu"),
         os.path.join(_parent_dir, "cuda_rasterizer/forward.cu"),
@@ -131,6 +135,7 @@ class _RasterizeGaussiansFastGS(torch.autograd.Function):
         if raster_settings.debug:
             cpu_args = cpu_deep_copy_tuple(args)
             try:
+                torch.save(cpu_args, "snapshot_fw_fastgs.dump")
                 num_rendered, num_buckets, color, radii, geomBuffer, binningBuffer, imgBuffer, sampleBuffer, metricCount = _C.rasterize_gaussians(*args)
             except Exception as ex:
                 torch.save(cpu_args, "snapshot_fw_fastgs.dump")

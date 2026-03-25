@@ -12,25 +12,42 @@ import random
 import torch
 from gaussian_renderer import render_fastgs
 from .loss_utils import l1_loss
+import numpy as np
 
 
-def sampling_cameras(viewpoint_stack, num_cams=10):
-    """Randomly sample cameras from the viewpoint stack (sampling without replacement).
+def sampling_cameras(viewpoint_stack, num_cams=10,dimensions = 3):
+    """Randomly sample cameras from the viewpoint stack and copy.
 
     Args:
-        viewpoint_stack (list): mutable list of camera objects.  Sampled cameras
-            are **removed** from the list in-place.
+        viewpoint_stack (list): list of camera objects.  
         num_cams (int): number of cameras to sample (default 10).
 
     Returns:
         list: sampled camera objects.
     """
-    num_cams = min(num_cams, len(viewpoint_stack))
     camlist = []
-    for _ in range(num_cams):
-        loc = random.randint(0, len(viewpoint_stack) - 1)
-        camlist.append(viewpoint_stack.pop(loc))
+    if dimensions==3:
+        num_cams = min(num_cams, len(viewpoint_stack))
+        indices = np.random.permutation(len(viewpoint_stack))
+        for i in indices[:num_cams]:
+            camlist.append(viewpoint_stack[i])
+    else:
+        # 4d gaussians - sample frames from the same time point
+        # to get candidates for pruning and densification etc.
+        # as multi-view error doesn't make so much sense otherwise
+        # n.b. if num_cams > a single frame then multiple frames will be
+        # sampled
+        frames = viewpoint_stack.get_timestamps()
+        ts = np.random.choice(frames,10)
+        while len(camlist) < num_cams and len(ts)>0:
+            timestamp = ts[0]
+            ts = ts[1:]
+            num_left = num_cams - len(camlist)
+            indices = viewpoint_stack.get_indices_for_timestamp(timestamp)
+            for i in indices[:num_left]:
+                camlist.append( viewpoint_stack[i])
     return camlist
+
 
 
 def _get_loss_map(render_image, gt_image):
@@ -94,27 +111,35 @@ def compute_gaussian_score_fastgs(camlist, gaussians, pipe, bg, args, DENSIFY=Fa
             * **pruning_score** (*Tensor*): per-Gaussian score in [0, 1] used to
               prioritise pruning (higher → worse multi-view consistency).
     """
+    print("Computing FastGS scores with cameras:")
+    print("*************************************")
+    for x in camlist:
+        print(x[1].image_name)
     full_metric_counts = None
     full_metric_score = None
+    print("*************************************")
 
     # Read FastGS parameters with fallbacks for backward compatibility.
     fastgs_mult = getattr(args, 'fastgs_mult', getattr(args, 'mult', 0.5))
     loss_thresh = getattr(args, 'fastgs_loss_thresh', getattr(args, 'loss_thresh', 0.1))
 
     for view in range(len(camlist)):
-        viewpoint_cam = camlist[view]
+        gt_image,viewpoint_cam = camlist[view]
+        viewpoint_cam=viewpoint_cam.cuda()
+        gt_image=gt_image.detach()
+
 
         # First render: get the rendered image and the plain photometric loss.
         render_pkg = render_fastgs(viewpoint_cam, gaussians, pipe, bg, fastgs_mult)
         render_image = render_pkg["render"]
 
-        gt_image = viewpoint_cam.original_image.cuda()
-        photometric_loss = _compute_photometric_loss(viewpoint_cam, render_image)
+        gt_image = gt_image.cuda()
+
+        photometric_loss =l1_loss(gt_image,render_image)
 
         # Build binary metric map: 1 where per-pixel error exceeds threshold.
         l1_norm = _get_loss_map(render_image, gt_image)
         metric_map = (l1_norm > loss_thresh).to(torch.int32)
-
         # Second render: accumulate per-Gaussian metric counts via get_flag.
         render_pkg2 = render_fastgs(
             viewpoint_cam, gaussians, pipe, bg, fastgs_mult,

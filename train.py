@@ -9,6 +9,7 @@
 # For inquiries contact  george.drettakis@inria.fr
 #
 # MAKE IT LAUNCH THE VIEWER/ RENDERER in subprocess each 100 iterations or so# MAKE IT LAUNCH THE VIEWER/ RENDERER in subprocess each 100 iterations or so
+from datetime import datetime
 import os
 import signal
 import random
@@ -78,8 +79,7 @@ def launch_viewer(args, name):
 
 
 
-#@torch.compiler.set_stance("aot_eager_then_compile")
-@torch.compile
+#@torch.compile
 def run_batch(batch_data, batch_size, gaussians, pipe, background, opt):
 
     
@@ -100,25 +100,14 @@ def run_batch(batch_data, batch_size, gaussians, pipe, background, opt):
             render_pkg["visibility_filter"],
             render_pkg["radii"],
         )
-        depth = render_pkg["depth"]
-        alpha = render_pkg["alpha"]
+        # depth and alpha are not returned by the new renderer
 
         # Loss
         Ll1 = l1_loss(image, gt_image)
         Lssim = 1.0 - ssim(image, gt_image)
         loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * Lssim
 
-        ###### opa mask Loss ######
-        if opt.lambda_opa_mask > 0:
-            o = alpha.clamp(1e-6, 1 - 1e-6)
-            sky = 1 - viewpoint_cam.gt_alpha_mask
-
-            Lopa_mask = (-sky * torch.log(1 - o)).mean()
-
-            # lambda_opa_mask = opt.lambda_opa_mask * (1 - 0.99 * min(1, iteration/opt.iterations))
-            lambda_opa_mask = opt.lambda_opa_mask
-            loss = loss + lambda_opa_mask * Lopa_mask
-        ###### opa mask Loss ######
+        # Opa mask loss removed: requires alpha, which is not returned by the new renderer
 
         ###### rigid loss ######
         if opt.lambda_rigid > 0:
@@ -327,7 +316,7 @@ def training(
                 device="cuda",
             ).requires_grad_(True)
         )
-        env_map_optimizer = torch.optim.Adam([env_map], lr=opt.feature_lr, eps=1e-15)
+        env_map_optimizer = torch.optim.Adam([env_map], lr=opt.lowfeature_lr, eps=1e-15)
     else:
         env_map = None
 
@@ -475,9 +464,9 @@ def training(
 
                 # Densification
                 if iteration < opt.densify_until_iter and (
-                    opt.densify_until_num_points < 0
-                    or gaussians.get_xyz.shape[0] < opt.densify_until_num_points
-                ):
+                     opt.densify_until_num_points < 0
+                     or gaussians.get_xyz.shape[0] < opt.densify_until_num_points
+                 ):
                     if TRACK_MEMORY:
                         torch.cuda.memory._dump_snapshot(f"temp.pickle")
 
@@ -514,8 +503,8 @@ def training(
                         if use_fastgs:
                             mult = getattr(opt, 'fastgs_mult', 0.5)
                             num_cams = getattr(opt, 'fastgs_num_sample_cams', 10)
-                            my_viewpoint_stack = scene.getTrainCameras().copy()
-                            camlist = sampling_cameras(my_viewpoint_stack, num_cams)
+                            my_viewpoint_stack = scene.getTrainCameras()
+                            camlist = sampling_cameras(my_viewpoint_stack, num_cams,dimensions=4)
                             importance_score, pruning_score = compute_gaussian_score_fastgs(
                                 camlist, gaussians, pipe, background, opt, DENSIFY=True
                             )
@@ -537,15 +526,15 @@ def training(
                                 opt.densify_grad_t_threshold,
                             )
 
-                        # Spatio-temporal Gaussian pruning (paper Eq. 4-7)
-                        if (
-                            prune_short_timespan_iters
-                            and opt.prune_st_score_threshold > 0
-                            and gaussians.gaussian_dim == 4
-                        ):
-                            _prune_by_spatio_temporal_score(
-                                gaussians, scene, pipe, background, opt
-                            )
+                        # # Spatio-temporal Gaussian pruning (paper Eq. 4-7)
+                        # if (
+                        #     prune_short_timespan_iters
+                        #     and opt.prune_st_score_threshold > 0
+                        #     and gaussians.gaussian_dim == 4
+                        # ):
+                        #     _prune_by_spatio_temporal_score(
+                        #         gaussians, scene, pipe, background, opt
+                        #     )
 
 
                     if iteration % opt.opacity_reset_interval == 0 or (
@@ -570,7 +559,7 @@ def training(
                 ):
                     mult = getattr(opt, 'fastgs_mult', 0.5)
                     num_cams = getattr(opt, 'fastgs_num_sample_cams', 10)
-                    my_viewpoint_stack = scene.getTrainCameras().copy()
+                    my_viewpoint_stack = scene.getTrainCameras()
                     camlist = sampling_cameras(my_viewpoint_stack, num_cams)
                     _, pruning_score = compute_gaussian_score_fastgs(
                         camlist, gaussians, pipe, background, opt
@@ -580,13 +569,9 @@ def training(
                         pruning_score=pruning_score,
                     )
 
-
-
-
                 # Optimizer step
                 if iteration < opt.iterations:
-                    gaussians.optimizer.step()
-                    gaussians.optimizer.zero_grad(set_to_none=True)
+                    gaussians.optimizer_step(iteration,radii=radii)
                     if pipe.env_map_res and iteration < pipe.env_optimize_until:
                         env_map_optimizer.step()
                         env_map_optimizer.zero_grad(set_to_none=True)
@@ -789,10 +774,9 @@ def training_report(
                     render_pkg = renderFunc(viewpoint, scene.gaussians, *renderArgs)
                     image = torch.clamp(render_pkg["render"], 0.0, 1.0)
 
-                    depth = easy_cmap(render_pkg["depth"][0])
-                    alpha = torch.clamp(render_pkg["alpha"], 0.0, 1.0).repeat(3, 1, 1)
+                    # depth and alpha are not returned by the new renderer, so skip visualization
                     if tb_writer and (idx < 5):
-                        grid = [gt_image, image, alpha, depth]
+                        grid = [gt_image, image]
                         grid = make_grid(grid, nrow=2)
                         tb_writer.add_images(
                             config["name"]
@@ -872,6 +856,7 @@ if __name__ == "__main__":
     parser.add_argument("--batch_size", type=int, default=1)
     parser.add_argument("--seed", type=int, default=6666)
     parser.add_argument("--exhaust_test", action="store_true")
+    parser.add_argument("--logpath", type=str, default="")
     parser.add_argument(
         "--prune_short_timespan_iters",
         nargs="+",
@@ -891,6 +876,24 @@ if __name__ == "__main__":
     args = parser.parse_args(sys.argv[1:])
     args.save_iterations.append(args.iterations)
 
+    if args.logpath:
+        os.makedirs(args.logpath, exist_ok=True)
+        log_file = os.path.join(args.logpath, f"train_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt")
+        class BothWriter:
+            def __init__(self,stdout,logfile):
+                self.stdout = stdout
+                self.logfile = logfile
+            def write(self, message):
+                self.stdout.write(message)
+                self.logfile.write(message)
+            def flush(self):
+                self.stdout.flush()
+                self.logfile.flush()
+
+        sys.stdout = BothWriter(sys.stdout, open(log_file, "w"))
+        print(f"Logging to {log_file}")
+
+
     cfg = OmegaConf.load(args.config)
 
     def recursive_merge(key, host):
@@ -906,7 +909,7 @@ if __name__ == "__main__":
 
     if args.exhaust_test:
         args.test_iterations = args.test_iterations + [
-            i for i in range(0, op.iterations, 100)
+            i for i in range(0, op.iterations, 500)
         ]
         args.save_iterations =  [
             i for i in range(0, op.iterations, 500)
