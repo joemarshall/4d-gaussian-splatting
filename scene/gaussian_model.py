@@ -189,6 +189,7 @@ class GaussianModel:
             if isinstance(var, torch.Tensor):
                 return var
             elif isinstance(var, torch.optim.Optimizer):
+                print("Saving optimizer state for ", var_name)
                 return var.state_dict()
             else:
                 return var
@@ -439,13 +440,13 @@ class GaussianModel:
                 stored_state["exp_avg"] = torch.zeros_like(tensor)
                 stored_state["exp_avg_sq"] = torch.zeros_like(tensor)
 
-#                del self.optimizer.state[group['params'][0]]
+                del self.optimizer.state[group['params'][0]]
                 group["params"][0] = nn.Parameter(tensor.requires_grad_(True))
                 self.optimizer.state[group['params'][0]] = stored_state
 
                 optimizable_tensors[group["name"]] = group["params"][0]
         return optimizable_tensors
-
+    
     def _prune_optimizer_single_tensor(self, mask,name):
         retval = None
         for group in self.optimizer.param_groups:
