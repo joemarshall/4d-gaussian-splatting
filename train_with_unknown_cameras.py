@@ -786,7 +786,7 @@ PipelineParams:
   convert_SHs_python: False
   compute_cov3D_python: False
   debug: False
-  env_map_res: 500
+  env_map_res: 0
   env_optimize_until: 5000
   env_optimize_from: 0
   eval_shfs_4d: True
@@ -806,7 +806,7 @@ OptimizationParams:
   percent_dense: 0.01
   lambda_dssim: 0.2
   thresh_opa_prune: 0.005
-  densification_interval: 100
+  densification_interval: 200
   opacity_reset_interval: 3000
   densify_from_iter: 500
   densify_until_iter: 15_000
@@ -818,5 +818,8 @@ OptimizationParams:
   lambda_opa_mask: 0.0
   lambda_rigid: 0.0
   lambda_motion: 0.0
+  prune_st_score_threshold: 0.01
+  fastgs_num_sample_cams: 100
+  fastgs_final_prune_from_iter: 20_000  
 """.replace("\\", "\\\\")
 (args.output_folder / "config.yaml").write_text(train_file_data)

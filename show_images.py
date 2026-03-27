@@ -297,6 +297,8 @@ try:
             gaussians = GaussianModel(model.sh_degree, gaussian_dim=4, rot_4d=True)
             scene = Scene(model, gaussians, shuffle=False)
 
+            print(f"Loaded model, {len(gaussians.get_xyz)} gaussians")
+
             bg_color = [1, 1, 1] if model.white_background else [0, 0, 0]
             background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
 
@@ -308,7 +310,6 @@ try:
                 camera_sets.append(("train", scene.getTrainCameras()))
             # if multiple cameras are given, render frames from the first camera,
             # but lerp the position
-            print("BOO")
             master_camera = None
             other_cameras =[]
             if len(args.render_camera) > 0:
@@ -324,7 +325,6 @@ try:
                 if master_camera is not None:
                     cameras.set_names_only(True)
                     for x in cameras:
-                        print("Cam:",x[1])
                         camera_id, frame_id = camera_id_and_frame_from_path(x[1].image_name)
                         if camera_id == master_camera:
                             filtered_cameras.append((name,x))
@@ -336,7 +336,6 @@ try:
                 else:
                     for x in cameras:
                         filtered_cameras.append((name,x))
-            print("WOO")
             if master_camera is not None and len(other_cameras)>0:
                 print(f"Rendering with master camera {master_camera} and lerping to other cameras {other_cameras}")
                 lerped_cameras = []

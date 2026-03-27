@@ -43,8 +43,8 @@ from torch.utils.data import DataLoader
 # torch.use_deterministic_algorithms(True)
 # torch.utils.deterministic.fill_uninitialized_memory=True
 
-#torch.set_float32_matmul_precision('high')
-#torch.backends.fp32_precision = "tf32"
+torch.set_float32_matmul_precision('high')
+torch.backends.fp32_precision = "tf32"
 torch._dynamo.config.force_parameter_static_shapes = False 
 
 
@@ -82,9 +82,8 @@ def launch_viewer(args, name):
 
 
 
-#@torch.compile
+@torch.compile
 def run_batch(batch_data, batch_size, gaussians, pipe, background, opt):
-
     
     batch_point_grad = []
     batch_visibility_filter = []
