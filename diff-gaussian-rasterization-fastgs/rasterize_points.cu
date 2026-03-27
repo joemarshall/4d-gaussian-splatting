@@ -24,11 +24,41 @@
 #include <fstream>
 #include <string>
 #include <functional>
+#include <assert.h>
+
+class ResizingTensorFunctionHolder
+{
+public:
+	std::function<char*(size_t N)> get_fn()
+	{
+		auto lambda = [this](size_t N) {
+			this->tensor.resize_({(long long)N});
+			this->contiguous_tensor = this->tensor.contiguous();
+			auto rval = reinterpret_cast<char*>(this->contiguous_tensor.data_ptr());
+			CHECK_AND_THROW_ERROR(rval != nullptr, "Error: Failed to resize tensor and get data pointer. This shouldn't happen.");
+//			cudaMemset(rval, 0x7e, N);
+			return rval;
+		};
+		return lambda;
+	}
+
+	ResizingTensorFunctionHolder(torch::Tensor& t):tensor(t)
+	{
+
+	}
+
+	
+	torch::Tensor &tensor;
+	torch::Tensor contiguous_tensor;
+};
 
 std::function<char*(size_t N)> resizeFunctional(torch::Tensor& t) {
     auto lambda = [&t](size_t N) {
-        t.resize_({(long long)N});
-		return reinterpret_cast<char*>(t.contiguous().data_ptr());
+        t.resize_({(long long)N},torch::MemoryFormat::Contiguous);
+		auto rval = reinterpret_cast<char*>(t.contiguous().data_ptr());
+		CHECK_AND_THROW_ERROR(rval != nullptr, "Error: Failed to resize tensor and get data pointer. This shouldn't happen.");
+		//cudaMemset(rval, 0, N);
+		return rval;
     };
     return lambda;
 }
@@ -36,7 +66,9 @@ std::function<char*(size_t N)> resizeFunctional(torch::Tensor& t) {
 std::function<int*(size_t N)> resizeIntFunctional(torch::Tensor& t) {
     auto lambda = [&t](size_t N) {
         t.resize_({(long long)N});
-		return t.contiguous().data_ptr<int>();
+		auto rval = t.contiguous().data_ptr<int>();
+		CHECK_AND_THROW_ERROR(rval != nullptr, "Error: Failed to resize tensor and get data pointer. This shouldn't happen.");
+		return rval;
     };
     return lambda;
 }
@@ -44,7 +76,9 @@ std::function<int*(size_t N)> resizeIntFunctional(torch::Tensor& t) {
 std::function<float*(size_t N)> resizeFloatFunctional(torch::Tensor& t) {
     auto lambda = [&t](size_t N) {
         t.resize_({(long long)N});
-		return t.contiguous().data_ptr<float>();
+		auto rval = t.contiguous().data_ptr<float>();
+		CHECK_AND_THROW_ERROR(rval != nullptr, "Error: Failed to resize tensor and get data pointer. This shouldn't happen.");
+		return rval;
     };
     return lambda;
 }
@@ -86,7 +120,7 @@ RasterizeGaussiansCUDA(
   auto int_opts = means3D.options().dtype(torch::kInt32);
   auto float_opts = means3D.options().dtype(torch::kFloat32);
 
-  torch::Tensor out_color = torch::full({NUM_CHAFFELS, H, W}, 0.0, float_opts);
+  torch::Tensor out_color = torch::full({NUM_CHANNELS_4DGS, H, W}, 0.0, float_opts);
   torch::Tensor radii = torch::full({P}, 0, means3D.options().dtype(torch::kInt32));
   
   torch::Device device(torch::kCUDA);
@@ -95,10 +129,10 @@ RasterizeGaussiansCUDA(
   torch::Tensor binningBuffer = torch::empty({0}, options.device(device));
   torch::Tensor imgBuffer = torch::empty({0}, options.device(device));
   torch::Tensor sampleBuffer = torch::empty({0}, options.device(device));
-  std::function<char*(size_t)> geomFunc = resizeFunctional(geomBuffer);
-  std::function<char*(size_t)> binningFunc = resizeFunctional(binningBuffer);
-  std::function<char*(size_t)> imgFunc = resizeFunctional(imgBuffer);
-  std::function<char*(size_t)> sampleFunc = resizeFunctional(sampleBuffer);
+  ResizingTensorFunctionHolder geomFunc = ResizingTensorFunctionHolder(geomBuffer);
+  ResizingTensorFunctionHolder binningFunc = ResizingTensorFunctionHolder(binningBuffer);
+  ResizingTensorFunctionHolder imgFunc = ResizingTensorFunctionHolder(imgBuffer);
+  ResizingTensorFunctionHolder sampleFunc = ResizingTensorFunctionHolder(sampleBuffer);
 
   int* accum_metric_counts_ptr = nullptr;
 
@@ -121,10 +155,10 @@ RasterizeGaussiansCUDA(
       }
 
 	  auto tup = CudaRasterizer::Rasterizer::forward(
-	    geomFunc,
-		binningFunc,
-		imgFunc,
-		sampleFunc,
+	    geomFunc.get_fn(),
+		binningFunc.get_fn(),
+		imgFunc.get_fn(),
+		sampleFunc.get_fn(),
 	    P, degree, M,
 		background.contiguous().data<float>(),
 		W, H,
@@ -154,6 +188,7 @@ RasterizeGaussiansCUDA(
 		rendered = std::get<0>(tup);
 		num_buckets = std::get<1>(tup);
   }
+  assert(cudaDeviceSynchronize() == cudaSuccess);
   return std::make_tuple(rendered, num_buckets, out_color, radii, geomBuffer, binningBuffer, imgBuffer, sampleBuffer, metricCount);
 }
 
@@ -193,10 +228,11 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Te
   {	
 	M = sh.size(1);
   }
+  
 
   torch::Tensor dL_dmeans3D = torch::zeros({P, 3}, means3D.options());
   torch::Tensor dL_dmeans2D = torch::zeros({P, 4}, means3D.options());  // abs
-  torch::Tensor dL_dcolors = torch::zeros({P, NUM_CHAFFELS}, means3D.options());
+  torch::Tensor dL_dcolors = torch::zeros({P, NUM_CHANNELS_4DGS}, means3D.options());
   torch::Tensor dL_dconic = torch::zeros({P, 2, 2}, means3D.options());
   torch::Tensor dL_dopacity = torch::zeros({P, 1}, means3D.options());
   torch::Tensor dL_dcov3D = torch::zeros({P, 6}, means3D.options());
@@ -241,7 +277,7 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Te
 	  dL_drotations.contiguous().data<float>(),
 	  debug);
   }
-
+  assert(cudaDeviceSynchronize() == cudaSuccess);
   return std::make_tuple(dL_dmeans2D, dL_dcolors, dL_dopacity, dL_dmeans3D, dL_dcov3D, dL_ddc, dL_dsh, dL_dscales, dL_drotations);
 }
 

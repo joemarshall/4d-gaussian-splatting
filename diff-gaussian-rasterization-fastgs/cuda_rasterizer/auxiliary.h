@@ -18,6 +18,11 @@
 #include "config.h"
 #include "stdio.h"
 #include <stdint.h>
+#include <stdexcept>
+
+#include "rasterizer.h"
+
+#include "c10/util/Exception.h"
 
 #define BLOCK_SIZE (BLOCK_X * BLOCK_Y)
 #define NUM_WARPS (BLOCK_SIZE/32)
@@ -209,6 +214,7 @@ __device__ inline uint32_t processTiles(
     uint32_t* gaussian_values_unsorted
     )
 {
+    const uint32_t off_start =off;
 
     // ---- AccuTile Code ---- //
 
@@ -278,7 +284,6 @@ __device__ inline uint32_t processTiles(
         } else {
           ellipse_max = max(intersect_min_line.y, intersect_max_line.y);
         }
-
         // Convert ellipse_min/ellipse_max to tiles touched
         // First map back to tile coordinates, then subtract.
         int min_tile_v = max(rect_min.y,
@@ -305,6 +310,7 @@ __device__ inline uint32_t processTiles(
             gaussian_keys_unsorted[off] = key;
             gaussian_values_unsorted[off] = idx;
             off++;
+            CHECK_AND_THROW_ERROR_DEVICE(off - off_start <= tiles_count, "Error: More tiles processed than expected. This shouldn't happen."); // Sanity check to ensure we don't write out of bounds
           }
         }
         // Max line of this tile slice will be min lin of next tile slice

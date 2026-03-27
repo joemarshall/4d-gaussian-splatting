@@ -14,6 +14,18 @@
 
 #include <vector>
 #include <functional>
+#include "assert.h"
+#define CHECK_AND_THROW_ERROR(__value,__msg) \
+ if (!(__value)) { \
+     AT_ERROR(__msg); \
+ }
+
+#define CHECK_AND_THROW_ERROR_DEVICE(__value,__msg) \
+ if (!(__value)) { \
+    printf("\n[CUDA ERROR] in %s\nLine %d: %s\n", __FILE__, __LINE__, __msg); \
+     assert(false && __msg); \
+ }
+
 
 namespace CudaRasterizer
 {

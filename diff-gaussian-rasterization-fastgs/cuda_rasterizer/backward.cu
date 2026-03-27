@@ -500,7 +500,10 @@ PerGaussianRenderCUDA(
     if (i % 32 == 0) {
       for (int ch = 0; ch < C; ++ch) {
         int shift = BLOCK_SIZE * ch + i + block.thread_rank();
+		assert(shift < NUM_CHANNELS_4DGS * C * BLOCK_SIZE);
+		//printf("loading sampled_ar for bucket %d [%d], channel %d, shift %d\n", global_bucket_idx,block.group_index().x, ch, shift);
         Shared_sampled_ar[ch * 32 + block.thread_rank()] = sampled_ar[shift];
+		//printf("%d:%f\n", global_bucket_idx,Shared_sampled_ar[ch * 32 + block.thread_rank()]);
       }
       const uint32_t local_id = i + block.thread_rank();
       const uint2 pix = {pix_min.x + local_id % BLOCK_X, pix_min.y + local_id / BLOCK_X};
@@ -830,7 +833,7 @@ void BACKWARD::preprocess(
 	// Propagate gradients for remaining steps: finish 3D mean gradients,
 	// propagate color gradients to SH (if desireD), propagate 3D covariance
 	// matrix gradients to scale and rotation.
-	preprocessCUDA<NUM_CHAFFELS> << < (P + 255) / 256, 256 >> > (
+	preprocessCUDA<NUM_CHANNELS_4DGS> << < (P + 255) / 256, 256 >> > (
 		P, D, M,
 		(float3*)means3D,
 		radii,
@@ -875,7 +878,7 @@ void BACKWARD::render(
 	float* dL_dcolors)
 {
 	const int THREADS = 32;
-	PerGaussianRenderCUDA<NUM_CHAFFELS> <<<((B*32) + THREADS - 1) / THREADS,THREADS>>>(
+	PerGaussianRenderCUDA<NUM_CHANNELS_4DGS> <<<((B*32) + THREADS - 1) / THREADS,THREADS>>>(
 		ranges,
 		point_list,
 		W, H, B,

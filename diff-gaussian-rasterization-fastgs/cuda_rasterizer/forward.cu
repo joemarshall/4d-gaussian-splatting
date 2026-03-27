@@ -312,6 +312,11 @@ renderCUDA(
 	const int rounds = ((range.y - range.x + BLOCK_SIZE - 1) / BLOCK_SIZE);
 	int toDo = range.y - range.x;
 
+	if(range.y < range.x || range.x > 100000000 || range.y>100000000){
+   	  printf("%d tile_id %d->%d\n", tile_id,range.x,range.y);
+	}
+
+
 	// what is the number of buckets before me? what is my offset?
 	uint32_t bbm = tile_id == 0 ? 0 : per_tile_bucket_offset[tile_id - 1];
 	// let's first quickly also write the bucket-to-tile mapping
@@ -335,6 +340,11 @@ renderCUDA(
 	uint32_t last_contributor = 0;
 	float C[CHANNELS] = { 0 };
 
+	for (int ch = 0; ch < CHANNELS; ++ch) {
+		sampled_ar[(bbm * BLOCK_SIZE * CHANNELS) + ch * BLOCK_SIZE + block.thread_rank()] = 0;
+	}
+
+
 	int contribs = 0;
 	// Iterate over batches until all done or range is complete
 	for (int i = 0; i < rounds; i++, toDo -= BLOCK_SIZE)
@@ -349,9 +359,14 @@ renderCUDA(
 		if (range.x + progress < range.y)
 		{
 			int coll_id = point_list[range.x + progress];
-			collected_id[block.thread_rank()] = coll_id;
-			collected_xy[block.thread_rank()] = points_xy_image[coll_id];
-			collected_conic_opacity[block.thread_rank()] = conic_opacity[coll_id];
+			if(coll_id > 100000000){
+				printf("BAD %d coll_id %x range: %d-%d progress: %d\n", tile_id, coll_id, range.x, range.y, progress);
+				break;
+			}else{
+				collected_id[block.thread_rank()] = coll_id;
+				collected_xy[block.thread_rank()] = points_xy_image[coll_id];
+				collected_conic_opacity[block.thread_rank()] = conic_opacity[coll_id];
+			}
 			// collected_radius2[block.thread_rank()] = radii[coll_id] * radii[coll_id];
 		}
 		block.sync();
@@ -461,7 +476,7 @@ void FORWARD::render(
 	bool get_flag,
 	int* metricCount)
 {
-	renderCUDA<NUM_CHAFFELS> << <grid, block >> > (
+	renderCUDA<NUM_CHANNELS_4DGS> << <grid, block >> > (
 		ranges,
 		point_list,
 		per_tile_bucket_offset, bucket_to_tile,
@@ -512,7 +527,7 @@ void FORWARD::preprocess(
 	uint32_t* tiles_touched,
 	bool prefiltered)
 {
-	preprocessCUDA<NUM_CHAFFELS> << <(P + 255) / 256, 256 >> > (
+	preprocessCUDA<NUM_CHANNELS_4DGS> << <(P + 255) / 256, 256 >> > (
 		P, D, M,
 		means3D,
 		scales,

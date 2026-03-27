@@ -140,11 +140,11 @@ __global__ void duplicateWithKeys(
 		uint32_t off = (idx == 0) ? 0 : offsets[idx - 1];
     // Update unsorted arrays with Gaussian idx for every tile that
     // Gaussian touches
-    duplicateToTilesTouched(
-        points_xy[idx], con_o[idx], grid, mult,
-        idx, off, depths[idx],
-        gaussian_keys_unsorted,
-        gaussian_values_unsorted);
+ 	   duplicateToTilesTouched(
+			points_xy[idx], con_o[idx], grid, mult,
+			idx, off, depths[idx],
+			gaussian_keys_unsorted,
+			gaussian_values_unsorted);
 	}
 }
 
@@ -152,7 +152,7 @@ __global__ void duplicateWithKeys(
 // the full sorted list. If yes, write start/end of this tile. 
 // Run once per instanced (duplicated) Gaussian ID.
 // This is built upon Speedy-Splat — many thanks for their excellent work.
-__global__ void identifyTileRanges(int L, uint64_t* point_list_keys, uint2* ranges)
+__global__ void identifyTileRanges(int L, uint64_t* point_list_keys, uint2* ranges,dim3 tile_grid)
 {
 	auto idx = cg::this_grid().thread_rank();
 	if (idx >= L)
@@ -161,18 +161,27 @@ __global__ void identifyTileRanges(int L, uint64_t* point_list_keys, uint2* rang
 	// Read tile ID from key. Update start/end of tile range if at limit.
 	uint64_t key = point_list_keys[idx];
 	uint32_t currtile = key >> 32;
-	bool valid_tile = currtile != (uint32_t) -1;
+	bool valid_tile = currtile != (uint32_t) -1 && currtile < tile_grid.x * tile_grid.y;
+//	assert(currtile < tile_grid.x * tile_grid.y);
 
 	if (idx == 0)
 		ranges[currtile].x = 0;
 	else
 	{
 		uint32_t prevtile = point_list_keys[idx - 1] >> 32;
+		bool valid_prev_tile = prevtile != (uint32_t) -1 && prevtile < tile_grid.x * tile_grid.y;
+//		assert(prevtile < tile_grid.x * tile_grid.y);
+		if(!valid_prev_tile){
+			printf("Invalid prev tile %d at idx %d\n", prevtile, idx-1);
+		}
 		if (currtile != prevtile)
 		{
-			ranges[prevtile].y = idx;
-			if (valid_tile) 
-			ranges[currtile].x = idx;
+			if(valid_prev_tile){
+				ranges[prevtile].y = idx;
+			}
+			if (valid_tile){ 
+				ranges[currtile].x = idx;
+			}
 		}
 	}
 	if (idx == L - 1 && valid_tile)
@@ -229,13 +238,13 @@ CudaRasterizer::ImageState CudaRasterizer::ImageState::fromChunk(char*& chunk, s
 	obtain(chunk, img.accum_alpha, N, 128);
 	obtain(chunk, img.n_contrib, N, 128);
 	obtain(chunk, img.ranges, N, 128);
-	int* dummy;
-	int* wummy;
+	int* dummy=nullptr;
+	int* wummy=nullptr;
 	cub::DeviceScan::InclusiveSum(nullptr, img.scan_size, dummy, wummy, N);
 	obtain(chunk, img.contrib_scan, img.scan_size, 128);
 
 	obtain(chunk, img.max_contrib, N, 128);
-	obtain(chunk, img.pixel_colors, N * NUM_CHAFFELS, 128);
+	obtain(chunk, img.pixel_colors, N * NUM_CHANNELS_4DGS, 128);
 	obtain(chunk, img.bucket_count, N, 128);
 	obtain(chunk, img.bucket_offsets, N, 128);
 	cub::DeviceScan::InclusiveSum(nullptr, img.bucket_count_scan_size, img.bucket_count, img.bucket_count, N);
@@ -248,17 +257,20 @@ CudaRasterizer::SampleState CudaRasterizer::SampleState::fromChunk(char *& chunk
 	SampleState sample;
 	obtain(chunk, sample.bucket_to_tile, C * BLOCK_SIZE, 128);
 	obtain(chunk, sample.T, C * BLOCK_SIZE, 128);
-	obtain(chunk, sample.ar, NUM_CHAFFELS * C * BLOCK_SIZE, 128);
+	obtain(chunk, sample.ar, NUM_CHANNELS_4DGS * C * BLOCK_SIZE, 128);
 	return sample;
 }
 
 CudaRasterizer::BinningState CudaRasterizer::BinningState::fromChunk(char*& chunk, size_t P)
 {
+	bool allocating = chunk != nullptr;
 	BinningState binning;
 	obtain(chunk, binning.point_list, P, 128);
 	obtain(chunk, binning.point_list_unsorted, P, 128);
 	obtain(chunk, binning.point_list_keys, P, 128);
 	obtain(chunk, binning.point_list_keys_unsorted, P, 128);
+	// get the size needed for sorting space here:
+	// (this doesn't do any sort because the first parameter is nullptr)
 	cub::DeviceRadixSort::SortPairs(
 		nullptr, binning.sorting_size,
 		binning.point_list_keys_unsorted, binning.point_list_keys,
@@ -326,6 +338,7 @@ std::tuple<int,int> CudaRasterizer::Rasterizer::forward(
 	char* chunkptr = geometryBuffer(chunk_size);
 	GeometryState geomState = GeometryState::fromChunk(chunkptr, P);
 
+
 	if (radii == nullptr)
 	{
 		radii = geomState.internal_radii;
@@ -339,10 +352,12 @@ std::tuple<int,int> CudaRasterizer::Rasterizer::forward(
 	char* img_chunkptr = imageBuffer(img_chunk_size);
 	ImageState imgState = ImageState::fromChunk(img_chunkptr, width * height);
 
-	if (NUM_CHAFFELS != 3 && colors_precomp == nullptr)
+	if (NUM_CHANNELS_4DGS != 3 && colors_precomp == nullptr)
 	{
 		throw std::runtime_error("For non-RGB, provide precomputed Gaussian colors!");
 	}
+
+	CHECK_AND_THROW_ERROR(img_chunkptr != nullptr, "Failed to allocate image buffer");
 
 	// Run preprocessing per-Gaussian (transformation, bounding, conversion of SHs to RGB)
 	CHECK_CUDA(FORWARD::preprocess(
@@ -385,6 +400,9 @@ std::tuple<int,int> CudaRasterizer::Rasterizer::forward(
 	size_t binning_chunk_size = required<BinningState>(num_rendered);
 	char* binning_chunkptr = binningBuffer(binning_chunk_size);
 	BinningState binningState = BinningState::fromChunk(binning_chunkptr, num_rendered);
+	// make all keys invalid so that any not written will go to the end of the
+	// sorted list to be ignored in further code
+	cudaMemset(binningState.point_list_keys_unsorted, 0xff, num_rendered * sizeof(uint64_t));
 
 	// For each instance to be rendered, produce adequate [ tile | depth ] key 
 	// and corresponding dublicated Gaussian indices to be sorted
@@ -418,7 +436,7 @@ std::tuple<int,int> CudaRasterizer::Rasterizer::forward(
 		identifyTileRanges << <(num_rendered + 255) / 256, 256 >> > (
 			num_rendered,
 			binningState.point_list_keys,
-			imgState.ranges);
+			imgState.ranges,tile_grid);
 	CHECK_CUDA(, debug)
 
  	// bucket count
@@ -430,7 +448,10 @@ std::tuple<int,int> CudaRasterizer::Rasterizer::forward(
 	// create a state to store. size is number is the total number of buckets * block_size
 	size_t sample_chunk_size = required<SampleState>(bucket_sum);
 	char* sample_chunkptr = sampleBuffer(sample_chunk_size);
+
 	SampleState sampleState = SampleState::fromChunk(sample_chunkptr, bucket_sum);
+
+
 
 	// Let each tile blend its range of Gaussians independently in parallel
 	const float* feature_ptr = colors_precomp != nullptr ? colors_precomp : geomState.rgb;
@@ -500,6 +521,11 @@ void CudaRasterizer::Rasterizer::backward(
 	BinningState binningState = BinningState::fromChunk(binning_buffer, R);
 	ImageState imgState = ImageState::fromChunk(img_buffer, width * height);
 	SampleState sampleState = SampleState::fromChunk(sample_buffer, B);
+
+//	printf("Back: G,B,I,S buffers %p %p %p %p\n", geom_buffer, binning_buffer, img_buffer, sample_buffer);
+
+//	printf("Chunkptr alignment in bwd %p  %d/128 (required: %d)\n",sample_buffer,(((int)sample_buffer)&0x7f),required<SampleState>(B));
+
 
 	if (radii == nullptr)
 	{
