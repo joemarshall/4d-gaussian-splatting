@@ -154,11 +154,8 @@ def render_fastgs(viewpoint_camera, pc: GaussianModel, pipe, bg_color: torch.Ten
                 )
             colors_precomp = torch.clamp_min(sh2rgb + 0.5, 0.0)
         else:
-            # Split combined feature tensor into DC and SH-rest parts
-            # get_features returns shape (N, 1+rest, 3); DC is index 0.
-            all_features = pc.get_features
-            dc = all_features[:, :1, :]   # (N, 1, 3)
-            shs = all_features[:, 1:, :]  # (N, rest, 3)
+            dc = pc.get_sh_features_dc
+            shs = pc.get_sh_features_rest
     else:
         colors_precomp = override_color
 

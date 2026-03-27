@@ -26,6 +26,7 @@ eggs/
 *.pdb
 *.o
 *.obj
+*.dll # cuda dlls used for testing on windows
 
 logs/
 results/

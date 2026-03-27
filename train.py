@@ -40,7 +40,10 @@ from omegaconf import OmegaConf
 from omegaconf.dictconfig import DictConfig
 from torch.utils.data import DataLoader
 
-torch.set_float32_matmul_precision('high')
+# torch.use_deterministic_algorithms(True)
+# torch.utils.deterministic.fill_uninitialized_memory=True
+
+#torch.set_float32_matmul_precision('high')
 #torch.backends.fp32_precision = "tf32"
 torch._dynamo.config.force_parameter_static_shapes = False 
 
@@ -504,7 +507,7 @@ def training(
                         )
                         if use_fastgs:
                             mult = getattr(opt, 'fastgs_mult', 0.5)
-                            num_cams = getattr(opt, 'fastgs_num_sample_cams', 10)
+                            num_cams = getattr(opt, 'fastgs_num_sample_cams', 40)
                             my_viewpoint_stack = scene.getTrainCameras()
                             camlist = sampling_cameras(my_viewpoint_stack, num_cams,dimensions=4)
                             importance_score, pruning_score = compute_gaussian_score_fastgs(
@@ -888,8 +891,10 @@ if __name__ == "__main__":
             def write(self, message):
                 self.stdout.write(message)
                 self.logfile.write(message)
+                self.logfile.flush()
             def flush(self):
-                self.stdout.flush()
+                if hasattr(self.stdout, 'flush'):
+                    self.stdout.flush()
                 self.logfile.flush()
 
         sys.stdout = BothWriter(sys.stdout, open(log_file, "w"))

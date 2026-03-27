@@ -239,6 +239,14 @@ class GaussianModel:
         return torch.cat((features_dc, features_rest), dim=1)
     
     @property
+    def get_sh_features_dc(self):
+        return self._features_dc
+    
+    @property
+    def get_sh_features_rest(self):
+        return self._features_rest
+    
+    @property
     def get_opacity(self):
         return self.opacity_activation(self._opacity)
     
@@ -515,28 +523,13 @@ class GaussianModel:
                 self._rotation_r = optimizable_tensors["rotation_r"]
             self.t_gradient_accum = self.t_gradient_accum[valid_points_mask]
 
-        # self._xyz = self._prune_optimizer_single_tensor(valid_points_mask, "xyz")
-        # self._features_dc = self._prune_optimizer_single_tensor(valid_points_mask, "f_dc")
-        # self._features_rest = self._prune_optimizer_single_tensor(valid_points_mask, "f_rest")
-        # self._opacity = self._prune_optimizer_single_tensor(valid_points_mask, "opacity")
-        # self._scaling = self._prune_optimizer_single_tensor(valid_points_mask, "scaling")
-        # self._rotation = self._prune_optimizer_single_tensor(valid_points_mask, "rotation")
-
-        # self.xyz_gradient_accum = self.xyz_gradient_accum[valid_points_mask]
-        # if self.xyz_gradient_accum_abs.shape[0] == mask.shape[0]:
-        #     self.xyz_gradient_accum_abs = self.xyz_gradient_accum_abs[valid_points_mask]
-
-        # self.denom = self.denom[valid_points_mask]
-        # self.max_radii2D = self.max_radii2D[valid_points_mask]
-        # if self.tmp_radii is not None and self.tmp_radii.shape[0] == mask.shape[0]:
-        #     self.tmp_radii = self.tmp_radii[valid_points_mask]
+        print("Tensor shapes after prune:")
+        for attr in dir(self):
+            var = getattr(self, attr)
+            if isinstance(var, torch.Tensor):
+                print(f"Tensor {attr} has shape {var.shape}")
         
-        # if self.gaussian_dim == 4:
-        #     self._t = self._prune_optimizer_single_tensor(valid_points_mask, "t")
-        #     self._scaling_t = self._prune_optimizer_single_tensor(valid_points_mask, "scaling_t")
-        #     if self.rot_4d:
-        #         self._rotation_r = self._prune_optimizer_single_tensor(valid_points_mask, "rotation_r")
-        #     self.t_gradient_accum = self.t_gradient_accum[valid_points_mask]
+
 
     def cat_one_tensor_to_optimizer(self, tensor, name):
         for group in self.optimizer.param_groups:
