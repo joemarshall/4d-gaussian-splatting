@@ -200,6 +200,39 @@ __global__ void perTileBucketCount(int T, uint2* ranges, uint32_t* bucketCount) 
 	bucketCount[idx] = (uint32_t) num_buckets;
 }
 
+// Generates key/value pairs for back-to-front (reverse depth) sorting.
+// Identical to duplicateWithKeys but uses ~depth_bits so that larger depths
+// (farther Gaussians) get a smaller key and are sorted earlier.
+__global__ void duplicateWithKeysReverse(
+	int P,
+	const float mult,
+	const float2* points_xy,
+	const float* depths,
+	const uint32_t* offsets,
+	uint64_t* gaussian_keys_unsorted,
+	uint32_t* gaussian_values_unsorted,
+	float4* con_o,
+	uint32_t* tiles_touched,
+	dim3 grid)
+{
+	auto idx = cg::this_grid().thread_rank();
+	if (idx >= P)
+		return;
+
+	if (tiles_touched[idx] > 0)
+	{
+		uint32_t off = (idx == 0) ? 0 : offsets[idx - 1];
+		// Invert the depth bits so ascending key sort gives back-to-front order
+		uint32_t inv_depth_bits = ~__float_as_uint(depths[idx]);
+		float depth_key = __uint_as_float(inv_depth_bits);
+		duplicateToTilesTouched(
+			points_xy[idx], con_o[idx], grid, mult,
+			idx, off, depth_key,
+			gaussian_keys_unsorted,
+			gaussian_values_unsorted);
+	}
+}
+
 // Mark Gaussians as visible/invisible, based on view frustum testing
 void CudaRasterizer::Rasterizer::markVisible(
 	int P,
@@ -594,4 +627,159 @@ void CudaRasterizer::Rasterizer::backward(
 		dL_dsh,
 		(glm::vec3*)dL_dscale,
 		(glm::vec4*)dL_drot), debug)
+}
+
+// Compute per-gaussian pixel-contribution sums for visibility analysis.
+// Gaussians are sorted back-to-front (reversed depth) within each tile so
+// that the nearest Gaussian is processed last.  For each pixel the running
+// product of alphas is tracked; the weight assigned to gaussian n equals
+// alpha_1 * alpha_2 * ... * alpha_n (where 1 is the first/farthest gaussian
+// encountered).  Processing stops for a pixel once this product drops below
+// opacity_cutoff.  Writes results into gaussian_contrib (pre-allocated,
+// pre-zeroed float array of size P).
+void CudaRasterizer::Rasterizer::calculateGaussianVisibilityContribution(
+	std::function<char* (size_t)> geometryBuffer,
+	std::function<char* (size_t)> binningBuffer,
+	const int P, int D, int M,
+	const int width, int height,
+	const float* means3D,
+	const float* dc,
+	const float* shs,
+	const float* opacities,
+	const float* scales,
+	const float scale_modifier,
+	const float* rotations,
+	const float* cov3D_precomp,
+	const float* viewmatrix,
+	const float* projmatrix,
+	const float* cam_pos,
+	const float mult,
+	const float tan_fovx, float tan_fovy,
+	const bool prefiltered,
+	float opacity_cutoff,
+	float* gaussian_contrib,
+	bool debug)
+{
+	const float focal_y = height / (2.0f * tan_fovy);
+	const float focal_x = width  / (2.0f * tan_fovx);
+
+	// ---- Geometry preprocessing (same as forward) ----
+	size_t chunk_size = required<GeometryState>(P);
+	char* chunkptr = geometryBuffer(chunk_size);
+	GeometryState geomState = GeometryState::fromChunk(chunkptr, P);
+
+	dim3 tile_grid((width  + BLOCK_X - 1) / BLOCK_X,
+	               (height + BLOCK_Y - 1) / BLOCK_Y, 1);
+	dim3 block(BLOCK_X, BLOCK_Y, 1);
+
+	// Pass geomState.rgb as colors_precomp so SH computation is skipped
+	// (we do not need colors for the visibility pass).
+	CHECK_CUDA(FORWARD::preprocess(
+		P, D, M,
+		means3D,
+		(glm::vec3*)scales,
+		scale_modifier,
+		(glm::vec4*)rotations,
+		opacities,
+		dc,
+		shs,
+		geomState.clamped,
+		cov3D_precomp,
+		geomState.rgb,       // any non-null ptr → skips SH color computation (rgb value unused)
+		viewmatrix, projmatrix,
+		(glm::vec3*)cam_pos,
+		mult,
+		width, height,
+		focal_x, focal_y,
+		tan_fovx, tan_fovy,
+		geomState.internal_radii,
+		geomState.means2D,
+		geomState.depths,
+		geomState.cov3D,
+		geomState.rgb,
+		geomState.conic_opacity,
+		tile_grid,
+		geomState.tiles_touched,
+		prefiltered
+	), debug)
+
+	// Prefix-sum tiles_touched → point_offsets
+	CHECK_CUDA(cub::DeviceScan::InclusiveSum(
+		geomState.scanning_space, geomState.scan_size,
+		geomState.tiles_touched, geomState.point_offsets, P), debug)
+
+	int num_rendered;
+	CHECK_CUDA(cudaMemcpy(&num_rendered, geomState.point_offsets + P - 1,
+		sizeof(int), cudaMemcpyDeviceToHost), debug);
+
+	// ---- Binning with reversed (back-to-front) depth keys ----
+	size_t binning_chunk_size = required<BinningState>(num_rendered);
+	char* binning_chunkptr = binningBuffer(binning_chunk_size);
+	BinningState binningState = BinningState::fromChunk(binning_chunkptr, num_rendered);
+
+	// Initialise keys to invalid so unfilled entries sort to the end
+	cudaMemset(binningState.point_list_keys_unsorted, 0xff,
+		num_rendered * sizeof(uint64_t));
+
+	duplicateWithKeysReverse << <(P + 255) / 256, 256 >> > (
+		P, mult,
+		geomState.means2D,
+		geomState.depths,
+		geomState.point_offsets,
+		binningState.point_list_keys_unsorted,
+		binningState.point_list_unsorted,
+		geomState.conic_opacity,
+		geomState.tiles_touched,
+		tile_grid)
+	CHECK_CUDA(, debug)
+
+	int bit = getHigherMsb(tile_grid.x * tile_grid.y);
+
+	CHECK_CUDA(cub::DeviceRadixSort::SortPairs(
+		binningState.list_sorting_space,
+		binningState.sorting_size,
+		binningState.point_list_keys_unsorted, binningState.point_list_keys,
+		binningState.point_list_unsorted,      binningState.point_list,
+		num_rendered, 0, 32 + bit), debug)
+
+	// ---- Tile ranges ----
+	int num_tiles = tile_grid.x * tile_grid.y;
+	uint2* ranges = nullptr;
+	cudaMalloc(&ranges, num_tiles * sizeof(uint2));
+	cudaMemset(ranges, 0, num_tiles * sizeof(uint2));
+
+	if (num_rendered > 0)
+	{
+		identifyTileRanges << <(num_rendered + 255) / 256, 256 >> > (
+			num_rendered,
+			binningState.point_list_keys,
+			ranges, tile_grid);
+		CHECK_CUDA(, debug)
+
+		// ---- Tile-wise visibility accumulation ----
+		float* tile_gaussian_contrib = nullptr;
+		cudaMalloc(&tile_gaussian_contrib, num_rendered * sizeof(float));
+		cudaMemset(tile_gaussian_contrib, 0, num_rendered * sizeof(float));
+
+		CHECK_CUDA(FORWARD::calculateVisibility(
+			tile_grid, block,
+			ranges,
+			binningState.point_list,
+			width, height,
+			geomState.means2D,
+			geomState.conic_opacity,
+			tile_gaussian_contrib,
+			opacity_cutoff), debug)
+
+		// ---- Scatter-add to final per-gaussian contribution array ----
+		CHECK_CUDA(FORWARD::accumulateVisibilityContributions(
+			num_rendered,
+			tile_gaussian_contrib,
+			binningState.point_list,
+			gaussian_contrib), debug)
+
+		cudaFree(tile_gaussian_contrib);
+	}
+
+	cudaFree(ranges);
 }

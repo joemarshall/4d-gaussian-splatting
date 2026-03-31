@@ -51,6 +51,24 @@ namespace FORWARD
 		uint32_t* tiles_touched,
 		bool prefiltered);
 
+	// Calculate tile-wise visibility contributions (back-to-front order).
+	void calculateVisibility(
+		const dim3 grid, dim3 block,
+		const uint2* ranges,
+		const uint32_t* point_list,
+		int W, int H,
+		const float2* points_xy_image,
+		const float4* conic_opacity,
+		float* tile_gaussian_contrib,
+		float opacity_cutoff);
+
+	// Scatter per-tile contributions to the final per-gaussian array.
+	void accumulateVisibilityContributions(
+		int num_rendered,
+		const float* tile_gaussian_contrib,
+		const uint32_t* point_list,
+		float* gaussian_contrib);
+
 	// Main rasterization method.
 	void render(
 		const dim3 grid, dim3 block,

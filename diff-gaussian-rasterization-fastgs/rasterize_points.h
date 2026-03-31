@@ -73,6 +73,27 @@ torch::Tensor markVisible(
 		torch::Tensor& viewmatrix,
 		torch::Tensor& projmatrix);
 
+torch::Tensor CalculateGaussianVisibilityContributionCUDA(
+	const torch::Tensor& means3D,
+	const torch::Tensor& opacity,
+	const torch::Tensor& scales,
+	const torch::Tensor& rotations,
+	const torch::Tensor& cov3D_precomp,
+	const torch::Tensor& viewmatrix,
+	const torch::Tensor& projmatrix,
+	const float tan_fovx,
+	const float tan_fovy,
+	const int image_height,
+	const int image_width,
+	const torch::Tensor& dc,
+	const torch::Tensor& sh,
+	const int degree,
+	const torch::Tensor& campos,
+	const float mult,
+	const bool prefiltered,
+	const bool debug,
+	const float opacity_cutoff);
+
 torch::Tensor conv2DForward(torch::Tensor &input);
 
 void adamUpdate(

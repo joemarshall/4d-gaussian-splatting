@@ -64,6 +64,76 @@ class GaussianRasterizationSettings(NamedTuple):
     metric_map: torch.Tensor = None
 
 
+def calculateGaussianVisibilityContribution(
+    means3D,
+    opacities,
+    scales,
+    rotations,
+    cov3Ds_precomp,
+    raster_settings,
+    opacity_cutoff=0.01,
+):
+    """
+    Compute per-gaussian pixel-contribution sums for visibility analysis.
+
+    Gaussians are sorted back-to-front (reversed depth) within each tile.
+    For each pixel the running product of alphas is tracked; the contribution
+    weight assigned to gaussian n (in back-to-front order) is
+        alpha_1 * alpha_2 * ... * alpha_n
+    Processing stops for a pixel once this product drops below *opacity_cutoff*.
+
+    Returns a float32 tensor of shape [P] containing the summed weighted pixel
+    counts for each Gaussian across the whole image.
+    """
+    if scales is None:
+        scales = torch.Tensor([])
+    if rotations is None:
+        rotations = torch.Tensor([])
+    if cov3Ds_precomp is None:
+        cov3Ds_precomp = torch.Tensor([])
+
+    dc = torch.Tensor([])
+    sh = torch.Tensor([])
+
+    args = (
+        means3D,
+        opacities,
+        scales,
+        rotations,
+        cov3Ds_precomp,
+        raster_settings.viewmatrix,
+        raster_settings.projmatrix,
+        raster_settings.tanfovx,
+        raster_settings.tanfovy,
+        raster_settings.image_height,
+        raster_settings.image_width,
+        dc,
+        sh,
+        raster_settings.sh_degree,
+        raster_settings.campos,
+        raster_settings.mult,
+        raster_settings.prefiltered,
+        raster_settings.debug,
+        opacity_cutoff,
+    )
+
+    if raster_settings.debug:
+        cpu_args = cpu_deep_copy_tuple(args)
+        try:
+            gaussian_contrib = _C.calculate_gaussian_visibility_contribution(*args)
+        except Exception as ex:
+            torch.save(cpu_args, "snapshot_visibility.dump")
+            print(
+                "\nAn error occurred in calculateGaussianVisibilityContribution. "
+                "Please forward snapshot_visibility.dump for debugging."
+            )
+            raise ex
+    else:
+        gaussian_contrib = _C.calculate_gaussian_visibility_contribution(*args)
+
+    return gaussian_contrib
+
+
 def rasterize_gaussians_fastgs(
     means3D,
     means2D,

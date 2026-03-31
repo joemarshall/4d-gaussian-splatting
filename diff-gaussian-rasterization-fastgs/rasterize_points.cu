@@ -281,6 +281,87 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Te
   return std::make_tuple(dL_dmeans2D, dL_dcolors, dL_dopacity, dL_dmeans3D, dL_dcov3D, dL_ddc, dL_dsh, dL_dscales, dL_drotations);
 }
 
+torch::Tensor CalculateGaussianVisibilityContributionCUDA(
+	const torch::Tensor& means3D,
+	const torch::Tensor& opacity,
+	const torch::Tensor& scales,
+	const torch::Tensor& rotations,
+	const torch::Tensor& cov3D_precomp,
+	const torch::Tensor& viewmatrix,
+	const torch::Tensor& projmatrix,
+	const float tan_fovx,
+	const float tan_fovy,
+	const int image_height,
+	const int image_width,
+	const torch::Tensor& dc,
+	const torch::Tensor& sh,
+	const int degree,
+	const torch::Tensor& campos,
+	const float mult,
+	const bool prefiltered,
+	const bool debug,
+	const float opacity_cutoff)
+{
+  if (means3D.ndimension() != 2 || means3D.size(1) != 3) {
+    AT_ERROR("means3D must have dimensions (num_points, 3)");
+  }
+
+  const int P = means3D.size(0);
+  const int H = image_height;
+  const int W = image_width;
+
+  torch::Device device(torch::kCUDA);
+  torch::TensorOptions options(torch::kByte);
+  torch::Tensor geomBuffer   = torch::empty({0}, options.device(device));
+  torch::Tensor binningBuffer = torch::empty({0}, options.device(device));
+  ResizingTensorFunctionHolder geomFunc    = ResizingTensorFunctionHolder(geomBuffer);
+  ResizingTensorFunctionHolder binningFunc = ResizingTensorFunctionHolder(binningBuffer);
+
+  torch::Tensor gaussian_contrib;
+
+  if (P != 0)
+  {
+    int M = 0;
+    if (sh.size(0) != 0)
+      M = sh.size(1);
+
+    auto float_opts = means3D.options().dtype(torch::kFloat32);
+    gaussian_contrib = torch::zeros({P}, float_opts);
+
+    CudaRasterizer::Rasterizer::calculateGaussianVisibilityContribution(
+      geomFunc.get_fn(),
+      binningFunc.get_fn(),
+      P, degree, M,
+      W, H,
+      means3D.contiguous().data<float>(),
+      dc.contiguous().data_ptr<float>(),
+      sh.contiguous().data_ptr<float>(),
+      opacity.contiguous().data<float>(),
+      scales.contiguous().data_ptr<float>(),
+      1.0f,
+      rotations.contiguous().data_ptr<float>(),
+      cov3D_precomp.contiguous().data<float>(),
+      viewmatrix.contiguous().data<float>(),
+      projmatrix.contiguous().data<float>(),
+      campos.contiguous().data<float>(),
+      mult,
+      tan_fovx,
+      tan_fovy,
+      prefiltered,
+      opacity_cutoff,
+      gaussian_contrib.contiguous().data_ptr<float>(),
+      debug);
+  }
+  else
+  {
+    auto float_opts = means3D.options().dtype(torch::kFloat32);
+    gaussian_contrib = torch::zeros({0}, float_opts);
+  }
+
+  assert(cudaDeviceSynchronize() == cudaSuccess);
+  return gaussian_contrib;
+}
+
 torch::Tensor markVisible(
 		torch::Tensor& means3D,
 		torch::Tensor& viewmatrix,

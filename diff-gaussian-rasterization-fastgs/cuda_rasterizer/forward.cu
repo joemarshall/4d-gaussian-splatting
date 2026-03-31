@@ -498,6 +498,150 @@ void FORWARD::render(
 		);
 }
 
+// Kernel: compute per-tile, per-gaussian visibility contribution sums.
+// Gaussians are processed in the order they appear in point_list (which has
+// been sorted back-to-front via reversed depth keys before this call).
+// For each pixel the running product of alphas is tracked; the contribution
+// added to a gaussian is that running product after including the gaussian's
+// own alpha.  Processing stops for a pixel when the running product drops
+// below opacity_cutoff.  Results are written to tile_gaussian_contrib which
+// is indexed by position in point_list (i.e. the num_rendered-sized array
+// that maps tile × gaussian pairs to their summed pixel contributions).
+__global__ void __launch_bounds__(BLOCK_X * BLOCK_Y)
+calculateVisibilityContributionsCUDA(
+	const uint2* __restrict__ ranges,
+	const uint32_t* __restrict__ point_list,
+	int W, int H,
+	const float2* __restrict__ points_xy_image,
+	const float4* __restrict__ conic_opacity,
+	float* __restrict__ tile_gaussian_contrib,
+	float opacity_cutoff)
+{
+	auto block = cg::this_thread_block();
+	uint32_t horizontal_blocks = (W + BLOCK_X - 1) / BLOCK_X;
+	uint2 pix_min = { block.group_index().x * BLOCK_X, block.group_index().y * BLOCK_Y };
+	uint2 pix = { pix_min.x + block.thread_index().x, pix_min.y + block.thread_index().y };
+	float2 pixf = { (float)pix.x, (float)pix.y };
+
+	bool inside = pix.x < W && pix.y < H;
+	bool done = !inside;
+
+	uint32_t tile_id = block.group_index().y * horizontal_blocks + block.group_index().x;
+	uint2 range = ranges[tile_id];
+	const int rounds = ((range.y - range.x + BLOCK_SIZE - 1) / BLOCK_SIZE);
+	int toDo = range.y - range.x;
+
+	// Shared memory: fetched gaussian data + per-batch contribution accumulator
+	__shared__ float2 collected_xy[BLOCK_SIZE];
+	__shared__ float4 collected_conic_opacity[BLOCK_SIZE];
+	__shared__ float batch_contrib[BLOCK_SIZE];
+
+	// Per-pixel running product of alphas (starts at 1.0)
+	float running_product = 1.0f;
+
+	for (int i = 0; i < rounds; i++, toDo -= BLOCK_SIZE)
+	{
+		// If all pixels in this block are done, stop processing
+		int num_done = __syncthreads_count(done);
+		if (num_done == BLOCK_SIZE)
+			break;
+
+		// Initialise per-batch accumulator and collectively fetch gaussian data
+		batch_contrib[block.thread_rank()] = 0.0f;
+		int progress = i * BLOCK_SIZE + block.thread_rank();
+		if (range.x + progress < range.y)
+		{
+			int coll_id = point_list[range.x + progress];
+			collected_xy[block.thread_rank()] = points_xy_image[coll_id];
+			collected_conic_opacity[block.thread_rank()] = conic_opacity[coll_id];
+		}
+		block.sync();
+
+		// Each pixel contributes to each gaussian in the batch
+		for (int j = 0; !done && j < min(BLOCK_SIZE, toDo); j++)
+		{
+			float2 xy = collected_xy[j];
+			float2 d = { xy.x - pixf.x, xy.y - pixf.y };
+			float4 con_o = collected_conic_opacity[j];
+			float power = -0.5f * (con_o.x * d.x * d.x + con_o.z * d.y * d.y) - con_o.y * d.x * d.y;
+			if (power > 0.0f)
+				continue;
+
+			float alpha = min(0.99f, con_o.w * exp(power));
+			if (alpha < 1.0f / 255.0f)
+				continue;
+
+			// weight_n = alpha_1 * alpha_2 * ... * alpha_n:
+			// running_product starts at 1.0 so the first gaussian gets weight alpha_1,
+			// the second gets alpha_1*alpha_2, etc., matching the documented formula.
+			running_product *= alpha;
+			// Accumulate this pixel's contribution for gaussian j.
+			// We add contribution before checking the cutoff so that the current
+			// gaussian still counts even when it triggers the stop condition.
+			atomicAdd(&batch_contrib[j], running_product);
+
+			// Stop processing further gaussians for this pixel once the running product
+			// (total accumulated opacity) falls below the cutoff.
+			if (running_product < opacity_cutoff)
+				done = true;
+		}
+		block.sync();
+
+		// Flush the batch accumulator to global memory
+		int batch_start = range.x + i * BLOCK_SIZE;
+		if (batch_start + (int)block.thread_rank() < (int)range.y)
+			tile_gaussian_contrib[batch_start + block.thread_rank()] = batch_contrib[block.thread_rank()];
+	}
+}
+
+// Kernel: scatter per-tile contributions to the final per-gaussian array.
+// Each thread handles one entry in the num_rendered-sized tile_gaussian_contrib
+// array, atomically accumulating into the gaussian-indexed output array.
+__global__ void accumulateGaussianContributionsCUDA(
+	int num_rendered,
+	const float* __restrict__ tile_gaussian_contrib,
+	const uint32_t* __restrict__ point_list,
+	float* __restrict__ gaussian_contrib)
+{
+	int idx = blockIdx.x * blockDim.x + threadIdx.x;
+	if (idx >= num_rendered)
+		return;
+	atomicAdd(&gaussian_contrib[point_list[idx]], tile_gaussian_contrib[idx]);
+}
+
+void FORWARD::calculateVisibility(
+	const dim3 grid, dim3 block,
+	const uint2* ranges,
+	const uint32_t* point_list,
+	int W, int H,
+	const float2* points_xy_image,
+	const float4* conic_opacity,
+	float* tile_gaussian_contrib,
+	float opacity_cutoff)
+{
+	calculateVisibilityContributionsCUDA << <grid, block >> > (
+		ranges,
+		point_list,
+		W, H,
+		points_xy_image,
+		conic_opacity,
+		tile_gaussian_contrib,
+		opacity_cutoff);
+}
+
+void FORWARD::accumulateVisibilityContributions(
+	int num_rendered,
+	const float* tile_gaussian_contrib,
+	const uint32_t* point_list,
+	float* gaussian_contrib)
+{
+	accumulateGaussianContributionsCUDA << <(num_rendered + 255) / 256, 256 >> > (
+		num_rendered,
+		tile_gaussian_contrib,
+		point_list,
+		gaussian_contrib);
+}
+
 void FORWARD::preprocess(
 	int P, int D, int M,
 	const float* means3D,
