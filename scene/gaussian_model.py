@@ -995,7 +995,8 @@ class GaussianModel:
             prune_mask = torch.logical_or(torch.logical_or(prune_mask, big_points_vs), big_points_ws)
 #            prune_mask = torch.logical_and(prune_mask,visible_points_mask)
 
-        
+        print("**************************************")
+        print("Pruning:",prune_mask.sum(),"/",len(prune_mask))
         if pruning_score is not None:
             scores = 1.0 - pruning_score
             to_remove = torch.sum(prune_mask)

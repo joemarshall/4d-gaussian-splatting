@@ -147,13 +147,13 @@ class CameraDataset(Dataset):
         return self.timestamps
 
     def get_indices_for_timestamp(self,t,camera_id = None):
-        timestamp_list = [t] if isinstance(t, (int, float)) else t
+        timestamp_list = t if hasattr(t, '__iter__') else [t]
         filter = None
         if camera_id is not None:
             filter = self.different_cam_list[camera_id]
         camlist = []
         for idx,x in enumerate(self.viewpoint_stack):
-            if x.timestamp in t:
+            if x.timestamp in  timestamp_list:
                 if filter is None or self._get_camera_cache_key(x) == filter:
                     camlist.append(idx)
         return camlist
