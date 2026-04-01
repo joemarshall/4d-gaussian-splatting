@@ -35,7 +35,7 @@ def sampling_cameras(viewpoint_stack, num_cams=10,dimensions = 3):
         # 4d gaussians - sample frames from the same time point
         # to get candidates for pruning and densification etc.
         # as multi-view error doesn't make so much sense otherwise
-        # n.b. if num_cams > a single frame then multiple frames will be
+        # n.b. if num_cams > cameras in a single frame then multiple frames will be
         # sampled
         frames = viewpoint_stack.get_timestamps()
         ts = np.random.choice(frames,10)
