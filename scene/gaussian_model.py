@@ -819,7 +819,13 @@ class GaussianModel:
             self.t_gradient_accum[update_filter] += avg_t_grad[update_filter]
         
     def add_densification_stats_grad(self, viewspace_point_grad, update_filter, avg_t_grad=None):
+        #print("adding densification stats with grad:", viewspace_point_grad.shape, update_filter.sum(),viewspace_point_grad)
+
         self.xyz_gradient_accum[update_filter] += viewspace_point_grad[update_filter]
+        self.xyz_gradient_accum_abs[update_filter] += torch.norm(
+            viewspace_point_grad[update_filter], dim=-1, keepdim=True
+        )
+
         self.denom[update_filter] += 1
         if self.gaussian_dim == 4:
             self.t_gradient_accum[update_filter] += avg_t_grad[update_filter]
@@ -989,7 +995,8 @@ class GaussianModel:
             prune_mask = torch.logical_or(torch.logical_or(prune_mask, big_points_vs), big_points_ws)
 #            prune_mask = torch.logical_and(prune_mask,visible_points_mask)
 
-        
+        print("**************************************")
+        print("Pruning:",prune_mask.sum(),"/",len(prune_mask))
         if pruning_score is not None:
             scores = 1.0 - pruning_score
             to_remove = torch.sum(prune_mask)
