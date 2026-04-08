@@ -15,6 +15,7 @@ import math
 from .diff_gaussian_rasterization_fastgs import (
     GaussianRasterizationSettings as GaussianRasterizationSettingsFastGS,
     GaussianRasterizer as GaussianRasterizerFastGS,
+    calculateGaussianVisibilityContribution as calculateGaussianVisibilityContributionFastGS,
 )
 from scene.gaussian_model import GaussianModel
 from utils.sh_utils import eval_sh, eval_shfs_4d
@@ -178,6 +179,52 @@ def render_fastgs(viewpoint_camera, pc: GaussianModel, pipe, bg_color: torch.Ten
         "radii": radii,
         "accum_metric_counts": accum_metric_counts,
     }
+
+
+    def calculate_gaussian_visibilities(viewpoint_camera, pc: GaussianModel, pipe, bg_color: torch.Tensor):
+        """Calculate per-Gaussian visibility contributions.
+        
+        Args:
+            viewpoint_camera: camera object with FoVx/FoVy, world_view_transform, etc.
+            pc: GaussianModel instance.
+            pipe: pipeline parameters.
+            bg_color: background colour tensor on CUDA.
+        
+        Returns:
+            Visibility contribution tensor.
+        """
+
+
+        means3D = pc.get_xyz
+        opacities = pc.get_opacity
+        scales = pc.get_scaling
+        rotations = pc.get_rotation
+        raster_settings = GaussianRasterizationSettingsFastGS(
+            image_height=int(viewpoint_camera.image_height),
+            image_width=int(viewpoint_camera.image_width),
+            tanfovx=math.tan(viewpoint_camera.FoVx * 0.5),
+            tanfovy=math.tan(viewpoint_camera.FoVy * 0.5),
+            bg=bg_color,
+            viewmatrix=viewpoint_camera.world_view_transform,
+            projmatrix=viewpoint_camera.full_proj_transform,
+            sh_degree=pc.active_sh_degree,
+            campos=viewpoint_camera.camera_center,
+            mult=0.5,
+            prefiltered=False,
+            debug=pipe.debug,
+        )
+
+
+        return calculateGaussianVisibilityContributionFastGS(
+                means3D,
+                opacities,
+                scales,
+                rotations,
+                cov3Ds_precomp,
+                raster_settings,
+                opacity_cutoff=0.01
+            )
+
 
 
 def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, scaling_modifier = 1.0, override_color = None, compute_contrib = False):

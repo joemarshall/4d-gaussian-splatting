@@ -30,3 +30,5 @@ eggs/
 
 logs/
 results/
+
+*.mp4

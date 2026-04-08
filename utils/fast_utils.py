@@ -84,6 +84,55 @@ def _compute_photometric_loss(viewpoint_cam, image, lambda_dssim=0.2):
     gt_image = viewpoint_cam.original_image.cuda()
     return l1_loss(image, gt_image)
 
+def compute_visible_gaussians(camlist,gaussians,pipe,bg,args):
+    """Compute a count of how many training views each Gaussians is in
+
+    Args:
+        camlist (list): list of viewpoint camera objects to render from.
+        gaussians: :class:`~scene.gaussian_model.GaussianModel`
+        pipe: rendering pipeline parameters (``pipe.debug``, etc.).
+        bg: background colour tensor on CUDA.
+
+    Returns:
+        Tensor: per-Gaussian integer counts of how many views flagged the Gaussian as visible.
+    """
+    full_metric_counts = None
+    fastgs_mult = getattr(args, 'fastgs_mult', getattr(args, 'mult', 0.5))
+
+    for view in range(len(camlist)):
+        calculateGaussianVisibilityContribution(camlist[view][1], gaussians, pipe, bg, fastgs_mult)
+
+
+        
+        gt_image,viewpoint_cam = camlist[view]
+        viewpoint_cam=viewpoint_cam.cuda()
+        gt_image=gt_image.detach()
+
+        render_pkg = render_fastgs(viewpoint_cam, gaussians, pipe, bg, fastgs_mult)
+        render_image = render_pkg["render"]
+
+        gt_image = gt_image.cuda()
+
+        photometric_loss =l1_loss(gt_image,render_image)
+
+        l1_norm = _get_loss_map(render_image, gt_image)
+        metric_map = (l1_norm > 0.1).to(torch.int32)
+
+        render_pkg2 = render_fastgs(
+            viewpoint_cam, gaussians, pipe, bg, fastgs_mult,
+            get_flag=True, metric_map=metric_map,
+        )
+        accum_loss_counts = render_pkg2["accum_metric_counts"]
+
+        if full_metric_counts is None:
+            full_metric_counts = accum_loss_counts.clone()
+        else:
+            full_metric_counts = full_metric_counts + accum_loss_counts
+
+    return full_metric_counts
+
+
+
 
 def compute_gaussian_score_fastgs(camlist, gaussians, pipe, bg, args, DENSIFY=False):
     """Compute multi-view consistency scores for Gaussians to guide densification.
@@ -114,7 +163,8 @@ def compute_gaussian_score_fastgs(camlist, gaussians, pipe, bg, args, DENSIFY=Fa
     print("Computing FastGS scores with cameras:")
     print("*************************************")
     for x in camlist:
-        print(x[1].image_name)
+        print(x[1].image_name,",",end="")
+    print("")
     full_metric_counts = None
     full_metric_score = None
     print("*************************************")

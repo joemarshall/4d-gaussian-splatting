@@ -1,3 +1,13 @@
+# TODO:
+# pluggable prune / densifiers:
+# prune floaters (at end?)
+# prune invisibles (render outside in, frame by frame and remove totally invisibles)
+# prune v short time span gaussians in 4d
+# 
+# better optimisation strategies (e.g. train over all frames at timepoint then backprop
+# - using a loss which combines multiple frame info)
+
+
 #
 # Copyright (C) 2023, Inria
 # GRAPHDECO research group, https://team.inria.fr/graphdeco
@@ -29,6 +39,8 @@ from utils.image_utils import psnr, easy_cmap
 from argparse import ArgumentParser, Namespace
 from arguments import ModelParams, PipelineParams, OptimizationParams
 from torchvision.utils import make_grid
+
+from scene.densifiers import *
 
 try:
     from utils.fast_utils import compute_gaussian_score_fastgs, sampling_cameras
@@ -159,9 +171,16 @@ def run_batch(batch_data, batch_size, gaussians, pipe, background, opt):
         batch_visibility_filter.append(visibility_filter)
     batch_viewspace_point_grad = None
     if batch_size > 1:
+        #combined_loss = torch.prod(torch.stack(batch_loss)+0.1)
+        #combined_loss = torch.stack(batch_loss).sum()
+        #combined_loss.backward()
         visibility_count = torch.stack(batch_visibility_filter, 1).sum(1)
         visibility_filter = visibility_count > 0
         radii = torch.stack(batch_radii, 1).max(1)[0]
+
+        #batch_point_grad.append(
+        #     torch.norm(viewspace_point_tensor.grad[:, :2], dim=-1)
+        #)
 
         batch_viewspace_point_grad = torch.stack(batch_point_grad, 1).sum(1)
         batch_viewspace_point_grad[visibility_filter] = (
@@ -246,6 +265,22 @@ def training(
 
     first_iter = 0
     tb_writer = prepare_output_and_logger(dataset)
+
+
+    use_fastgs = (
+        getattr(opt, 'use_fastgs_densification', False)
+    )
+    densification_iterations = []
+    for x in range(opt.iterations):
+        if x > opt.densify_from_iter and x % opt.densification_interval == 0:
+            densification_iterations.append(x)
+
+    if use_fastgs:
+        densifiers = [(densification_iterations,FastGSDensifier(opt))]
+    else:
+        densifiers = [(densification_iterations,PlainDensifier(opt))]
+
+
     gaussians = GaussianModel(
         dataset.sh_degree,
         gaussian_dim=gaussian_dim,
@@ -254,6 +289,7 @@ def training(
         force_sh_3d=force_sh_3d,
         sh_degree_t=2 if pipe.eval_shfs_4d else 0,
         prefilter_var=dataset.prefilter_var,
+        densifiers = densifiers
     )
     scene = Scene(
         dataset,
@@ -328,6 +364,8 @@ def training(
 
     training_dataset = scene.getTrainCameras()
 
+
+
     # estimate rough number of num workers based on initial point count to avoid OOM when loading things for large scenes
     initial_size = gaussians.get_xyz.shape[0]
 
@@ -343,17 +381,27 @@ def training(
     #     print(f"Setting num_workers to {num_workers} based on initial point count {initial_size}")
     # loading time doesn't seem to dominate at least on my PC
     # so there's little point in worker threads
+    # once the stupid PIL code is cached
     num_workers = 0
 
-    training_dataloader = DataLoader(
-        training_dataset,
-        batch_size=batch_size,
-        shuffle=True,
-#        num_workers=2 if dataset.dataloader else 0,
-        num_workers=num_workers,
-        collate_fn=collate_fn, # don't make a lambda as isn't pickleable for num_workers>0
-        drop_last=True,
-    )
+    if gaussians.gaussian_dim == 4:
+        training_dataloader = DataLoader(
+            training_dataset,
+            batch_sampler = training_dataset.get_frame_batch_sampler(),
+    #        num_workers=2 if dataset.dataloader else 0,
+            num_workers=num_workers,
+            collate_fn=collate_fn, # don't make a lambda as isn't pickleable for num_workers>0
+        )
+    else:
+        training_dataloader = DataLoader(
+            training_dataset,
+            batch_size=batch_size,
+            shuffle=True,
+    #        num_workers=2 if dataset.dataloader else 0,
+            num_workers=num_workers,
+            collate_fn=collate_fn, # don't make a lambda as isn't pickleable for num_workers>0
+            drop_last=True,
+        )
 
 
     stop_iteration = False
@@ -388,7 +436,11 @@ def training(
             else:
                 pipe.debug = False
                 
-            
+            # update batch size based on what the dataloader returns (e.g. for 4d 
+            # with frame batch sampler the batch size is cameras per-frame)
+            batch_size = len(batch_data)
+            ts_batch = batch_data[0][1].timestamp
+            #print("Training {} gaussians on batch of size {} at iteration {} (timestamp {})".format(gaussians.get_xyz.shape[0], batch_size, iteration, ts_batch))
 
             Ll1, Lssim, loss, image, gt_image,visibility_filter,radii,batch_viewspace_point_grad,batch_t_grad,viewspace_point_tensor = run_batch(
                 batch_data, batch_size, gaussians, pipe, background, opt
@@ -423,6 +475,7 @@ def training(
 
                 if iteration % 10 == 0:
                     postfix = {
+                        "N": f"{gaussians.get_xyz.shape[0]}",
                         "Loss": f"{ema_loss_for_log:.{7}f}",
                         "PSNR": f"{psnr_for_log:.{2}f}",
                         "Ll1": f"{ema_l1loss_for_log:.{4}f}",
@@ -476,70 +529,25 @@ def training(
 
 #                    print(f"[ITER {iteration}] Densifying Gaussians: {gaussians.get_xyz.shape[0]}")
                     # Keep track of max radii in image-space for pruning
-                    gaussians.max_radii2D[visibility_filter] = torch.max(
-                        gaussians.max_radii2D[visibility_filter],
-                        radii[visibility_filter],
-                    )
                     if batch_size == 1:
                         gaussians.add_densification_stats(
-                            viewspace_point_tensor,
-                            visibility_filter,
-                            batch_t_grad if gaussians.gaussian_dim == 4 else None,
+                            iteration = iteration,
+                            viewspace_point_tensor = viewspace_point_tensor,
+                            update_filter = visibility_filter,
+                            radii = radii,
+                            avg_t_grad = batch_t_grad if gaussians.gaussian_dim == 4 else None,
                         )
                     else:
                         gaussians.add_densification_stats_grad(
-                            batch_viewspace_point_grad,
-                            visibility_filter,
-                            batch_t_grad if gaussians.gaussian_dim == 4 else None,
+                            iteration = iteration,
+                            viewspace_point_grad = batch_viewspace_point_grad,
+                            update_filter = visibility_filter,
+                            radii = radii,
+                            avg_t_grad = batch_t_grad if gaussians.gaussian_dim == 4 else None,
                         )
 
-                    if (
-                        iteration > opt.densify_from_iter
-                        and iteration % opt.densification_interval == 0
-                    ):
-                        size_threshold = (
-                            20 if iteration > opt.opacity_reset_interval else None
-                        )
-                        use_fastgs = (
-                            getattr(opt, 'use_fastgs_densification', False)
-                            and _FAST_UTILS_AVAILABLE
-                        )
-                        if use_fastgs:
-                            mult = getattr(opt, 'fastgs_mult', 0.5)
-                            num_cams = getattr(opt, 'fastgs_num_sample_cams', 40)
-                            my_viewpoint_stack = scene.getTrainCameras()
-                            camlist = sampling_cameras(my_viewpoint_stack, num_cams,dimensions=4)
-                            importance_score, pruning_score = compute_gaussian_score_fastgs(
-                                camlist, gaussians, pipe, background, opt, DENSIFY=True
-                            )
-                            gaussians.densify_and_prune_fastgs(
-                                max_screen_size=size_threshold,
-                                min_opacity=opt.thresh_opa_prune,
-                                extent=scene.cameras_extent,
-                                radii=radii,
-                                args=opt,
-                                importance_score=importance_score,
-                                pruning_score=pruning_score,
-                            )
-                        else:
-                            gaussians.densify_and_prune(
-                                opt.densify_grad_threshold,
-                                opt.thresh_opa_prune,
-                                scene.cameras_extent,
-                                size_threshold,
-                                opt.densify_grad_t_threshold,
-                            )
-
-                        # # Spatio-temporal Gaussian pruning (paper Eq. 4-7)
-                        # if (
-                        #     prune_short_timespan_iters
-                        #     and opt.prune_st_score_threshold > 0
-                        #     and gaussians.gaussian_dim == 4
-                        # ):
-                        #     _prune_by_spatio_temporal_score(
-                        #         gaussians, scene, pipe, background, opt
-                        #     )
-
+                    # run any densifiers configured for this step
+                    gaussians.run_densifiers(iteration, scene, gaussians, radii, pipe, background)
 
                     if iteration % opt.opacity_reset_interval == 0 or (
                         dataset.white_background and iteration == opt.densify_from_iter
@@ -551,27 +559,27 @@ def training(
                     if TRACK_MEMORY:
                         torch.cuda.memory._dump_snapshot(f"temp.pickle")
 
-                # FastGS final-stage pruning (runs after the main densification phase).
-                fastgs_final_from = getattr(opt, 'fastgs_final_prune_from_iter', -1)
-                if (
-                    fastgs_final_from > 0
-                    and iteration > fastgs_final_from
-                    and iteration % getattr(opt, 'fastgs_final_prune_interval', 3000) == 0
-                    and iteration < getattr(opt, 'fastgs_final_prune_until_iter', 30000)
-                    and _FAST_UTILS_AVAILABLE
-                    and getattr(opt, 'use_fastgs_densification', False)
-                ):
-                    mult = getattr(opt, 'fastgs_mult', 0.5)
-                    num_cams = getattr(opt, 'fastgs_num_sample_cams', 10)
-                    my_viewpoint_stack = scene.getTrainCameras()
-                    camlist = sampling_cameras(my_viewpoint_stack, num_cams)
-                    _, pruning_score = compute_gaussian_score_fastgs(
-                        camlist, gaussians, pipe, background, opt
-                    )
-                    gaussians.final_prune_fastgs(
-                        min_opacity=getattr(opt, 'fastgs_final_prune_min_opacity', 0.1),
-                        pruning_score=pruning_score,
-                    )
+                # # FastGS final-stage pruning (runs after the main densification phase).
+                # fastgs_final_from = getattr(opt, 'fastgs_final_prune_from_iter', -1)
+                # if (
+                #     fastgs_final_from > 0
+                #     and iteration > fastgs_final_from
+                #     and iteration % getattr(opt, 'fastgs_final_prune_interval', 3000) == 0
+                #     and iteration < getattr(opt, 'fastgs_final_prune_until_iter', 30000)
+                #     and _FAST_UTILS_AVAILABLE
+                #     and getattr(opt, 'use_fastgs_densification', False)
+                # ):
+                #     mult = getattr(opt, 'fastgs_mult', 0.5)
+                #     num_cams = getattr(opt, 'fastgs_num_sample_cams', 10)
+                #     my_viewpoint_stack = scene.getTrainCameras()
+                #     camlist = sampling_cameras(my_viewpoint_stack, num_cams)
+                #     _, pruning_score = compute_gaussian_score_fastgs(
+                #         camlist, gaussians, pipe, background, opt
+                #     )
+                #     gaussians.final_prune_fastgs(
+                #         min_opacity=getattr(opt, 'fastgs_final_prune_min_opacity', 0.1),
+                #         pruning_score=pruning_score,
+                #     )
 
                 # Optimizer step
                 if iteration < opt.iterations:
@@ -798,8 +806,8 @@ def training_report(
                 ssim_test /= len(config["range"])
                 msssim_test /= len(config["range"])
                 print(
-                    "\n[ITER {}] Evaluating {}[{}]: L1 {} PSNR {}".format(
-                        iteration, config["name"],len(config["cameras"]), l1_test, psnr_test
+                    "\n[ITER {}] Gaussians {} Evaluating {}[{}]: L1 {} PSNR {}".format(
+                        iteration, len(scene.gaussians._xyz), config["name"],len(config["cameras"]), l1_test, psnr_test
                     )
                 )
                 if tb_writer:
