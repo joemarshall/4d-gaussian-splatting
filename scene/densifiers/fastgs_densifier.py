@@ -59,6 +59,29 @@ class FastGSDensifier(DensifierBase):
         if gaussians.gaussian_dim == 4:
             self.t_gradient_accum[update_filter] += avg_t_gradient[update_filter]
 
+    def per_iteration(self, iteration, scene, gaussians, radii, pipe, bg):
+        # FastGS final-stage pruning (runs after the main densification phase).
+        fastgs_final_from = getattr(self.options, 'fastgs_final_prune_from_iter', -1)
+        fastgs_final_interval = getattr(self.options, 'fastgs_final_prune_interval', 3000)
+        fastgs_final_until = getattr(self.options, 'fastgs_final_prune_until_iter', 30000)
+        if (
+            iteration >= fastgs_final_from and
+            iteration % fastgs_final_interval == 0 and
+            iteration <= fastgs_final_until
+        ):
+            print("Running FastGS final pruning at iteration {}...".format(iteration))
+            num_cams = getattr(self.options, 'fastgs_final_num_sample_cams', 40)
+            my_viewpoint_stack = scene.getTrainCameras()
+            camlist = sampling_cameras(my_viewpoint_stack, num_cams,dimensions=4)
+            importance_score, pruning_score = compute_gaussian_score_fastgs(
+                camlist, gaussians, pipe, bg, self.options, DENSIFY=False
+            )
+            min_opacity = getattr(self.options, "fastgs_final_prune_min_opacity", 0.1)
+
+            self._final_prune_fastgs(gaussians,
+                min_opacity=min_opacity,
+                pruning_score=pruning_score,
+            )
 
 
     def get_save_vars(self,gaussians):
@@ -93,7 +116,6 @@ class FastGSDensifier(DensifierBase):
             new_opacities, new_scaling, new_rotation,
             new_t, new_scaling_t, new_rotation_r,
         )
-        self._densification_postfix(gaussians)
     
 
     def _densify_and_split_fastgs(self, gaussians, metric_mask, filter_mask, N=2):
@@ -137,14 +159,12 @@ class FastGSDensifier(DensifierBase):
             new_opacity, new_scaling, new_rotation,
             new_t, new_scaling_t, new_rotation_r,
         )
-        self._densification_postfix(gaussians)
 
         prune_filter = torch.cat((
             selected_pts_mask,
             torch.zeros(N * selected_pts_mask.sum(), device="cuda", dtype=torch.bool),
         ))
         gaussians.prune_points(prune_filter)
-        self._prune_points(prune_filter)
 
     def _densify_and_prune_fastgs(self, gaussians, max_screen_size, min_opacity, extent, radii,
                                   args, importance_score=None, pruning_score=None):
@@ -252,14 +272,11 @@ class FastGSDensifier(DensifierBase):
                 selected_pts_mask[sampled_indices] = True
                 final_prune = torch.logical_and(prune_mask, selected_pts_mask)
                 gaussians.prune_points(final_prune)
-                self._prune_points(final_prune)
             else:
                 gaussians.prune_points(final_prune)
-                self._prune_points(prune_mask)
 
         else:
             gaussians.prune_points(final_prune)
-            self._prune_points(prune_mask)
 
         # Clamp opacities to avoid them exploding after densification.
         opacities_new = inverse_sigmoid(
@@ -292,11 +309,10 @@ class FastGSDensifier(DensifierBase):
             # (top 10 % of the [0, 1] range, i.e., score > 0.9).
             scores_mask[:n] = pruning_score[:n].squeeze() > 0.9
             prune_mask = torch.logical_or(prune_mask, scores_mask)
-        self._prune_points(prune_mask)
         print("FastGS final prune: removed {} points. Remaining: {}".format(
             prune_mask.sum(), gaussians.get_xyz.shape[0]))
         
-    def _densification_postfix(self, gaussians):
+    def densification_postfix(self, gaussians):
         self.xyz_gradient_accum = torch.zeros((gaussians.get_xyz.shape[0], 1), device="cuda")
         self.xyz_gradient_accum_abs = torch.zeros((gaussians.get_xyz.shape[0], 1), device="cuda")
         self.denom = torch.zeros((gaussians.get_xyz.shape[0], 1), device="cuda")
@@ -304,7 +320,7 @@ class FastGSDensifier(DensifierBase):
         if self.t_gradient_accum is not None:
             self.t_gradient_accum = torch.zeros((gaussians.get_xyz.shape[0], 1), device="cuda")
 
-    def _prune_points(self, prune_mask):
+    def prune_points(self, prune_mask):
         valid_points_mask = ~prune_mask
         self.xyz_gradient_accum = self.xyz_gradient_accum[valid_points_mask]
         self.xyz_gradient_accum_abs = self.xyz_gradient_accum_abs[valid_points_mask]
@@ -313,4 +329,33 @@ class FastGSDensifier(DensifierBase):
         if self.t_gradient_accum is not None:
             self.t_gradient_accum = self.t_gradient_accum[valid_points_mask]
 
+
+    @torch.no_grad()
+    def apply_debug_colour(self, gaussians, scene,pipe,bg, debug_type=""):
+        from utils.sh_utils import RGB2SH
+        # debug colours based on multiview-consistency score
+        num_cams = 100
+        my_viewpoint_stack = scene.getTrainCameras()
+        camlist = sampling_cameras(my_viewpoint_stack, num_cams,dimensions=4)
+        print(len(camlist))
+        if debug_type == "flagged_errors":
+            display_score, _ = compute_gaussian_score_fastgs(
+                camlist, gaussians, pipe, bg, self.options, DENSIFY=True
+            )
+        elif debug_type == "multiview_importance":
+            _, display_score = compute_gaussian_score_fastgs(
+                camlist, gaussians, pipe, bg, self.options, DENSIFY=False
+            )
+        print(display_score.shape)
+        display_score = display_score.float()
+        display_score -= display_score.min()
+        display_score /= display_score.max()
+        display_score*=5.0
+        display_score = torch.clamp(display_score, 0.0, 1.0)
+        print(torch.max(display_score), torch.min(display_score))
+        rgb_tensor = RGB2SH(torch.stack((display_score, 1.0 - display_score, torch.zeros_like(display_score)), dim=1))
+        #gaussians._opacity = torch.ones_like(gaussians.get_opacity)
+        num_gaussians = len(display_score)
+        gaussians._features_dc = rgb_tensor
+        gaussians._features_rest = torch.zeros_like(gaussians.get_sh_features_rest)
 

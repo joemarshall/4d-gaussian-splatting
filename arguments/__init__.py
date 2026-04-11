@@ -107,6 +107,7 @@ class OptimizationParams(ParamGroup):
         self.lambda_opa_mask = 0.0
         self.lambda_rigid = 0.0
         self.lambda_motion = 0.0
+        self.lambda_depth = 0.0
         # FastGS parameters
         self.use_fastgs_densification = False
         self.fastgs_mult = 0.5
@@ -117,7 +118,19 @@ class OptimizationParams(ParamGroup):
         self.fastgs_final_prune_interval = 3000
         self.fastgs_final_prune_until_iter = 30000
         self.fastgs_final_prune_min_opacity = 0.1
+        self.fastgs_final_num_sample_cams = 10
         self.fastgs_num_sample_cams = 10
+        # LFF densification parameters (EFA-GS style)
+        self.use_lff_densification = False
+        self.lff_split_multiplier = 2.0
+        self.lff_num_split_samples = 1
+        self.lff_scaling_multiplier_max = 1.5
+        self.lff_scaling_multiplier_min = 1.0
+        self.lff_training_percent_powered = 0.0
+        self.lff_splitting_ub = 1.0
+        self.lff_splitting_lb = 0.5
+        self.lff_tolerance = 1e-5
+        self.lff_diffscale = False
         super().__init__(parser, "Optimization Parameters")
 
 def get_combined_args(parser : ArgumentParser,cmdlne_string = None):

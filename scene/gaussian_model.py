@@ -184,7 +184,11 @@ class GaussianModel:
         if training_args is not None:
             self.training_setup(training_args,reset_accumulated_gradients=False)
             for _,densifier in self.densifiers:
-                densifier.training_setup(self,reset_accumulated_gradients=False)
+                densifier_name = densifier.__class__.__name__
+                if densifier_name not in model_args["densifier_vars"]:
+                    densifier.training_setup(self,reset_accumulated_gradients=True)
+                else:
+                    densifier.training_setup(self,reset_accumulated_gradients=False)
             for var_name, optim_dict in optimizer_params:
                 if var_name == "optimizer":
                     self.optimizer.load_state_dict(optim_dict)
@@ -528,6 +532,9 @@ class GaussianModel:
             if self.rot_4d:
                 self._rotation_r = optimizable_tensors["rotation_r"]
 
+        for _iterations,densifier in self.densifiers:
+            densifier.prune_points(mask)
+
         # print("Tensor shapes after prune:")
         # for attr in dir(self):
         #     var = getattr(self, attr)
@@ -609,6 +616,9 @@ class GaussianModel:
             self._scaling_t = optimizable_tensors['scaling_t']
             if self.rot_4d:
                 self._rotation_r = optimizable_tensors['rotation_r']
+
+        for _iterations,densifier in self.densifiers:
+            densifier.densification_postfix(self) 
 
     def compute_temporal_score(self, timestamps):
         """Compute per-Gaussian temporal score (Eq. 5-6 from arXiv 2503.16422).
@@ -696,6 +706,7 @@ class GaussianModel:
         return masks
 
 
+
     def add_densification_stats(self, *,iteration, viewspace_point_tensor, update_filter, radii,avg_t_grad=None):
         for _,densifier in self.densifiers:
             densifier.add_densification_stats(self, iteration=iteration, viewspace_point_tensor=viewspace_point_tensor, 
@@ -706,34 +717,14 @@ class GaussianModel:
             densifier.add_densification_stats_grad(gaussians=self, iteration=iteration, viewspace_point_grad=viewspace_point_grad, 
                                                    update_filter=update_filter, radii=radii, avg_t_gradient=avg_t_grad)
 
-    def run_densifiers(self, iteration, scene, gaussians, radii, pipe, bg):
+    def run_densifiers(self, iteration, scene, radii, pipe, bg):
         for densifier_iterations,densifier in self.densifiers:
             if iteration in densifier_iterations:
-                densifier.densify_and_prune(iteration, scene, gaussians, radii, pipe, bg)
+                densifier.densify_and_prune(iteration, scene, self, radii, pipe, bg)
 
+    def call_densifier_per_iteration(self, iteration, scene, radii, pipe, bg):
+        for densifier_iterations,densifier in self.densifiers:
+            if iteration in densifier_iterations:
+                densifier.per_iteration(iteration, scene, self, radii, pipe, bg)
 
-    # def final_prune_fastgs(self, min_opacity, pruning_score=None):
-    #     """Final-stage pruning: remove Gaussians based on opacity and multi-view
-    #     consistency score.
-
-    #     This is called after the main training phase (e.g., every 3 000 iterations
-    #     between iterations 15 000–30 000) to aggressively remove Gaussians that
-    #     are no longer needed.
-
-    #     Args:
-    #         min_opacity (float): remove Gaussians with opacity below this value.
-    #         pruning_score (Tensor or None): normalised per-Gaussian pruning score
-    #             from :func:`~utils.fast_utils.compute_gaussian_score_fastgs`.
-    #             Gaussians with score > 0.9 are also pruned.
-    #     """
-    #     prune_mask = (self.get_opacity < min_opacity).squeeze()
-    #     if pruning_score is not None:
-    #         n = min(pruning_score.shape[0], self.get_xyz.shape[0])
-    #         scores_mask = torch.zeros(self.get_xyz.shape[0], dtype=torch.bool, device="cuda")
-    #         # Prune Gaussians with very high reconstruction inconsistency score
-    #         # (top 10 % of the [0, 1] range, i.e., score > 0.9).
-    #         scores_mask[:n] = pruning_score[:n].squeeze() > 0.9
-    #         prune_mask = torch.logical_or(prune_mask, scores_mask)
-    #     self.prune_points(prune_mask)
-    #     print("FastGS final prune: removed {} points. Remaining: {}".format(
-    #         prune_mask.sum(), self.get_xyz.shape[0]))
+    

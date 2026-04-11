@@ -21,9 +21,9 @@ class DensifierBase:
         """Collect any necessary statistics from each iteration here for next densification call."""
         print("Warning: add_densification_stats_grad not implemented for this densifier, so no stats will be collected for next densification step.")
 
-    def get_save_vars(self):
+    def get_save_vars(self,gaussians):
         """Return variables that should be saved with the scene, as a list of attribute names."""
-        return []
+        raise NotImplementedError("Get save vars method must be implemented by subclasses.")
     
     def densification_postfix(self, gaussians):
         """ resize accumulation variables after size change"""
@@ -32,3 +32,13 @@ class DensifierBase:
     def prune_points(self, valid_points_mask):
         """ prune points according to the mask"""
         pass
+
+    def per_iteration(self, iteration, scene, gaussians, radii, pipe, bg):
+        """ Any per-iteration code that needs to be run for this densifier can be put here. 
+        This is called every iteration, even after densification has finished. Useful for cleanup (see fastgs final pruning)."""
+        pass
+
+    def apply_debug_colour(self, gaussians, scene,pipe,bg, debug_type=""):
+        """ change gaussian colour for some kind of debugging purpose - debug_type is a string that can be used to specify what kind of debugging info to show
+        """
+        return None

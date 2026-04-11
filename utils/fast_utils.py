@@ -38,7 +38,8 @@ def sampling_cameras(viewpoint_stack, num_cams=10,dimensions = 3):
         # n.b. if num_cams > cameras in a single frame then multiple frames will be
         # sampled
         frames = viewpoint_stack.get_timestamps()
-        ts = np.random.choice(frames,10)
+        ts = np.array(frames)
+        np.random.shuffle(ts)
         while len(camlist) < num_cams and len(ts)>0:
             timestamp = ts[0]
             ts = ts[1:]
@@ -160,7 +161,7 @@ def compute_gaussian_score_fastgs(camlist, gaussians, pipe, bg, args, DENSIFY=Fa
             * **pruning_score** (*Tensor*): per-Gaussian score in [0, 1] used to
               prioritise pruning (higher → worse multi-view consistency).
     """
-    print("Computing FastGS scores with cameras:")
+    print(f"Computing FastGS scores with { len(camlist) } cameras:")
     print("*************************************")
     for x in camlist:
         print(x[1].image_name,",",end="")

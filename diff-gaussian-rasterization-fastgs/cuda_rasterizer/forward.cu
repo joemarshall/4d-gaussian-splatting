@@ -201,6 +201,11 @@ __global__ void preprocessCUDA(
 	if (!in_frustum(idx, orig_points, viewmatrix, projmatrix, prefiltered, p_view))
 		return;
 
+	if(opacities[idx] <= 0.001f){
+		// drop invisible points
+		return;
+	}
+
 	// Transform point by projecting
 	float3 p_orig = { orig_points[3 * idx], orig_points[3 * idx + 1], orig_points[3 * idx + 2] };
 	float4 p_hom = transformPoint4x4(p_orig, projmatrix);

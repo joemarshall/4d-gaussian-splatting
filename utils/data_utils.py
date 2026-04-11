@@ -160,6 +160,10 @@ class CameraDataset(Dataset):
 
     def get_frame_batch_sampler(self):
         return CameraDataset.CameraAndFrameSampler(self)
+    
+    def metadata(self):
+        return self.viewpoint_stack
+
         
     def __getitem__(self, index):
         viewpoint_cam = self.viewpoint_stack[index]
