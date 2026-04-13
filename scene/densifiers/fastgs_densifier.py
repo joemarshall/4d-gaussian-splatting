@@ -83,7 +83,7 @@ class FastGSDensifier(DensifierBase):
             camlist = sampling_cameras(my_viewpoint_stack, num_cams,dimensions=4)
             for frame_cams in camlist:
                 _, pruning_score = compute_gaussian_score_fastgs(
-                    camlist, gaussians, pipe, bg, self.options, DENSIFY=False
+                    frame_cams, gaussians, pipe, bg, self.options, DENSIFY=False
                 )
                 min_opacity = getattr(self.options, "fastgs_final_prune_min_opacity", 0.1)
 

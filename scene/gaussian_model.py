@@ -456,7 +456,7 @@ class GaussianModel:
         opacities_new = self.inverse_opacity_activation(torch.min(self.get_opacity, torch.ones_like(self.get_opacity)*0.01))
         optimizable_tensors = self.replace_tensor_to_optimizer(opacities_new, "opacity")
         self._opacity = optimizable_tensors["opacity"]
-        
+
     def replace_tensor_to_optimizer(self, tensor, name):
         optimizable_tensors = {}
         for group in self.optimizer.param_groups:
@@ -724,7 +724,6 @@ class GaussianModel:
 
     def call_densifier_per_iteration(self, iteration, scene, radii, pipe, bg):
         for densifier_iterations,densifier in self.densifiers:
-            if iteration in densifier_iterations:
-                densifier.per_iteration(iteration, scene, self, radii, pipe, bg)
+            densifier.per_iteration(iteration, scene, self, radii, pipe, bg)
 
     
