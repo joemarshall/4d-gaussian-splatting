@@ -105,6 +105,8 @@ class CameraDataset(Dataset):
         self.viewpoint_stack = copy_dataset.viewpoint_stack.copy()
         self.bg = copy_dataset.bg
         self.names_only = copy_dataset.names_only
+        self.timestamps = copy_dataset.timestamps
+        self.num_cameras = copy_dataset.num_cameras
 
     def __init__(self, viewpoint_stack, white_background):
         self.viewpoint_stack = viewpoint_stack
@@ -112,6 +114,7 @@ class CameraDataset(Dataset):
         self.names_only = False
         self.timestamps = None
         self.num_cameras = None
+        self._calc_cameras_and_timestamps()
 
     def set_names_only(self, names_only):
         self.names_only = names_only
@@ -129,9 +132,11 @@ class CameraDataset(Dataset):
         self.num_cameras= len(viewpoint_set)
         self.timestamps = sorted(list(timestamp_set))
         self.different_cam_list = list(viewpoint_set)
-        print(self.num_cameras)
-        print(len(self.timestamps))
-        print(len(self.viewpoint_stack))
+
+        for x in self.viewpoint_stack:
+            x.camera_pose_id = self.different_cam_list.index(self._get_camera_cache_key(x))
+
+
 
 
     def get_num_different_cameras(self):

@@ -2,6 +2,7 @@ import argparse
 import os
 from pathlib import Path
 import subprocess
+import shutil
 import sys
 import tempfile
 import threading
@@ -18,7 +19,16 @@ import torchvision
 import re
 from copy import deepcopy
 
-import sys
+from omegaconf import OmegaConf
+from omegaconf.dictconfig import DictConfig
+
+from scene.densifiers import *
+
+
+torch.set_float32_matmul_precision('high')
+torch.backends.fp32_precision = "tf32"
+torch._dynamo.config.force_parameter_static_shapes = False 
+
 
 OUR_PATH = str(Path(__file__).parent.resolve())
 print(OUR_PATH)
@@ -38,11 +48,14 @@ def trace_fn(frame, event, arg):
 parser = argparse.ArgumentParser()
 parser.add_argument("output_folder", help="Output folder path")
 parser.add_argument( "--render","-r", action="store_true", help="Render mode")
+parser.add_argument( "--vs_gt","-t", action="store_true", help="Render vs gt")
 parser.add_argument("--test", action="store_true", help="Test mode")
 parser.add_argument("--train", action="store_true", help="Training mode")
-parser.add_argument("--limit", type=int, default=-1, help="Limit the number of images to show")
+parser.add_argument("--limit","-l", type=int, default=-1, help="Limit the number of images to show")
 parser.add_argument("--save_video_name","-f", type=str, help="Render a video")
 parser.add_argument("--play_video","-p", action="store_true", help="Play the rendered video")
+parser.add_argument("--show_images", "-s", action="store_true", help="Show rendered images in terminal")
+parser.add_argument("--debug_visualisation", "-d",default="", help="Show some kind of debug visualisation in the rendered images ")
 parser.add_argument(
     "--render_camera",
     "-c",
@@ -248,8 +261,13 @@ def graph_camera_positions_3d(camera_sets, lerp_track_positions=None, lerp_track
 
 
 @torch.compile
-def render_wrapper(args):
-    return render(*args)
+def render_wrapper(view,gaussians,pipeline,background,max_distance=4.0):
+    # copy_opacity = gaussians._opacity.clone()
+    # clipped = gaussians._xyz.norm(dim=1)>max_distance
+    # gaussians._opacity[clipped] = -20.0
+    render_result = render(view, gaussians, pipeline, background)
+    # gaussians._opacity = copy_opacity
+    return render_result
 
 
 def render_set(model_path, iteration, views, gaussians, pipeline, background):
@@ -259,15 +277,23 @@ def render_set(model_path, iteration, views, gaussians, pipeline, background):
 
     for idx, (name,view) in enumerate(tqdm(views, desc="Rendering progress")):
         render_path = Path(model_path) / name / f"ours_{iteration}" / "renders"
-        gts_path = Path(model_path) / name / f"ours_{iteration}" / "gt"
         makedirs(render_path, exist_ok=True)
-        makedirs(gts_path, exist_ok=True)
-        rendering = render_wrapper((view[1].cuda(), gaussians, pipeline, background))["render"]
-        #gt = view[0][0:3, :, :]
-        torchvision.utils.save_image(rendering, render_path / f"{idx:05d}.png")
-        #torchvision.utils.save_image(gt, gts_path / f"{idx:05d}.png")
+        rendering = render_wrapper(view[1].cuda(), gaussians, pipeline, background)["render"]
+        if view[0] is not None:
+            gt = view[0][0:3, :, :]
+            combined = torch.cat([gt, rendering], dim=1)
+            torchvision.utils.save_image(combined, render_path / f"{idx:05d}.png")
+        else:
+            torchvision.utils.save_image(rendering, render_path / f"{idx:05d}.png")
+
+
+
 
 try:
+    config_path = Path(args.output_folder).parent / "config.yaml"
+
+
+
     if args.render or args.graph_camera_positions:
         checkpoints = Path(args.output_folder).glob("*.pth")
         sorted_checkpoints = list(sorted(checkpoints, key=lambda x: x.stat().st_mtime))
@@ -290,17 +316,42 @@ try:
             model = ModelParams(render_parser, sentinel=True)
             pipeline = PipelineParams(render_parser)
             render_args = get_combined_args(render_parser, cmdlne_string=render_cmdline)
+            cfg = OmegaConf.load(config_path)
+
+            def recursive_merge(key, host):
+                    if isinstance(host[key], DictConfig):
+                        for key1 in host[key].keys():
+                            recursive_merge(key1, host[key])
+                    else:
+                        if key != "model_path" and key != "loaded_pth":  # don't override these from the config file
+                            if hasattr(render_args, key):
+                                setattr(render_args, key, host[key])
+
+            for k in cfg.keys():
+                recursive_merge(k, cfg)            
 
             model = model.extract(render_args)
             pipeline = pipeline.extract(render_args)
 
+
             gaussians = GaussianModel(model.sh_degree, gaussian_dim=4, rot_4d=True)
+
             scene = Scene(model, gaussians, shuffle=False)
+
+
 
             print(f"Loaded model, {len(gaussians.get_xyz)} gaussians")
 
             bg_color = [1, 1, 1] if model.white_background else [0, 0, 0]
             background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
+
+            if args.debug_visualisation == "multiview_importance" or args.debug_visualisation == "flagged_errors":
+                d= FastGSDensifier(render_args)
+                d.apply_debug_colour(gaussians,scene,pipeline,background,args.debug_visualisation)
+            else:
+                d = PlainDensifier(render_args)
+                d.apply_debug_colour(gaussians,scene,pipeline,background,args.debug_visualisation)
+
 
             all_cameras = []
             camera_sets = []
@@ -320,28 +371,28 @@ try:
             max_frame = 0
             filtered_cameras = []
             lerp_track_positions = []
-            print("BOO")
             for name, cameras in camera_sets:
                 if master_camera is not None:
                     cameras.set_names_only(True)
-                    for x in cameras:
-                        camera_id, frame_id = camera_id_and_frame_from_path(x[1].image_name)
+                    for i,x in enumerate(cameras.metadata()):
+                        camera_id, frame_id = camera_id_and_frame_from_path(x.image_name)
                         if camera_id == master_camera:
-                            filtered_cameras.append((name,x))
+                            filtered_cameras.append((name, (cameras,i,x.image_name,x.timestamp)))
                         if camera_id in other_cameras and frame_id ==0:
                             # this camera is just used as a reference for lerping, so we only need
                             # the first frame
                             other_camera_info[camera_id] = x
                         max_frame = max(max_frame, frame_id)
                 else:
-                    for x in cameras:
-                        filtered_cameras.append((name,x))
+                    for i,x in enumerate(cameras.metadata()):
+                        filtered_cameras.append((name, (cameras,i,x.image_name,x.timestamp)))
             if master_camera is not None and len(other_cameras)>0:
                 print(f"Rendering with master camera {master_camera} and lerping to other cameras {other_cameras}")
                 lerped_cameras = []
                 for x in range(len(filtered_cameras)):
-                    name, cam = filtered_cameras[x]
-                    camera_id, frame_id = camera_id_and_frame_from_path(cam[1].image_name)
+                    name, (camset,idx,frame_name,timestamp) = filtered_cameras[x]
+                    cam = camset[idx]
+                    camera_id, frame_id = camera_id_and_frame_from_path(frame_name)
                     frame_fraction = (frame_id / max_frame)*(len(other_cameras)-1)
                     other_cam_index = int(frame_fraction)
                     lerp_factor = frame_fraction - other_cam_index
@@ -349,7 +400,8 @@ try:
                     cam_after = other_camera_info[other_cameras[min(other_cam_index+1, len(other_cameras)-1)]]
                     new_cam = deepcopy(cam[1])
                     print(f"Lerping transform! Camera: {camera_id}, Frame: {frame_id}, Frame fraction: {frame_fraction}, Between: {other_cameras[other_cam_index], other_cameras[min(other_cam_index+1, len(other_cameras)-1)]}")
-                    new_cam.lerp_transform(cam_before[1], cam_after[1], lerp_factor)
+                    cam_before_transform = cam_before
+                    new_cam.lerp_transform(cam_before, cam_after, lerp_factor)
                     lerped_cameras.append((name, (cam[0], new_cam)))
 
                 if args.graph_camera_positions:
@@ -380,6 +432,16 @@ try:
                 if args.graph_camera_positions:
                     graph_camera_positions_3d(camera_sets)
                 if args.render:
+                    def get_sorting_key(fc):
+                        name, (camset,idx,frame_name,timestamp) = fc
+                        cam_id, frame_id = camera_id_and_frame_from_path(frame_name)
+                        return frame_id, cam_id
+
+                    filtered_cameras = sorted(filtered_cameras, key=get_sorting_key)
+                    if args.limit > 0:
+                        filtered_cameras = filtered_cameras[: args.limit]
+                    filtered_cameras = [ (name, camset[idx]) for name, (camset,idx,frame_name,timestamp) in filtered_cameras ]
+                    cameras.set_names_only(not args.vs_gt)
                     render_set(
                         model.model_path,
                         scene.loaded_iter,
@@ -388,6 +450,7 @@ try:
                         pipeline,
                         background,
                     )
+
 except KeyboardInterrupt:
     print("Rendering interrupted by user, showing output so far")
 
@@ -421,8 +484,15 @@ extra_args = []
 if os.name == "nt":
     extra_args = ["-vo=gpu"]
 
-if not args.save_video_name and not args.graph_camera_positions:
+if not args.save_video_name and not args.graph_camera_positions and not args.show_images:
     args.play_video= True
+
+if args.show_images:
+    for file in files_in_order:
+        subprocess.run([shutil.which("pwsh.exe"),"-Command","ConvertTo-Sixel",str(file)],shell=False)
+        print("!!!")
+#        subprocess.run(["magick", str(file), "-geometry", "x800", "sixel:-"])
+#        subprocess.run(["timg", "-m", "sixel", str(file)])
 
 if args.play_video and len(files_in_order)>0:
     subprocess.run(["mpv","--no-correct-pts","--merge-files=yes","-mf-fps=30",*files_in_order,"--loop=10"]+extra_args )

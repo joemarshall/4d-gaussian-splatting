@@ -4,6 +4,17 @@ from .densifier_base import DensifierBase
 from utils.fast_utils import compute_gaussian_score_fastgs, sampling_cameras
 from utils.general_utils import inverse_sigmoid, build_rotation
 
+# TODO:
+# make sample cameras add a camera ID to each camera
+# or maybe just dataset itself should do that
+# then capture the frame IDs in the fastgs code
+# so we're looking at multi-view consistency on a per-frame basis 
+# and then summing it, otherwise multiview-consistency will come out
+# even for gaussians that aren't multiview consistent because they are
+# visible on multiple timestamps
+
+# Then think about depth consistency pruning somehow
+
 class FastGSDensifier(DensifierBase):
     def __init__(self, opt):
         self.options = opt
@@ -24,22 +35,19 @@ class FastGSDensifier(DensifierBase):
         num_cams = getattr(self.options, 'fastgs_num_sample_cams', 40)
         my_viewpoint_stack = scene.getTrainCameras()
         camlist = sampling_cameras(my_viewpoint_stack, num_cams,dimensions=4)
-        importance_score, pruning_score = compute_gaussian_score_fastgs(
-            camlist, gaussians, pipe, bg, self.options, DENSIFY=True
-        )
 
         size_threshold = (
             20 if iteration > self.options.opacity_reset_interval else None
         )
 
-        self._densify_and_prune_fastgs(gaussians,
+        self._densify_and_prune_fastgs(gaussians=gaussians,
             max_screen_size=size_threshold,
             min_opacity=self.options.thresh_opa_prune,
             extent=scene.cameras_extent,
             radii=radii,
             args=self.options,
-            importance_score=importance_score,
-            pruning_score=pruning_score,
+            camlist = camlist,
+             pipe=pipe, bg=bg
         )
 
 
@@ -73,15 +81,16 @@ class FastGSDensifier(DensifierBase):
             num_cams = getattr(self.options, 'fastgs_final_num_sample_cams', 40)
             my_viewpoint_stack = scene.getTrainCameras()
             camlist = sampling_cameras(my_viewpoint_stack, num_cams,dimensions=4)
-            importance_score, pruning_score = compute_gaussian_score_fastgs(
-                camlist, gaussians, pipe, bg, self.options, DENSIFY=False
-            )
-            min_opacity = getattr(self.options, "fastgs_final_prune_min_opacity", 0.1)
+            for frame_cams in camlist:
+                _, pruning_score = compute_gaussian_score_fastgs(
+                    camlist, gaussians, pipe, bg, self.options, DENSIFY=False
+                )
+                min_opacity = getattr(self.options, "fastgs_final_prune_min_opacity", 0.1)
 
-            self._final_prune_fastgs(gaussians,
-                min_opacity=min_opacity,
-                pruning_score=pruning_score,
-            )
+                self._final_prune_fastgs(gaussians,
+                    min_opacity=min_opacity,
+                    pruning_score=pruning_score,
+                )
 
 
     def get_save_vars(self,gaussians):
@@ -91,10 +100,9 @@ class FastGSDensifier(DensifierBase):
             attrs.append("t_gradient_accum")
         return attrs
 
-    def _densify_and_clone_fastgs(self, gaussians,metric_mask, filter_mask):
+    def _densify_and_clone_fastgs(self, gaussians,selected_pts_mask):
         """Clone Gaussians that satisfy both the gradient filter and the
         multi-view metric mask (FastGS criterion)."""
-        selected_pts_mask = torch.logical_and(metric_mask, filter_mask)
         print("densify and clone:",selected_pts_mask.sum(),"/",len(selected_pts_mask))
         new_xyz = gaussians._xyz[selected_pts_mask]
         new_features_dc = gaussians._features_dc[selected_pts_mask]
@@ -118,16 +126,12 @@ class FastGSDensifier(DensifierBase):
         )
     
 
-    def _densify_and_split_fastgs(self, gaussians, metric_mask, filter_mask, N=2):
+    def _densify_and_split_fastgs(self, gaussians, selected_pts_mask, N=2):
         """Split Gaussians that satisfy both the gradient filter and the
         multi-view metric mask (FastGS criterion)."""
         n_init_points = gaussians.get_xyz.shape[0]
 
-        selected_pts_mask = torch.zeros(n_init_points, dtype=torch.bool, device="cuda")
-        combined = torch.logical_and(metric_mask, filter_mask)
-        selected_pts_mask[:combined.shape[0]] = combined
-
-        print("densify and split:",selected_pts_mask.sum(),"/",len(selected_pts_mask))
+#        print("densify and split:",selected_pts_mask.sum(),"/",len(selected_pts_mask))
 
 
         stds = gaussians.get_scaling[selected_pts_mask].repeat(N, 1)
@@ -166,8 +170,8 @@ class FastGSDensifier(DensifierBase):
         ))
         gaussians.prune_points(prune_filter)
 
-    def _densify_and_prune_fastgs(self, gaussians, max_screen_size, min_opacity, extent, radii,
-                                  args, importance_score=None, pruning_score=None):
+    def _densify_and_prune_fastgs(self, *,camlist, pipe, bg, gaussians, max_screen_size, min_opacity, extent, radii,
+                                  args):
         """FastGS multi-view consistent densification and pruning.
 
         Steps:
@@ -188,7 +192,7 @@ class FastGSDensifier(DensifierBase):
                 :func:`~utils.fast_utils.compute_gaussian_score_fastgs`.
             pruning_score (Tensor or None): normalised per-Gaussian pruning score.
         """
-        #print(f"Importance score: {importance_score} Pruning score: {pruning_score}")
+
         grad_vars = self.xyz_gradient_accum / self.denom
         grad_vars[grad_vars.isnan()] = 0.0
         #self.tmp_radii = radii
@@ -207,76 +211,107 @@ class FastGSDensifier(DensifierBase):
             torch.norm(grads_abs, dim=-1) >= grad_abs_thresh, True, False
         )
 
-        print("EXTENT:",extent)
-        print(f"Scales{gaussians.get_scaling.shape}:",gaussians.get_scaling)
-
         clone_qualifiers = torch.max(gaussians.get_scaling, dim=1).values <= args.percent_dense * extent
         split_qualifiers = torch.max(gaussians.get_scaling, dim=1).values > args.percent_dense * extent
 
 
-
+        # all points that will be cloned or split if the multi-view importance criterion is also satisfied
         all_clones = torch.logical_and(clone_qualifiers, grad_qualifiers)
         all_splits = torch.logical_and(split_qualifiers, grad_qualifiers_abs)
 
-        print("GRAD VARS",grad_vars)
-        print("GRAD Qualifiirs",grad_qualifiers)
-        print("GRAD ABS Qualifiers",grad_qualifiers_abs)
-        print("clone qualifiers",clone_qualifiers)
-        print("split qualifiers",split_qualifiers)
-        print("all_clones",all_clones)
 
-
-        if importance_score is not None:
-            # Gaussians must appear in > fastgs_importance_threshold views to
-            # be considered for densification.  Default of 5 comes from the
-            # FastGS paper (multi-view consistency with 10 sampled views).
-            importance_threshold = getattr(args, 'fastgs_importance_threshold', 5)
-            metric_mask = importance_score > importance_threshold
-        else:
-            # Fall back: densify all gradient-selected Gaussians.
-            metric_mask = torch.ones(gaussians.get_xyz.shape[0], dtype=torch.bool, device="cuda")
-
-
-        print("Densify:",metric_mask.sum())
-
-        self._densify_and_clone_fastgs(gaussians,metric_mask, all_clones)
-        self._densify_and_split_fastgs(gaussians,metric_mask, all_splits)
-
-        # some points won't be visible at this timestep at all
-        # - don't mess with them at all
-        # 
-#        visible_points_mask  =(importance_score>0)
+        # candidates for pruning are either too big, or too transparent
         prune_mask = (gaussians.get_opacity < min_opacity).squeeze()
         if max_screen_size:
             big_points_vs = self.max_radii2D > max_screen_size
             big_points_ws = gaussians.get_scaling.max(dim=1).values > 0.1 * extent
             prune_mask = torch.logical_or(torch.logical_or(prune_mask, big_points_vs), big_points_ws)
-#            prune_mask = torch.logical_and(prune_mask,visible_points_mask)
 
-        print("**************************************")
-        print("Pruning:",prune_mask.sum(),"/",len(prune_mask))
-        if pruning_score is not None:
-            scores = 1.0 - pruning_score
-            to_remove = torch.sum(prune_mask)
-            # Only remove 50 % of eligible Gaussians per step (budget-controlled
-            # pruning from FastGS) to avoid over-aggressive scene degradation.
-            remove_budget = int(0.5 * to_remove)
-            print("pruning, remove budget: ", remove_budget, " to_remove: ", to_remove)
-            if remove_budget > 0:
-                n_init_points = gaussians.get_xyz.shape[0]
-                padded_importance = torch.zeros(n_init_points, dtype=torch.float32, device="cuda")
-                n = min(scores.shape[0], n_init_points)
-                padded_importance[:n] = 1.0 / (1e-6 + scores[:n].squeeze())
-                selected_pts_mask = torch.zeros(n_init_points, dtype=torch.bool, device="cuda")
-                sampled_indices = torch.multinomial(padded_importance, remove_budget, replacement=False)
-                selected_pts_mask[sampled_indices] = True
-                final_prune = torch.logical_and(prune_mask, selected_pts_mask)
-                gaussians.prune_points(final_prune)
+
+        # all points to prune
+        final_prune = None
+
+        # points to clone or split
+        final_clones = None
+        final_splits = None
+
+        prune_budget = int(prune_mask.sum() * 0.5)
+        per_frame_prune_budget = (prune_budget // len(camlist))+1
+
+        for frame_cameras in camlist:
+            importance_score, pruning_score = compute_gaussian_score_fastgs(
+                frame_cameras, gaussians, pipe, bg, self.options, DENSIFY=True
+            )
+
+
+            # Gaussians must appear in > fastgs_importance_threshold views to
+            # be considered for densification.  Default of 5 comes from the
+            # FastGS paper (multi-view consistency with 10 sampled views).
+            importance_threshold = getattr(args, 'fastgs_importance_threshold', 5)
+            metric_mask = importance_score > importance_threshold
+
+            # points to be split or cloned for this frame
+            this_clones = torch.logical_and(metric_mask,all_clones)
+            this_splits = torch.logical_and(metric_mask,all_splits)
+
+            if final_clones is None:
+                final_clones = this_clones
             else:
-                gaussians.prune_points(final_prune)
+                final_clones = torch.logical_or(final_clones, this_clones)
 
-        else:
-            gaussians.prune_points(final_prune)
+            if final_splits is None:
+                final_splits = this_splits
+            else:
+                final_splits = torch.logical_or(final_splits, this_splits)
+
+            # choose for pruning based on pruning scores
+            # pruning score of 0 = no error, 1 = high error
+            # 
+            num_possible = (pruning_score > 0.0)
+            print("Poss prune:",num_possible.sum())
+            scores = 1.0 - pruning_score
+            # now score = 1 = no error, 0 = high error 
+            sampling_importance = 1.0 / (1e-6 + scores.squeeze())
+            # importance = 1/ 1.000001 for no error
+            # 1/0.000001 = 1 million for high error
+            sampled_indices = torch.multinomial(sampling_importance, per_frame_prune_budget, replacement=False)
+            prune_mask_frame = torch.zeros_like(prune_mask)
+            prune_mask_frame[sampled_indices] = prune_mask[sampled_indices]
+            if final_prune is None:
+                final_prune = prune_mask_frame
+            else:
+                final_prune|= prune_mask_frame
+
+            # anything pruned can't be cloned or split in later steps
+            all_splits = torch.logical_and(all_splits, ~final_prune)
+            all_clones = torch.logical_and(all_clones, ~final_prune)
+
+        final_clones = torch.logical_and(final_clones, ~final_prune)
+        final_splits = torch.logical_and(final_splits, ~final_prune)
+
+
+        print("\n=== FastGS Densification/Pruning Summary ===")
+        print("FastGS prune budget: {} points ({} per frame)".format(prune_budget, per_frame_prune_budget))
+        print("FastGS [{} frames]: selected {} points for cloning, {} for splitting, {} for pruning.".format(
+            len(camlist), final_clones.sum(), final_splits.sum(), final_prune.sum()
+        ))
+
+
+
+        # now do actual densify, split etc.
+        self._densify_and_clone_fastgs(gaussians,final_clones)
+
+        final_splits = torch.cat(
+            [final_splits, torch.zeros((gaussians.get_xyz.shape[0] - final_splits.shape[0]), device=final_splits.device, dtype=torch.bool)
+                ]
+        )
+        self._densify_and_split_fastgs(gaussians,final_splits)
+
+        final_prune = torch.cat(
+            [final_prune, torch.zeros((gaussians.get_xyz.shape[0] - final_prune.shape[0]), device=final_prune.device, dtype=torch.bool)
+                ]
+        )
+        gaussians.prune_points(final_prune)
 
         # Clamp opacities to avoid them exploding after densification.
         opacities_new = inverse_sigmoid(
@@ -334,7 +369,7 @@ class FastGSDensifier(DensifierBase):
     def apply_debug_colour(self, gaussians, scene,pipe,bg, debug_type=""):
         from utils.sh_utils import RGB2SH
         # debug colours based on multiview-consistency score
-        num_cams = 100
+        num_cams = 10
         my_viewpoint_stack = scene.getTrainCameras()
         camlist = sampling_cameras(my_viewpoint_stack, num_cams,dimensions=4)
         print(len(camlist))
@@ -342,20 +377,26 @@ class FastGSDensifier(DensifierBase):
             display_score, _ = compute_gaussian_score_fastgs(
                 camlist, gaussians, pipe, bg, self.options, DENSIFY=True
             )
+            display_score = display_score.float()
         elif debug_type == "multiview_importance":
             _, display_score = compute_gaussian_score_fastgs(
                 camlist, gaussians, pipe, bg, self.options, DENSIFY=False
             )
         print(display_score.shape)
-        display_score = display_score.float()
-        display_score -= display_score.min()
-        display_score /= display_score.max()
-        display_score*=5.0
+        first_mask = display_score > 0
+        quantiles = torch.quantile(display_score[first_mask], torch.tensor([0, 0.25, 0.5, 0.75, .8,.9,1], device=display_score.device))
+        print(quantiles)
+        update_mask = display_score > quantiles[4]
+        display_score-= quantiles[4]
+        display_score /= (quantiles[5] - quantiles[4])
+
+#        display_score*=5.0
         display_score = torch.clamp(display_score, 0.0, 1.0)
         print(torch.max(display_score), torch.min(display_score))
-        rgb_tensor = RGB2SH(torch.stack((display_score, 1.0 - display_score, torch.zeros_like(display_score)), dim=1))
+        rgb_tensor = RGB2SH(torch.stack((display_score[update_mask], 1.0 - display_score[update_mask], torch.zeros_like(display_score[update_mask])), dim=1))
         #gaussians._opacity = torch.ones_like(gaussians.get_opacity)
         num_gaussians = len(display_score)
-        gaussians._features_dc = rgb_tensor
-        gaussians._features_rest = torch.zeros_like(gaussians.get_sh_features_rest)
+        #gaussians._features_dc[update_mask,0] = rgb_tensor
+        gaussians._opacity[update_mask] = torch.min(gaussians._opacity)
+        #gaussians._features_rest = torch.zeros_like(gaussians.get_sh_features_rest)
 

@@ -27,10 +27,12 @@ def sampling_cameras(viewpoint_stack, num_cams=10,dimensions = 3):
     """
     camlist = []
     if dimensions==3:
+        first_list = []
         num_cams = min(num_cams, len(viewpoint_stack))
         indices = np.random.permutation(len(viewpoint_stack))
         for i in indices[:num_cams]:
-            camlist.append(viewpoint_stack[i])
+            first_list.append(viewpoint_stack[i])
+        camlist.append(first_list)
     else:
         # 4d gaussians - sample frames from the same time point
         # to get candidates for pruning and densification etc.
@@ -40,13 +42,17 @@ def sampling_cameras(viewpoint_stack, num_cams=10,dimensions = 3):
         frames = viewpoint_stack.get_timestamps()
         ts = np.array(frames)
         np.random.shuffle(ts)
-        while len(camlist) < num_cams and len(ts)>0:
+        total_cams = 0
+        while total_cams < num_cams and len(ts)>0:
+            frame_list = []
             timestamp = ts[0]
             ts = ts[1:]
-            num_left = num_cams - len(camlist)
+            num_left = num_cams - total_cams
             indices = viewpoint_stack.get_indices_for_timestamp(timestamp)
             for i in indices[:num_left]:
-                camlist.append( viewpoint_stack[i])
+                frame_list.append(viewpoint_stack[i])
+                total_cams+=1
+            camlist.append(frame_list)
     return camlist
 
 
@@ -168,6 +174,7 @@ def compute_gaussian_score_fastgs(camlist, gaussians, pipe, bg, args, DENSIFY=Fa
     print("")
     full_metric_counts = None
     full_metric_score = None
+    
     print("*************************************")
 
     # Read FastGS parameters with fallbacks for backward compatibility.
