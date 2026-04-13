@@ -160,7 +160,7 @@ def render_fastgs(viewpoint_camera, pc: GaussianModel, pipe, bg_color: torch.Ten
     else:
         colors_precomp = override_color
 
-    rendered_image, radii, accum_metric_counts = rasterizer(
+    rendered_image, rendered_depth, radii, accum_metric_counts = rasterizer(
         means3D=means3D,
         means2D=means2D,
         dc=dc,
@@ -174,6 +174,7 @@ def render_fastgs(viewpoint_camera, pc: GaussianModel, pipe, bg_color: torch.Ten
 
     return {
         "render": rendered_image,
+        "depth": rendered_depth,
         "viewspace_points": screenspace_points,
         "visibility_filter": radii > 0,
         "radii": radii,

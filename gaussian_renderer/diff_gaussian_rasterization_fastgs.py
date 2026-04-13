@@ -208,13 +208,13 @@ class _RasterizeGaussiansFastGS(torch.autograd.Function):
         if raster_settings.debug:
             cpu_args = cpu_deep_copy_tuple(args)
             try:
-                num_rendered, num_buckets, color, radii, geomBuffer, binningBuffer, imgBuffer, sampleBuffer, metricCount = _C.rasterize_gaussians(*args)
+                num_rendered, num_buckets, color, depth, radii, geomBuffer, binningBuffer, imgBuffer, sampleBuffer, metricCount = _C.rasterize_gaussians(*args)
             except Exception as ex:
                 torch.save(cpu_args, "snapshot_fw_fastgs.dump")
                 print("\nAn error occurred in forward (fastgs). Please forward snapshot_fw_fastgs.dump for debugging.")
                 raise ex
         else:
-            num_rendered, num_buckets, color, radii, geomBuffer, binningBuffer, imgBuffer, sampleBuffer, metricCount = _C.rasterize_gaussians(*args)
+            num_rendered, num_buckets, color, depth, radii, geomBuffer, binningBuffer, imgBuffer, sampleBuffer, metricCount = _C.rasterize_gaussians(*args)
 
         # Keep relevant tensors for backward
         ctx.raster_settings = raster_settings
@@ -225,10 +225,10 @@ class _RasterizeGaussiansFastGS(torch.autograd.Function):
             radii, dc, sh, opacities,
             geomBuffer, binningBuffer, imgBuffer, sampleBuffer,
         )
-        return color, radii, metricCount
+        return color, depth, radii, metricCount
 
     @staticmethod
-    def backward(ctx, grad_out_color, grad_radii, grad_metricCount):
+    def backward(ctx, grad_out_color, grad_depth, grad_radii, grad_metricCount):
         # Restore necessary values from context
         num_rendered = ctx.num_rendered
         num_buckets = ctx.num_buckets
