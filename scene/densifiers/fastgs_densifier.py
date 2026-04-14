@@ -1,17 +1,8 @@
 import torch
+from .split_ops import *
 from .densifier_base import DensifierBase   
 
 from utils.fast_utils import compute_gaussian_score_fastgs, sampling_cameras
-from utils.general_utils import inverse_sigmoid, build_rotation
-
-# TODO:
-# make sample cameras add a camera ID to each camera
-# or maybe just dataset itself should do that
-# then capture the frame IDs in the fastgs code
-# so we're looking at multi-view consistency on a per-frame basis 
-# and then summing it, otherwise multiview-consistency will come out
-# even for gaussians that aren't multiview consistent because they are
-# visible on multiple timestamps
 
 # Then think about depth consistency pruning somehow
 
@@ -100,75 +91,6 @@ class FastGSDensifier(DensifierBase):
             attrs.append("t_gradient_accum")
         return attrs
 
-    def _densify_and_clone_fastgs(self, gaussians,selected_pts_mask):
-        """Clone Gaussians that satisfy both the gradient filter and the
-        multi-view metric mask (FastGS criterion)."""
-        print("densify and clone:",selected_pts_mask.sum(),"/",len(selected_pts_mask))
-        new_xyz = gaussians._xyz[selected_pts_mask]
-        new_features_dc = gaussians._features_dc[selected_pts_mask]
-        new_features_rest = gaussians._features_rest[selected_pts_mask]
-        new_opacities = gaussians._opacity[selected_pts_mask]
-        new_scaling = gaussians._scaling[selected_pts_mask]
-        new_rotation = gaussians._rotation[selected_pts_mask]
-        new_t = None
-        new_scaling_t = None
-        new_rotation_r = None
-        if gaussians.gaussian_dim == 4:
-            new_t = gaussians._t[selected_pts_mask]
-            new_scaling_t = gaussians._scaling_t[selected_pts_mask]
-            if gaussians.rot_4d:
-                new_rotation_r = gaussians._rotation_r[selected_pts_mask]
-
-        gaussians.densification_postfix(
-            new_xyz, new_features_dc, new_features_rest,
-            new_opacities, new_scaling, new_rotation,
-            new_t, new_scaling_t, new_rotation_r,
-        )
-    
-
-    def _densify_and_split_fastgs(self, gaussians, selected_pts_mask, N=2):
-        """Split Gaussians that satisfy both the gradient filter and the
-        multi-view metric mask (FastGS criterion)."""
-        n_init_points = gaussians.get_xyz.shape[0]
-
-#        print("densify and split:",selected_pts_mask.sum(),"/",len(selected_pts_mask))
-
-
-        stds = gaussians.get_scaling[selected_pts_mask].repeat(N, 1)
-        means = torch.zeros((stds.size(0), 3), device="cuda")
-        samples = torch.normal(mean=means, std=stds)
-        rots = build_rotation(gaussians._rotation[selected_pts_mask]).repeat(N, 1, 1)
-        new_xyz = torch.bmm(rots, samples.unsqueeze(-1)).squeeze(-1) + \
-                  gaussians.get_xyz[selected_pts_mask].repeat(N, 1)
-        new_scaling = gaussians.scaling_inverse_activation(
-            gaussians.get_scaling[selected_pts_mask].repeat(N, 1) / (0.8 * N)
-        )
-        new_rotation = gaussians._rotation[selected_pts_mask].repeat(N, 1)
-        new_features_dc = gaussians._features_dc[selected_pts_mask].repeat(N, 1, 1)
-        new_features_rest = gaussians._features_rest[selected_pts_mask].repeat(N, 1, 1)
-        new_opacity = gaussians._opacity[selected_pts_mask].repeat(N, 1)
-        new_t = None
-        new_scaling_t = None
-        new_rotation_r = None
-        if gaussians.gaussian_dim == 4:
-            new_t = gaussians._t[selected_pts_mask].repeat(N, 1)
-            new_scaling_t = gaussians.scaling_inverse_activation(
-                gaussians.get_scaling_t[selected_pts_mask].repeat(N, 1) / (0.8 * N)
-            )
-            if gaussians.rot_4d:
-                new_rotation_r = gaussians._rotation_r[selected_pts_mask].repeat(N, 1)
-
-        gaussians.densification_postfix(
-            new_xyz, new_features_dc, new_features_rest,
-            new_opacity, new_scaling, new_rotation,
-            new_t, new_scaling_t, new_rotation_r,
-        )
-
-        prune_filter = torch.cat((
-            selected_pts_mask,
-            torch.zeros(N * selected_pts_mask.sum(), device="cuda", dtype=torch.bool),
-        ))
-        gaussians.prune_points(prune_filter)
 
     def _densify_and_prune_fastgs(self, *,camlist, pipe, bg, gaussians, max_screen_size, min_opacity, extent, radii,
                                   args):
@@ -296,16 +218,14 @@ class FastGSDensifier(DensifierBase):
             len(camlist), final_clones.sum(), final_splits.sum(), final_prune.sum()
         ))
 
-
-
         # now do actual densify, split etc.
-        self._densify_and_clone_fastgs(gaussians,final_clones)
+        densify_and_clone(gaussians,final_clones)
 
         final_splits = torch.cat(
             [final_splits, torch.zeros((gaussians.get_xyz.shape[0] - final_splits.shape[0]), device=final_splits.device, dtype=torch.bool)
                 ]
         )
-        self._densify_and_split_fastgs(gaussians,final_splits)
+        densify_and_split(gaussians,final_splits)
 
         final_prune = torch.cat(
             [final_prune, torch.zeros((gaussians.get_xyz.shape[0] - final_prune.shape[0]), device=final_prune.device, dtype=torch.bool)

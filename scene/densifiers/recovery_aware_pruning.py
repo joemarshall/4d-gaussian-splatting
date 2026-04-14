@@ -12,6 +12,7 @@ class RecoveryAwarePruner(DensifierBase):
     def get_save_vars(self,gaussians):
         return []
     
+    @torch.no_grad()
     def per_iteration(self, iteration, scene, gaussians, radii, pipe, bg):
         prune_after = getattr(self.options, 'recovery_aware_pruning_iter_offset', 30)
         offset_iter = iteration - prune_after
