@@ -134,6 +134,7 @@ def densify_and_split_long_axis(gaussians, selected_pts_mask, rate=1.5):
     gaussians.prune_points(prune_filter)
 
 def clone_split_prune(gaussians, clones,splits,prunes,long_axis_split=False):
+    initial_point_count = gaussians.get_xyz.shape[0]
     if long_axis_split:
         # long axis split only
         if clones is not None:
@@ -161,5 +162,12 @@ def clone_split_prune(gaussians, clones,splits,prunes,long_axis_split=False):
         prunes = torch.cat([prunes, torch.zeros((gaussians.get_xyz.shape[0] - prunes.shape[0]), device=prunes.device, dtype=torch.bool)])
         gaussians.prune_points(prunes)
     points_left = gaussians.get_xyz.shape[0]
-    print("\nclone_split_prune:",(clones.sum().item() if clones is not None else 0), "clones,", (splits.sum().item() if splits is not None else 0), "splits,", (prunes.sum().item() if prunes is not None else 0), "prunes", "n=",points_left)
+    if long_axis_split:
+        print(f"\nclone_split_prune: {splits.sum().item() if splits is not None else 0} long_axis_splits, {prunes.sum().item() if prunes is not None else 0} prunes n={points_left}({initial_point_count})")
+    else:
+        print(f"\nclone_split_prune:{clones.sum().item() if clones is not None else 0} clones, {splits.sum().item() if splits is not None else 0} splits, {prunes.sum().item() if prunes is not None else 0} prunes n={points_left}({initial_point_count})")
+    mean_opacity = torch.mean(gaussians.get_opacity)
+    mean_scaling = torch.mean(gaussians.get_scaling)
+    mean_scaling_t = torch.mean(gaussians.get_scaling_t) if gaussians.gaussian_dim == 4 else None
+    print(f"mean_opacity: {mean_opacity}, mean_scaling: {mean_scaling}, mean_scaling_t: {mean_scaling_t}")
 

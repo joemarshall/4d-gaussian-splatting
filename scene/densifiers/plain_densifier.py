@@ -67,8 +67,9 @@ class PlainDensifier(DensifierBase):
         if max_screen_size:
             big_points_vs = self.max_radii2D > max_screen_size
             big_points_ws = gaussians.get_scaling.max(dim=1).values > 0.1 * extent
+            print(f"Densification iteration {iteration}: {clone_pts_mask.sum().item()} clones, {split_pts_mask.sum().item()} splits, {prune_mask.sum().item()} prunes, {big_points_vs.sum().item()} big_points_vs, {big_points_ws.sum().item()} big_points_ws, extents {extent}, max_screen_size {max_screen_size}")
             prune_mask = torch.logical_or(torch.logical_or(prune_mask, big_points_vs), big_points_ws)
-        clone_split_prune(gaussians,clone_pts_mask,split_pts_mask,prune_mask)
+        clone_split_prune(gaussians,clone_pts_mask,split_pts_mask,prune_mask,long_axis_split=self.options.split_on_long_axis)
 
         #print("Pruned {} points. Remaining points: {}".format(prune_mask.sum(), gaussians.get_xyz.shape[0]))
 

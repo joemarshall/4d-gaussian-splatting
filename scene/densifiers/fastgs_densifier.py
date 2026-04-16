@@ -247,7 +247,7 @@ class FastGSDensifier(DensifierBase):
         ))
 
         # now do actual densify, split etc.
-        clone_split_prune(gaussians, final_clones, final_splits, final_prune)
+        clone_split_prune(gaussians, final_clones, final_splits, final_prune, long_axis_split=self.options.split_on_long_axis)
 
         # Clamp opacities to avoid them exploding after densification.
         opacities_new = inverse_sigmoid(

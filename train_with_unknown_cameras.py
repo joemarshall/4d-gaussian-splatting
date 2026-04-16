@@ -819,7 +819,13 @@ OptimizationParams:
   lambda_rigid: 0.0
   lambda_motion: 0.0
   prune_st_score_threshold: 0.01
-  fastgs_num_sample_cams: 100
-  fastgs_final_prune_from_iter: 20_000  
+  fastgs_num_sample_cams: 90
+  fastgs_final_num_sample_cams: 90
+  fastgs_final_prune_from_iter: 20_000
+  fastgs_final_prune_min_opacity: 0.05
+  fastgs_final_prune_interval: 1000
+  fastgs_loss_thresh: 0.1
+  lff_diffscale: True
+
 """.replace("\\", "\\\\")
 (args.output_folder / "config.yaml").write_text(train_file_data)

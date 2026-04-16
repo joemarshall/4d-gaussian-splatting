@@ -52,8 +52,8 @@ from torch.utils.data import DataLoader
 # torch.use_deterministic_algorithms(True)
 # torch.utils.deterministic.fill_uninitialized_memory=True
 
-torch.set_float32_matmul_precision('high')
-torch.backends.fp32_precision = "tf32"
+#torch.set_float32_matmul_precision('high')
+#torch.backends.fp32_precision = "tf32"
 torch._dynamo.config.force_parameter_static_shapes = False 
 
 
@@ -101,8 +101,8 @@ def run_batch(batch_data, batch_size, gaussians, pipe, background, opt):
 
     for batch_idx in range(batch_size):
         gt_image, viewpoint_cam = batch_data[batch_idx]
-        gt_image = gt_image.cuda()
-        viewpoint_cam = viewpoint_cam.cuda()
+#        gt_image = gt_image.cuda()
+#        viewpoint_cam = viewpoint_cam.cuda()
 
         render_pkg = render(viewpoint_cam, gaussians, pipe, background)
         image, viewspace_point_tensor, visibility_filter, radii,depth = (
@@ -468,6 +468,8 @@ def training(
             # with frame batch sampler the batch size is cameras per-frame)
             batch_size = len(batch_data)
             ts_batch = batch_data[0][1].timestamp
+            batch_data = [ (data[0].cuda(), data[1].cuda()) for data in batch_data]
+
             #print("Training {} gaussians on batch of size {} at iteration {} (timestamp {})".format(gaussians.get_xyz.shape[0], batch_size, iteration, ts_batch))
 
             losses, image, gt_image,visibility_filter,radii,batch_viewspace_point_grad,batch_t_grad,viewspace_point_tensor = run_batch(

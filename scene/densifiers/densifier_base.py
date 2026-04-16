@@ -27,12 +27,12 @@ class DensifierBase:
     
     def densification_postfix(self, gaussians):
         """ resize accumulation variables after size change"""
-        pass
+        print("Called base densification_postfix, but this should be implemented by subclasses that have accumulation variables to resize after densification.")
 
     def prune_points(self, valid_points_mask):
         """ prune points according to the mask"""
-        pass
-
+        print("Called base prune_points, but this should be implemented by subclasses that have accumulation variables to resize after pruning.")
+        
     def per_iteration(self, iteration, scene, gaussians, radii, pipe, bg):
         """ Any per-iteration code that needs to be run for this densifier can be put here. 
         This is called every iteration, even after densification has finished. Useful for cleanup (see fastgs final pruning)."""
