@@ -135,6 +135,11 @@ def densify_and_split_long_axis(gaussians, selected_pts_mask, rate=1.5):
 
 def clone_split_prune(gaussians, clones,splits,prunes,long_axis_split=False):
     initial_point_count = gaussians.get_xyz.shape[0]
+    if prunes is not None:
+        if splits is not None:
+            splits[prunes] = False
+        if clones is not None:
+            clones[prunes] = False
     if long_axis_split:
         # long axis split only
         if clones is not None:
@@ -143,7 +148,7 @@ def clone_split_prune(gaussians, clones,splits,prunes,long_axis_split=False):
     # split removes the original split points, so we need to remake the prune mask
     # taking that into account
     if prunes is not None and splits is not None:
-        prune_filter = prunes [~splits]
+        prunes = prunes [~splits]
 
     if clones is not None:
         densify_and_clone(gaussians, clones)
