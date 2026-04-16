@@ -4,7 +4,6 @@ from .densifier_base import DensifierBase
 
 from utils.fast_utils import compute_gaussian_score_fastgs, sampling_cameras
 
-# Then think about depth consistency pruning somehow
 
 class FastGSDensifier(DensifierBase):
     def __init__(self, opt):
@@ -72,17 +71,19 @@ class FastGSDensifier(DensifierBase):
             num_cams = getattr(self.options, 'fastgs_final_num_sample_cams', 40)
             my_viewpoint_stack = scene.getTrainCameras()
             camlist = sampling_cameras(my_viewpoint_stack, num_cams,dimensions=4)
+
+            all_prunes = torch.zeros((gaussians.get_xyz.shape[0],), dtype=bool)
             for frame_cams in camlist:
                 _, pruning_score = compute_gaussian_score_fastgs(
                     frame_cams, gaussians, pipe, bg, self.options, DENSIFY=False
                 )
                 min_opacity = getattr(self.options, "fastgs_final_prune_min_opacity", 0.1)
 
-                self._final_prune_fastgs(gaussians,
+                frame_prunes = self._final_prune_fastgs(gaussians,
                     min_opacity=min_opacity,
                     pruning_score=pruning_score,
                 )
-
+                all_prunes = torch.logical_or(all_prunes, frame_prunes)
 
     def get_save_vars(self,gaussians):
         """Return variables that should be saved or loaded with the scene, as attribute names """
@@ -114,7 +115,8 @@ class FastGSDensifier(DensifierBase):
                 :func:`~utils.fast_utils.compute_gaussian_score_fastgs`.
             pruning_score (Tensor or None): normalised per-Gaussian pruning score.
         """
-
+        if len(camlist) < 8:
+            return  # skip FastGS pruning if too few cameras to get reliable multi-view scores
         grad_vars = self.xyz_gradient_accum / self.denom
         grad_vars[grad_vars.isnan()] = 0.0
         #self.tmp_radii = radii
@@ -150,12 +152,18 @@ class FastGSDensifier(DensifierBase):
             prune_mask = torch.logical_or(torch.logical_or(prune_mask, big_points_vs), big_points_ws)
 
 
+
         # all points to prune
         final_prune = None
 
         # points to clone or split
         final_clones = None
         final_splits = None
+
+        # points that aren't hit by importance pruning but might be prunable based 
+        # on size/opacity
+        unimportant_prunes = prune_mask.clone()
+
 
         prune_budget = int(prune_mask.sum() * 0.5)
         per_frame_prune_budget = (prune_budget // len(camlist))+1
@@ -189,20 +197,30 @@ class FastGSDensifier(DensifierBase):
             # choose for pruning based on pruning scores
             # pruning score of 0 = no error, 1 = high error
             # 
-            num_possible = (pruning_score > 0.0)
-            print("Poss prune:",num_possible.sum())
-            scores = 1.0 - pruning_score
-            # now score = 1 = no error, 0 = high error 
-            sampling_importance = 1.0 / (1e-6 + scores.squeeze())
-            # importance = 1/ 1.000001 for no error
-            # 1/0.000001 = 1 million for high error
-            sampled_indices = torch.multinomial(sampling_importance, per_frame_prune_budget, replacement=False)
             prune_mask_frame = torch.zeros_like(prune_mask)
-            prune_mask_frame[sampled_indices] = prune_mask[sampled_indices]
             if final_prune is None:
                 final_prune = prune_mask_frame
-            else:
-                final_prune|= prune_mask_frame
+            possible_prunes = (pruning_score > 0.0)
+            unimportant_prunes = torch.logical_and(unimportant_prunes, ~possible_prunes)
+            if possible_prunes.sum() > 0:
+                print("Poss prune:",possible_prunes.sum())
+                scores = 1.0 - pruning_score
+                # now score = 1 = no error, 0 = high error 
+                sampling_importance = 1.0 / (1e-6 + scores.squeeze())
+                # don't ever prune untested points
+                sampling_importance[~possible_prunes] = 0.0
+                # or points that are already marked for split / clone/ prune
+                sampling_importance[final_clones] = 0.0
+                sampling_importance[final_splits] = 0.0
+                sampling_importance[final_prune] = 0.0
+                if sampling_importance.sum() != 0:
+                    # importance = 1/ 1.000001 for no error
+                    # 1/0.000001 = 1 million for high error
+                    sampled_indices = torch.multinomial(sampling_importance, per_frame_prune_budget, replacement=False)
+                    prune_mask_frame[sampled_indices] = prune_mask[sampled_indices]
+                else:
+                    print("No possible prunes")
+            final_prune|= prune_mask_frame
 
             # anything pruned can't be cloned or split in later steps
             all_splits = torch.logical_and(all_splits, ~final_prune)
@@ -212,26 +230,24 @@ class FastGSDensifier(DensifierBase):
         final_splits = torch.logical_and(final_splits, ~final_prune)
 
 
+        prune_budget_left = min(prune_budget - final_prune.sum(), unimportant_prunes.sum())
+        if prune_budget_left > 0:
+            sampling_importance = torch.zeros_like(unimportant_prunes, dtype=torch.float)
+            sampling_importance[unimportant_prunes] = 1.0
+            sampled_indices = torch.multinomial(sampling_importance, prune_budget_left, replacement=False)
+            final_prune[sampled_indices] = True
+
         print("\n=== FastGS Densification/Pruning Summary ===")
         print("FastGS prune budget: {} points ({} per frame)".format(prune_budget, per_frame_prune_budget))
-        print("FastGS [{} frames]: selected {} points for cloning, {} for splitting, {} for pruning.".format(
-            len(camlist), final_clones.sum(), final_splits.sum(), final_prune.sum()
+
+
+
+        print("By importance [{} frames]: selected {} points for cloning, {} for splitting, {}+{} for pruning.".format(
+            len(camlist), final_clones.sum(), final_splits.sum(), final_prune.sum(), prune_budget_left
         ))
 
         # now do actual densify, split etc.
-        densify_and_clone(gaussians,final_clones)
-
-        final_splits = torch.cat(
-            [final_splits, torch.zeros((gaussians.get_xyz.shape[0] - final_splits.shape[0]), device=final_splits.device, dtype=torch.bool)
-                ]
-        )
-        densify_and_split(gaussians,final_splits)
-
-        final_prune = torch.cat(
-            [final_prune, torch.zeros((gaussians.get_xyz.shape[0] - final_prune.shape[0]), device=final_prune.device, dtype=torch.bool)
-                ]
-        )
-        gaussians.prune_points(final_prune)
+        clone_split_prune(gaussians, final_clones, final_splits, final_prune)
 
         # Clamp opacities to avoid them exploding after densification.
         opacities_new = inverse_sigmoid(
@@ -264,8 +280,10 @@ class FastGSDensifier(DensifierBase):
             # (top 10 % of the [0, 1] range, i.e., score > 0.9).
             scores_mask[:n] = pruning_score[:n].squeeze() > 0.9
             prune_mask = torch.logical_or(prune_mask, scores_mask)
-        print("FastGS final prune: removed {} points. Remaining: {}".format(
-            prune_mask.sum(), gaussians.get_xyz.shape[0]))
+            return prune_mask
+        else:
+            print("No pruning score provided for FastGS final pruning, pruning based on opacity only.")
+            return prune_mask
         
     def densification_postfix(self, gaussians):
         self.xyz_gradient_accum = torch.zeros((gaussians.get_xyz.shape[0], 1), device="cuda")

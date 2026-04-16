@@ -54,7 +54,7 @@ def densify_and_split(gaussians, selected_pts_mask, N=2):
 def densify_and_clone(gaussians,selected_pts_mask):
     """ Clone points at selected_pts_mask, without any perturbation (i.e. same position, features etc). This is used for
     things which have enough gradient that they will end up different to the initial points after next optimization step."""
-    print("densify and clone:",selected_pts_mask.sum(),"/",len(selected_pts_mask))
+#    print("densify and clone:",selected_pts_mask.sum(),"/",len(selected_pts_mask))
     new_xyz = gaussians._xyz[selected_pts_mask]
     new_features_dc = gaussians._features_dc[selected_pts_mask]
     new_features_rest = gaussians._features_rest[selected_pts_mask]
@@ -132,3 +132,34 @@ def densify_and_split_long_axis(gaussians, selected_pts_mask, rate=1.5):
     # get rid of original points that we just split
     prune_filter = torch.cat((selected_pts_mask, torch.zeros(2 * selected_pts_mask.sum(), device="cuda", dtype=bool)))
     gaussians.prune_points(prune_filter)
+
+def clone_split_prune(gaussians, clones,splits,prunes,long_axis_split=False):
+    if long_axis_split:
+        # long axis split only
+        if clones is not None:
+            splits = torch.logical_or(splits, clones)
+        clones = None
+    # split removes the original split points, so we need to remake the prune mask
+    # taking that into account
+    if prunes is not None and splits is not None:
+        prune_filter = prunes [~splits]
+
+    if clones is not None:
+        densify_and_clone(gaussians, clones)
+
+    # clone just extends the points so 
+    # we just need to make the other tensors bigger
+    if splits is not None:
+        if long_axis_split:
+            densify_and_split_long_axis(gaussians,splits)
+        else:
+            splits = torch.cat([splits, torch.zeros((gaussians.get_xyz.shape[0] - splits.shape[0]), device=splits.device, dtype=torch.bool)])
+            densify_and_split(gaussians, splits)
+    if prunes is not None:
+        # if we have cloned or split, then a whole
+        # load of new points have been added, so we need to resize the prunes maks to include it
+        prunes = torch.cat([prunes, torch.zeros((gaussians.get_xyz.shape[0] - prunes.shape[0]), device=prunes.device, dtype=torch.bool)])
+        gaussians.prune_points(prunes)
+    points_left = gaussians.get_xyz.shape[0]
+    print("\nclone_split_prune:",(clones.sum().item() if clones is not None else 0), "clones,", (splits.sum().item() if splits is not None else 0), "splits,", (prunes.sum().item() if prunes is not None else 0), "prunes", "n=",points_left)
+
