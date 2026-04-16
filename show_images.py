@@ -18,6 +18,7 @@ from arguments import ModelParams, PipelineParams, get_combined_args
 import torchvision
 import re
 from copy import deepcopy
+from scene.densifiers.split_ops import *
 
 from omegaconf import OmegaConf
 from omegaconf.dictconfig import DictConfig
@@ -336,7 +337,12 @@ try:
 
             gaussians = GaussianModel(model.sh_degree, gaussian_dim=4, rot_4d=True)
 
+
             scene = Scene(model, gaussians, shuffle=False)
+
+            prune_mask = (gaussians.get_opacity < 0.1).squeeze()
+            clone_split_prune(gaussians, None, None, prune_mask)
+            print("Pruned:",prune_mask.shape[0]," -> ",gaussians.get_xyz.shape[0])
 
 
 

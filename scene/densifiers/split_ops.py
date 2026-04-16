@@ -135,6 +135,8 @@ def densify_and_split_long_axis(gaussians, selected_pts_mask, rate=1.5):
 
 def clone_split_prune(gaussians, clones,splits,prunes,long_axis_split=False):
     initial_point_count = gaussians.get_xyz.shape[0]
+    # don't split or clone prunes, because they will be removed next time anyway
+    # (as opacity never goes up after split/clone)
     if prunes is not None:
         if splits is not None:
             splits[prunes] = False
@@ -174,5 +176,6 @@ def clone_split_prune(gaussians, clones,splits,prunes,long_axis_split=False):
     mean_opacity = torch.mean(gaussians.get_opacity)
     mean_scaling = torch.mean(gaussians.get_scaling)
     mean_scaling_t = torch.mean(gaussians.get_scaling_t) if gaussians.gaussian_dim == 4 else None
+    mean_dc = torch.mean(gaussians.get_sh_features_dc)
     print(f"mean_opacity: {mean_opacity}, mean_scaling: {mean_scaling}, mean_scaling_t: {mean_scaling_t}")
-
+    print(f"mean_dc: {mean_dc}")

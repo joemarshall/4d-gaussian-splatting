@@ -72,6 +72,7 @@ class GaussianModel:
                  prefilter_var: float = -1.0,optimizer_type="default",
                  densifiers=[]):
         # densifiers is a list of pairs of [[iterations to trigger at],densifier object]
+        self.training = True
         self.densifiers = densifiers
         self.optimizer_type = optimizer_type
         self.active_sh_degree = 0
@@ -162,7 +163,6 @@ class GaussianModel:
         return all_vars
 
     def restore(self, model_args, training_args):
-        # print("RESTORING:",model_args.keys())
         # print("DENSIFIER VARS:",model_args["densifier_vars"].keys())
         # for d,vals in model_args["densifier_vars"].items():
         #     print("DENSIFIER {} VARS:".format(d),vals.keys())
@@ -194,6 +194,8 @@ class GaussianModel:
                     self.optimizer.load_state_dict(optim_dict)
                 elif var_name == "shoptimizer" and self.shoptimizer is not None:
                     self.shoptimizer.load_state_dict(optim_dict)
+        else:
+            self.training = False
         print("Model restored with {} points.".format(self._xyz.shape))
         total_params = 0
         for v in model_args:
@@ -516,25 +518,38 @@ class GaussianModel:
     
     def prune_points(self, mask):
         valid_points_mask = ~mask
+        if self.training:
+            optimizable_tensors = self._prune_optimizer(valid_points_mask)
 
-        optimizable_tensors = self._prune_optimizer(valid_points_mask)
+            self._xyz = optimizable_tensors["xyz"]
+            self._features_dc = optimizable_tensors["f_dc"]
+            self._features_rest = optimizable_tensors["f_rest"]
+            self._opacity = optimizable_tensors["opacity"]
+            self._scaling = optimizable_tensors["scaling"]
+            self._rotation = optimizable_tensors["rotation"]
 
-        self._xyz = optimizable_tensors["xyz"]
-        self._features_dc = optimizable_tensors["f_dc"]
-        self._features_rest = optimizable_tensors["f_rest"]
-        self._opacity = optimizable_tensors["opacity"]
-        self._scaling = optimizable_tensors["scaling"]
-        self._rotation = optimizable_tensors["rotation"]
+            
+            if self.gaussian_dim == 4:
+                self._t = optimizable_tensors["t"]
+                self._scaling_t = optimizable_tensors["scaling_t"]
+                if self.rot_4d:
+                    self._rotation_r = optimizable_tensors["rotation_r"]
 
-        
-        if self.gaussian_dim == 4:
-            self._t = optimizable_tensors["t"]
-            self._scaling_t = optimizable_tensors["scaling_t"]
-            if self.rot_4d:
-                self._rotation_r = optimizable_tensors["rotation_r"]
-
-        for _iterations,densifier in self.densifiers:
-            densifier.prune_points(mask)
+            for _iterations,densifier in self.densifiers:
+                densifier.prune_points(mask)
+        else:
+            # pruning without optimizer step, for inference only
+            self._xyz = self._xyz[valid_points_mask]
+            self._features_dc = self._features_dc[valid_points_mask]
+            self._features_rest = self._features_rest[valid_points_mask]
+            self._opacity = self._opacity[valid_points_mask]
+            self._scaling = self._scaling[valid_points_mask]
+            self._rotation = self._rotation[valid_points_mask]
+            if self.gaussian_dim == 4:
+                self._t = self._t[valid_points_mask]
+                self._scaling_t = self._scaling_t[valid_points_mask]
+                if self.rot_4d:
+                    self._rotation_r = self._rotation_r[valid_points_mask]
 
         # print("Tensor shapes after prune:")
         # for attr in dir(self):

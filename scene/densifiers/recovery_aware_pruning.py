@@ -22,7 +22,7 @@ class RecoveryAwarePruner(DensifierBase):
             # prune everything less than 0.01 opacity
             print("Recovery-aware pruning: removing points with opacity less than 0.01 at iteration {}".format(iteration))
             prune_mask = (gaussians.get_opacity < 0.01).squeeze()
-            #clone_split_prune(gaussians,None,None,prune_mask)
+            clone_split_prune(gaussians,None,None,prune_mask)
 
 
                          
