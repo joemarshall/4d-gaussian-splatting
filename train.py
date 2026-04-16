@@ -52,8 +52,8 @@ from torch.utils.data import DataLoader
 # torch.use_deterministic_algorithms(True)
 # torch.utils.deterministic.fill_uninitialized_memory=True
 
-#torch.set_float32_matmul_precision('high')
-#torch.backends.fp32_precision = "tf32"
+torch.set_float32_matmul_precision('high')
+torch.backends.fp32_precision = "tf32"
 torch._dynamo.config.force_parameter_static_shapes = False 
 
 
@@ -551,6 +551,12 @@ def training(
                         try_save(gaussians, iteration, scene,"not-best")
 
 
+                # Optimizer step - n.b. densifier calls reset gradients so do this first
+                if iteration < opt.iterations:
+                    gaussians.optimizer_step(iteration,radii=radii)
+                    if pipe.env_map_res and iteration < pipe.env_optimize_until:
+                        env_map_optimizer.step()
+                        env_map_optimizer.zero_grad(set_to_none=True)
 
                 # Densification
                 if iteration < opt.densify_until_iter and (
@@ -596,12 +602,6 @@ def training(
                 # or that need to do cleanup after the main densification phase (e.g. FastGS final pruning)
                 gaussians.call_densifier_per_iteration(iteration, scene, radii, pipe, background)
                 
-                # Optimizer step
-                if iteration < opt.iterations:
-                    gaussians.optimizer_step(iteration,radii=radii)
-                    if pipe.env_map_res and iteration < pipe.env_optimize_until:
-                        env_map_optimizer.step()
-                        env_map_optimizer.zero_grad(set_to_none=True)
 
     # Generate prefilter masks at end of training (including early stop via Ctrl+C)
     if generate_prefilter_masks and gaussians.gaussian_dim == 4:
