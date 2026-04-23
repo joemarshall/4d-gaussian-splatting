@@ -175,7 +175,18 @@ def clone_split_prune(gaussians, clones,splits,prunes,long_axis_split=False):
         print(f"\nclone_split_prune:{clones.sum().item() if clones is not None else 0} clones, {splits.sum().item() if splits is not None else 0} splits, {prunes.sum().item() if prunes is not None else 0} prunes n={points_left}({initial_point_count})")
     mean_opacity = torch.mean(gaussians.get_opacity)
     mean_scaling = torch.mean(gaussians.get_scaling)
-    mean_scaling_t = torch.mean(gaussians.get_scaling_t) if gaussians.gaussian_dim == 4 else None
+    if gaussians.gaussian_dim == 4:
+
+        cov_t = gaussians.get_cov_t()
+        mean_cov_t = torch.mean(cov_t) 
+        mean_cov_t = torch.sqrt(mean_cov_t)
+        log_bins = torch.logspace(-4, 5, steps=10)
+        scaling_histogram = torch.histogram(cov_t.detach().cpu(),bins=log_bins)[0].tolist()
+    else:
+         mean_cov_t = None
+         scaling_histogram = ""
+
     mean_dc = torch.mean(gaussians.get_sh_features_dc)
-    print(f"mean_opacity: {mean_opacity}, mean_scaling: {mean_scaling}, mean_scaling_t: {mean_scaling_t}")
+    print(f"mean_opacity: {mean_opacity}, mean_scaling: {mean_scaling}, mean_cov_t: {mean_cov_t}")
     print(f"mean_dc: {mean_dc}")
+    print("Time scaling histogram:",scaling_histogram)

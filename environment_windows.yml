@@ -18,6 +18,7 @@ dependencies:
   - imagesize
   - kornia
   - omegaconf
+  - pynput
   - pip:
     - ./simple-knn --no-build-isolation
     - ./pointops2 --no-build-isolation

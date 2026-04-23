@@ -80,6 +80,22 @@ class CameraDataset(Dataset):
                 indices = self.dataset.get_indices_for_timestamp(these_timestamps,camera_id)
                 yield indices
 
+    class RandomSampler(Sampler[List[int]]):
+        def __init__(self, dataset,batch_size = 10):
+            self.dataset = dataset
+            self.length = len(self.dataset) // batch_size
+            self.batch_size = batch_size
+
+        def __len__(self):
+            return self.length
+
+        def __iter__(self) -> Iterator[List[int]]:        
+            # each sample = random sample from dataet
+            indices = np.arange(len(self.dataset))
+            np.random.shuffle(indices)
+            for i in range(0,self.length*self.batch_size,self.batch_size):
+                yield indices[i:i+self.batch_size]
+
     class CameraAndFrameSampler(Sampler[List[int]]):
         def __init__(self, dataset,batch_size = 10):
             self.sampler1 = CameraDataset.CameraSampler(dataset,batch_size)
@@ -163,7 +179,8 @@ class CameraDataset(Dataset):
                     camlist.append(idx)
         return camlist
 
-    def get_frame_batch_sampler(self):
+    def get_frame_batch_sampler(self,suggested_batch_size=4):
+        return CameraDataset.RandomSampler(self,batch_size=suggested_batch_size)
         return CameraDataset.CameraAndFrameSampler(self)
     
     def metadata(self):

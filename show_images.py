@@ -24,7 +24,7 @@ from omegaconf import OmegaConf
 from omegaconf.dictconfig import DictConfig
 
 from scene.densifiers import *
-
+from pynput import keyboard
 
 torch.set_float32_matmul_precision('high')
 torch.backends.fp32_precision = "tf32"
@@ -275,17 +275,21 @@ def render_set(model_path, iteration, views, gaussians, pipeline, background):
     # remove old PNG files
     for x in list(Path(model_path).glob("t*/**/*.png")):
         x.unlink()
-
-    for idx, (name,view) in enumerate(tqdm(views, desc="Rendering progress")):
-        render_path = Path(model_path) / name / f"ours_{iteration}" / "renders"
-        makedirs(render_path, exist_ok=True)
-        rendering = render_wrapper(view[1].cuda(), gaussians, pipeline, background)["render"]
-        if view[0] is not None:
-            gt = view[0][0:3, :, :]
-            combined = torch.cat([gt, rendering], dim=1)
-            torchvision.utils.save_image(combined, render_path / f"{idx:05d}.png")
-        else:
-            torchvision.utils.save_image(rendering, render_path / f"{idx:05d}.png")
+    with keyboard.Events() as events:
+        for idx, (name,view) in enumerate(tqdm(views, desc="Rendering progress")):
+            event = events.get(0.0)
+            if event and isinstance(event, keyboard.Events.Press) and event.key == keyboard.Key.esc:
+                print("ESC pressed, stopping rendering.")
+                break
+            render_path = Path(model_path) / name / f"ours_{iteration}" / "renders"
+            makedirs(render_path, exist_ok=True)
+            rendering = render_wrapper(view[1].cuda(), gaussians, pipeline, background)["render"]
+            if view[0] is not None:
+                gt = view[0][0:3, :, :]
+                combined = torch.cat([gt, rendering], dim=1)
+                torchvision.utils.save_image(combined, render_path / f"{idx:05d}.png")
+            else:
+                torchvision.utils.save_image(rendering, render_path / f"{idx:05d}.png")
 
 
 
@@ -340,9 +344,9 @@ try:
 
             scene = Scene(model, gaussians, shuffle=False)
 
-            prune_mask = (gaussians.get_opacity < 0.1).squeeze()
-            clone_split_prune(gaussians, None, None, prune_mask)
-            print("Pruned:",prune_mask.shape[0]," -> ",gaussians.get_xyz.shape[0])
+            # prune_mask = (gaussians.get_opacity < 0.1).squeeze()
+            # clone_split_prune(gaussians, None, None, prune_mask)
+            # print("Pruned:",prune_mask.shape[0]," -> ",gaussians.get_xyz.shape[0])
 
 
 

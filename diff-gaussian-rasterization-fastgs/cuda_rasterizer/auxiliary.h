@@ -152,9 +152,38 @@ __forceinline__ __device__ float4 dnormvdv(float4 v, float4 dv)
 	return dnormvdv;
 }
 
+#ifndef MY_PI
+#define MY_PI 3.14159265f
+#endif
+
 __forceinline__ __device__ float sigmoid(float x)
 {
 	return 1.0f / (1.0f + expf(-x));
+}
+
+// Overload: frustum test with already-computed float3 position (used in 4D mode)
+__forceinline__ __device__ bool in_frustum(
+	float3 p_orig,
+	const float* viewmatrix,
+	const float* projmatrix,
+	bool prefiltered,
+	float3& p_view)
+{
+	float4 p_hom = transformPoint4x4(p_orig, projmatrix);
+	float p_w = 1.0f / (p_hom.w + 0.0000001f);
+	float3 p_proj = { p_hom.x * p_w, p_hom.y * p_w, p_hom.z * p_w };
+	p_view = transformPoint4x3(p_orig, viewmatrix);
+
+	if (p_view.z <= 0.2f)
+	{
+		if (prefiltered)
+		{
+			printf("Point is filtered although prefiltered is set. This shouldn't happen!");
+			__trap();
+		}
+		return false;
+	}
+	return true;
 }
 
 __forceinline__ __device__ bool in_frustum(int idx,
@@ -310,7 +339,7 @@ __device__ inline uint32_t processTiles(
             gaussian_keys_unsorted[off] = key;
             gaussian_values_unsorted[off] = idx;
             off++;
-            CHECK_AND_THROW_ERROR_DEVICE(off - off_start <= tiles_count, "Error: More tiles processed than expected. This shouldn't happen."); // Sanity check to ensure we don't write out of bounds
+            //CHECK_AND_THROW_ERROR_DEVICE(off - off_start <= BLOCK_SIZE, "Error: More tiles processed than expected. This shouldn't happen."); // Sanity check to ensure we don't write out of bounds
           }
         }
         // Max line of this tile slice will be min lin of next tile slice

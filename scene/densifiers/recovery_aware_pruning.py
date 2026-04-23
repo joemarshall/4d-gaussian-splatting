@@ -3,6 +3,9 @@ from .densifier_base import DensifierBase
 from .split_ops import *
 
 class RecoveryAwarePruner(DensifierBase):
+    def __init__(self,opt):
+        super().__init__(opt, "recovery_aware")
+
     def densify_and_prune(self, iteration, scene, gaussians, radii,pipe, bg):
         # we do nothing on densification iterations
         pass
@@ -12,6 +15,9 @@ class RecoveryAwarePruner(DensifierBase):
 
     def get_save_vars(self,gaussians):
         return []
+
+    def needs_densification(self, iteration):
+        return False
     
     @torch.no_grad()
     def per_iteration(self, iteration, scene, gaussians, radii, pipe, bg):

@@ -791,6 +791,15 @@ PipelineParams:
   env_optimize_from: 0
   eval_shfs_4d: True
 
+PipelineParams:
+  convert_SHs_python: False
+  compute_cov3D_python: False
+  debug: False
+  env_map_res: 512
+  env_optimize_until: 5000
+  env_optimize_from: 0
+  eval_shfs_4d: True
+
 OptimizationParams:
   iterations: 30_000
   position_lr_init: 0.00016
@@ -804,27 +813,29 @@ OptimizationParams:
   scaling_lr: 0.005
   rotation_lr: 0.001
   percent_dense: 0.01
-  lambda_dssim: 0.2
   thresh_opa_prune: 0.005
-  densification_interval: 200
+  densification_interval: 100
   opacity_reset_interval: 3000
   densify_from_iter: 500
   densify_until_iter: 15_000
   densify_grad_threshold: 0.0002
   densify_grad_t_threshold: 0.0002 / 40
+  densify_grad_abs_threshold: 0.0012
   densify_until_num_points: -1
   final_prune_from_iter: -1
   sh_increase_interval: 1000
   lambda_opa_mask: 0.0
   lambda_rigid: 0.0
   lambda_motion: 0.0
-  prune_st_score_threshold: 0.01
+  lambda_depth: 0.0
+  lambda_dssim: 0.2
+  prune_st_score_threshold: 0.1
   fastgs_num_sample_cams: 90
   fastgs_final_num_sample_cams: 90
   fastgs_final_prune_from_iter: 20_000
   fastgs_final_prune_min_opacity: 0.05
   fastgs_final_prune_interval: 1000
-  fastgs_loss_thresh: 0.1
+  fastgs_loss_thresh: 0.01
   lff_diffscale: True
 
 """.replace("\\", "\\\\")

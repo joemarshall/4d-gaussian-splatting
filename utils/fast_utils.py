@@ -107,9 +107,7 @@ def compute_visible_gaussians(camlist,gaussians,pipe,bg,args):
     fastgs_mult = getattr(args, 'fastgs_mult', getattr(args, 'mult', 0.5))
 
     for view in range(len(camlist)):
-        calculateGaussianVisibilityContribution(camlist[view][1], gaussians, pipe, bg, fastgs_mult)
-
-
+        #calculateGaussianVisibilityContribution(camlist[view][1], gaussians, pipe, bg, fastgs_mult)
         
         gt_image,viewpoint_cam = camlist[view]
         viewpoint_cam=viewpoint_cam.cuda()
@@ -167,15 +165,17 @@ def compute_gaussian_score_fastgs(camlist, gaussians, pipe, bg, args, DENSIFY=Fa
             * **pruning_score** (*Tensor*): per-Gaussian score in [0, 1] used to
               prioritise pruning (higher → worse multi-view consistency).
     """
-    print(f"Computing FastGS scores with { len(camlist) } cameras:")
-    print("*************************************")
-    for x in camlist:
-        print(x[1].image_name,",",end="")
-    print("")
+    # print(f"Computing FastGS scores with { len(camlist) } cameras:")
+    # print("*************************************")
+    # for x in camlist:
+    #     print(x[1].image_name,",",end="")
+    # print("")
+    
+    # print("*************************************")
+
     full_metric_counts = None
     full_metric_score = None
-    
-    print("*************************************")
+
 
     # Read FastGS parameters with fallbacks for backward compatibility.
     fastgs_mult = getattr(args, 'fastgs_mult', getattr(args, 'mult', 0.5))

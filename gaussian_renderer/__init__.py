@@ -84,6 +84,34 @@ def render_fastgs(viewpoint_camera, pc: GaussianModel, pipe, bg_color: torch.Ten
             device="cuda",
         )
 
+    means3D = pc.get_xyz
+    means2D = screenspace_points
+    opacity = pc.get_opacity
+    prefilter_var = -1.0
+    prefilter_var = -1.0
+    cov3D_precomp = None
+    if pipe.compute_cov3D_python:
+        if pc.rot_4d:
+            cov3D_precomp, delta_mean = pc.get_current_covariance_and_mean_offset(scaling_modifier, viewpoint_camera.timestamp)
+            means3D = means3D + delta_mean
+        else:
+            cov3D_precomp = pc.get_covariance(scaling_modifier)
+        if pc.gaussian_dim == 4:
+            marginal_t = pc.get_marginal_t(viewpoint_camera.timestamp)
+            opacity = opacity * marginal_t
+    else:
+        scales = pc.get_scaling
+        rotations = pc.get_rotation
+        if pc.gaussian_dim == 4:
+            scales_t = pc.get_scaling_t
+            ts = pc.get_t
+            if pc.rot_4d:
+                rotations_r = pc.get_rotation_r
+            if pc.prefilter_var > 0.0:
+                prefilter_var = pc.prefilter_var
+
+
+
     raster_settings = GaussianRasterizationSettingsFastGS(
         image_height=int(viewpoint_camera.image_height),
         image_width=int(viewpoint_camera.image_width),
@@ -100,41 +128,19 @@ def render_fastgs(viewpoint_camera, pc: GaussianModel, pipe, bg_color: torch.Ten
         debug=pipe.debug,
         get_flag=get_flag,
         metric_map=metric_map,
+        time_duration = pc.time_duration[1] if pc.gaussian_dim == 4 else None,
+        rot_4d = pc.rot_4d if pc.gaussian_dim == 4 else None,
+        gaussian_dim = pc.gaussian_dim,
+        force_sh_3d = pc.force_sh_3d,
+        degree_t = pc.active_sh_degree_t if pc.gaussian_dim == 4 else None,
+        timestamp = viewpoint_camera.timestamp if pc.gaussian_dim == 4 else None,
+        prefilter_var = prefilter_var
     )
+
+
 
     rasterizer = GaussianRasterizerFastGS(raster_settings=raster_settings)
 
-    means3D = pc.get_xyz
-    means2D = screenspace_points
-    opacity = pc.get_opacity
-
-    # For 4D Gaussians fold the marginal temporal opacity into the per-Gaussian
-    # opacity so the 3-D FastGS rasterizer still produces a valid image.
-    if pc.gaussian_dim == 4:
-        if pipe.compute_cov3D_python:
-            marginal_t = pc.get_marginal_t(viewpoint_camera.timestamp)
-            opacity = opacity * marginal_t
-        else:
-            # Use CUDA-side marginal computation via scales_t / t parameters.
-            # We approximate here by multiplying with the marginal evaluated
-            # at the current timestamp (computed in Python for simplicity).
-            marginal_t = pc.get_marginal_t(viewpoint_camera.timestamp)
-            opacity = opacity * marginal_t
-
-    scales = None
-    rotations = None
-    cov3D_precomp = None
-    if pipe.compute_cov3D_python:
-        if pc.rot_4d:
-            cov3D_precomp, delta_mean = pc.get_current_covariance_and_mean_offset(
-                scaling_modifier, viewpoint_camera.timestamp
-            )
-            means3D = means3D + delta_mean
-        else:
-            cov3D_precomp = pc.get_covariance(scaling_modifier)
-    else:
-        scales = pc.get_scaling
-        rotations = pc.get_rotation
 
     shs = None
     dc = None
@@ -160,7 +166,7 @@ def render_fastgs(viewpoint_camera, pc: GaussianModel, pipe, bg_color: torch.Ten
     else:
         colors_precomp = override_color
 
-    rendered_image, rendered_depth, radii, accum_metric_counts = rasterizer(
+    rendered_image, rendered_depth, radii, accum_metric_counts,out_means3D = rasterizer(
         means3D=means3D,
         means2D=means2D,
         dc=dc,
@@ -179,6 +185,7 @@ def render_fastgs(viewpoint_camera, pc: GaussianModel, pipe, bg_color: torch.Ten
         "visibility_filter": radii > 0,
         "radii": radii,
         "accum_metric_counts": accum_metric_counts,
+        "out_means3D": out_means3D,
     }
 
 
@@ -213,6 +220,7 @@ def render_fastgs(viewpoint_camera, pc: GaussianModel, pipe, bg_color: torch.Ten
             mult=0.5,
             prefiltered=False,
             debug=pipe.debug,
+            prefilter_var = prefilter_var
         )
 
 
@@ -223,7 +231,7 @@ def render_fastgs(viewpoint_camera, pc: GaussianModel, pipe, bg_color: torch.Ten
                 rotations,
                 cov3Ds_precomp,
                 raster_settings,
-                opacity_cutoff=0.01
+                opacity_cutoff=0.01,
             )
 
 

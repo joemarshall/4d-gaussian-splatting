@@ -7,7 +7,7 @@ from utils.fast_utils import compute_gaussian_score_fastgs, sampling_cameras
 
 class FastGSDensifier(DensifierBase):
     def __init__(self, opt):
-        self.options = opt
+       super().__init__(opt, "fastgs")
 
     def training_setup(self, gaussians,reset_accumulated_gradients = True):
         if reset_accumulated_gradients:
@@ -203,7 +203,7 @@ class FastGSDensifier(DensifierBase):
             possible_prunes = (pruning_score > 0.0)
             unimportant_prunes = torch.logical_and(unimportant_prunes, ~possible_prunes)
             if possible_prunes.sum() > 0:
-                print("Poss prune:",possible_prunes.sum())
+#                print("Poss prune:",possible_prunes.sum())
                 scores = 1.0 - pruning_score
                 # now score = 1 = no error, 0 = high error 
                 sampling_importance = 1.0 / (1e-6 + scores.squeeze())
@@ -229,7 +229,7 @@ class FastGSDensifier(DensifierBase):
         final_clones = torch.logical_and(final_clones, ~final_prune)
         final_splits = torch.logical_and(final_splits, ~final_prune)
 
-
+        important_prunes = final_prune.sum()
         prune_budget_left = min(prune_budget - final_prune.sum(), unimportant_prunes.sum())
         if prune_budget_left > 0:
             sampling_importance = torch.zeros_like(unimportant_prunes, dtype=torch.float)
@@ -243,7 +243,7 @@ class FastGSDensifier(DensifierBase):
 
 
         print("By importance [{} frames]: selected {} points for cloning, {} for splitting, {}+{} for pruning.".format(
-            len(camlist), final_clones.sum(), final_splits.sum(), final_prune.sum(), prune_budget_left
+            len(camlist), final_clones.sum(), final_splits.sum(), important_prunes, prune_budget_left
         ))
 
         # now do actual densify, split etc.

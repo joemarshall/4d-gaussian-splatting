@@ -1,6 +1,6 @@
 class MontecarloPruner:
     def __init__(self, opt):
-        self.options = opt
+        super().__init__(opt, "montecarlo")
 
     def training_setup(self, gaussians,reset_accumulated_gradients = True):
         pass

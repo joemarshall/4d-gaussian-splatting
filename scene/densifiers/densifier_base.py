@@ -1,6 +1,7 @@
 class DensifierBase:
-    def __init__(self, opt):
+    def __init__(self, opt, name):
         self.options = opt
+        self.name = name
 
     def training_setup(self, gaussians, reset_accumulated_gradients):
         """ Any setup that needs to be done before training starts can be done here, such as initializing accumulators."""
@@ -24,7 +25,22 @@ class DensifierBase:
     def get_save_vars(self,gaussians):
         """Return variables that should be saved with the scene, as a list of attribute names."""
         raise NotImplementedError("Get save vars method must be implemented by subclasses.")
-    
+
+    def _get_option(self, option_name, default_value):
+        """Helper method to get an option value with a default and a potential
+        per_densifier override with prefix name_."""
+        return getattr(self.options,self.name+"_"+option_name, getattr(self.options, option_name, default_value))
+
+    def needs_densification(self, iteration):
+        """ Determine if densification needs to be called based on the current iteration and densifier options. """
+        densification_interval = self._get_option("densification_interval", 100)
+        densify_from_iter = self._get_option("densify_from_iter", 0)
+        densify_until_iter = self._get_option("densify_until_iter", 1e9)
+        if iteration >= densify_from_iter and iteration < densify_until_iter and iteration % densification_interval == 0:
+            return True
+        return False
+
+
     def densification_postfix(self, gaussians):
         """ resize accumulation variables after size change"""
         print("Called base densification_postfix, but this should be implemented by subclasses that have accumulation variables to resize after densification.")
@@ -32,7 +48,7 @@ class DensifierBase:
     def prune_points(self, valid_points_mask):
         """ prune points according to the mask"""
         print("Called base prune_points, but this should be implemented by subclasses that have accumulation variables to resize after pruning.")
-        
+
     def per_iteration(self, iteration, scene, gaussians, radii, pipe, bg):
         """ Any per-iteration code that needs to be run for this densifier can be put here. 
         This is called every iteration, even after densification has finished. Useful for cleanup (see fastgs final pruning)."""

@@ -53,8 +53,8 @@ from torch.utils.data import DataLoader
 # torch.utils.deterministic.fill_uninitialized_memory=True
 
 torch.set_float32_matmul_precision('high')
-torch.backends.fp32_precision = "tf32"
-torch._dynamo.config.force_parameter_static_shapes = False 
+#torch.backends.fp32_precision = "tf32"
+#torch._dynamo.config.force_parameter_static_shapes = False 
 
 
 TRACK_MEMORY = False
@@ -91,7 +91,7 @@ def launch_viewer(args, name):
 
 
 
-@torch.compile
+#@torch.compile
 def run_batch(batch_data, batch_size, gaussians, pipe, background, opt):
     
     batch_point_grad = []
@@ -122,6 +122,7 @@ def run_batch(batch_data, batch_size, gaussians, pipe, background, opt):
             # depth loss - difference between rendered depth and median-filtered
             # because big jumps in depth are often artifacts
             depth_difference = torch.conv2d()
+            assert(False, "Depth loss not implemented yet")
 
         # Opa mask loss removed: requires alpha, which is not returned by the new renderer
 
@@ -183,16 +184,9 @@ def run_batch(batch_data, batch_size, gaussians, pipe, background, opt):
 
     batch_viewspace_point_grad = None
     if batch_size > 1:
-        #combined_loss = torch.prod(torch.stack(batch_loss)+0.1)
-        #combined_loss = torch.stack(batch_loss).sum()
-        #combined_loss.backward()
         visibility_count = torch.stack(batch_visibility_filter, 1).sum(1)
         visibility_filter = visibility_count > 0
         radii = torch.stack(batch_radii, 1).max(1)[0]
-
-        #batch_point_grad.append(
-        #     torch.norm(viewspace_point_tensor.grad[:, :2], dim=-1)
-        #)
 
         batch_viewspace_point_grad = torch.stack(batch_point_grad, 1).sum(1)
         batch_viewspace_point_grad[visibility_filter] = (
@@ -300,13 +294,9 @@ def training(
     # which is designed to remove artifacts
     if use_lff:
         densifiers.append(LFFDensifier(opt))
-    
-    def get_iterations_mod_n(n,offset):
-        return [x for i,x in enumerate(densification_iterations) if (i % n) == offset]
 
-    # cycle through the different densifiers
-    densifiers_and_iterations = [(get_iterations_mod_n(len(densifiers),i),d) for i,d in enumerate(densifiers)]
-    print(densifiers_and_iterations)
+    # densifiers.append(RecoveryAwarePruner(opt))
+    
 
 
     gaussians = GaussianModel(
@@ -317,7 +307,7 @@ def training(
         force_sh_3d=force_sh_3d,
         sh_degree_t=2 if pipe.eval_shfs_4d else 0,
         prefilter_var=dataset.prefilter_var,
-        densifiers = densifiers_and_iterations
+        densifiers = densifiers
     )
     scene = Scene(
         dataset,
@@ -551,7 +541,7 @@ def training(
                         try_save(gaussians, iteration, scene,"not-best")
 
 
-                # Optimizer step - n.b. densifier calls reset gradients so do this first
+                # Optimizer step - n.b. densifier calls may reset gradients so do this first
                 if iteration < opt.iterations:
                     gaussians.optimizer_step(iteration,radii=radii)
                     if pipe.env_map_res and iteration < pipe.env_optimize_until:

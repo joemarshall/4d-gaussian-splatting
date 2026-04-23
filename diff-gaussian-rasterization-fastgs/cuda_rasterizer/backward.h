@@ -43,21 +43,29 @@ namespace BACKWARD
 		float* dL_dcolors);
 
 	void preprocess(
-		int P, int D, int M,
+		int P, int D, int D_t, int M,
 		const float3* means,
 		const int* radii,
 		const float* dc,
 		const float* shs,
+		const float* ts,
+		const float* opacities,
 		const bool* clamped,
 		const glm::vec3* scales,
+		const float* scales_t,
 		const glm::vec4* rotations,
+		const glm::vec4* rotations_r,
 		const float scale_modifier,
 		const float* cov3Ds,
+		const float prefilter_var,
 		const float* view,
 		const float* proj,
 		const float focal_x, float focal_y,
 		const float tan_fovx, float tan_fovy,
 		const glm::vec3* campos,
+		const float timestamp,
+		const float time_duration,
+		const bool rot_4d, const int gaussian_dim, const bool force_sh_3d,
 		const float4* dL_dmean2D,
 		const float* dL_dconics,
 		glm::vec3* dL_dmeans,
@@ -65,8 +73,12 @@ namespace BACKWARD
 		float* dL_dcov3D,
 		float* dL_ddc,
 		float* dL_dsh,
+		float* dL_dts,
 		glm::vec3* dL_dscale,
-		glm::vec4* dL_drot);
+		float* dL_dscale_t,
+		glm::vec4* dL_drot,
+		glm::vec4* dL_drot_r,
+		float* dL_dopacity);
 }
 
 #endif

@@ -13,7 +13,7 @@ class LFFDensifier(DensifierBase):
     """LFF-style densification strategy adapted from EFA-GS 3DGS implementation."""
 
     def __init__(self, opt):
-        self.options = opt
+        super().__init__(opt, "lff")
         self.split_multiplier = getattr(opt, "lff_split_multiplier", 2.0)
         self.new_selected_mask = None
 

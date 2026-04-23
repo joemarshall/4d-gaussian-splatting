@@ -15,7 +15,7 @@
 #include <tuple>
 #include <string>
 	
-std::tuple<int, int, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
+std::tuple<int, int, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
 RasterizeGaussiansCUDA(
 	const torch::Tensor& background,
 	const torch::Tensor& means3D,
@@ -39,9 +39,19 @@ RasterizeGaussiansCUDA(
     const float mult,
 	const bool prefiltered,
 	const bool debug,
-	const bool get_flag);
+	const bool get_flag,
+	const torch::Tensor& ts,
+	const torch::Tensor& scales_t,
+	const torch::Tensor& rotations_r,
+	const float prefilter_var,
+	const float timestamp,
+	const float time_duration,
+	const bool rot_4d,
+	const int gaussian_dim,
+	const bool force_sh_3d,
+	const int degree_t);
 
-std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
+std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
  RasterizeGaussiansBackwardCUDA(
  	const torch::Tensor& background,
 	const torch::Tensor& means3D,
@@ -66,7 +76,18 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Te
 	const torch::Tensor& imageBuffer,
 	const int B,
 	const torch::Tensor& sampleBuffer,
-	const bool debug);
+	const bool debug,
+	const torch::Tensor& ts,
+	const torch::Tensor& opacity,
+	const torch::Tensor& scales_t,
+	const torch::Tensor& rotations_r,
+	const float prefilter_var,
+	const float timestamp,
+	const float time_duration,
+	const bool rot_4d,
+	const int gaussian_dim,
+	const bool force_sh_3d,
+	const int degree_t);
 		
 torch::Tensor markVisible(
 		torch::Tensor& means3D,

@@ -71,7 +71,7 @@ class GaussianModel:
     def __init__(self, sh_degree : int, gaussian_dim : int = 3, time_duration: list = [-0.5, 0.5], rot_4d: bool = False, force_sh_3d: bool = False, sh_degree_t : int = 0,
                  prefilter_var: float = -1.0,optimizer_type="default",
                  densifiers=[]):
-        # densifiers is a list of pairs of [[iterations to trigger at],densifier object]
+        # densifiers is a list of densifier objects
         self.training = True
         self.densifiers = densifiers
         self.optimizer_type = optimizer_type
@@ -145,7 +145,7 @@ class GaussianModel:
                 all_vars[var_name] =(fn_to_call(self,var_name,None))
 
         all_vars["densifier_vars"] = {}
-        for _iterations,densifier in self.densifiers:
+        for densifier in self.densifiers:
             densifier_in_args = {}
             densifier_name = densifier.__class__.__name__
             if argument_in is not None and densifier_name in argument_in["densifier_vars"]:
@@ -183,7 +183,7 @@ class GaussianModel:
         optimizer_params = [x for x in restore_return_values.values() if x is not None and type(x) == tuple]
         if training_args is not None:
             self.training_setup(training_args,reset_accumulated_gradients=False)
-            for _,densifier in self.densifiers:
+            for densifier in self.densifiers:
                 densifier_name = densifier.__class__.__name__
                 if densifier_name not in model_args["densifier_vars"]:
                     densifier.training_setup(self,reset_accumulated_gradients=True)
@@ -384,7 +384,7 @@ class GaussianModel:
 
     def training_setup(self, training_args,reset_accumulated_gradients = True):
         self.percent_dense = training_args.percent_dense
-        for _iterations,densifier in self.densifiers:
+        for densifier in self.densifiers:
             densifier.training_setup(self, reset_accumulated_gradients)
 
         l = [
@@ -407,8 +407,9 @@ class GaussianModel:
                 l.append({'params': [self._rotation_r], 'lr': training_args.rotation_lr, "name": "rotation_r"})
 
         if self.optimizer_type == "default":
-            self.optimizer = torch.optim.Adam(l, lr=0.0, eps=1e-15)
-            self.shoptimizer = torch.optim.Adam(sh_l, lr=0.0, eps=1e-15)
+            self.optimizer = torch.optim.Adam(l+ sh_l, lr=0.0, eps=1e-15)
+            self.shoptimizer = None
+#            self.shoptimizer = torch.optim.Adam(sh_l, lr=0.0, eps=1e-15)
         elif self.optimizer_type == "sparse_adam":
             self.optimizer = SparseGaussianAdam(l + sh_l, lr=0.0, eps=1e-15)
             self.shoptimizer = None
@@ -419,28 +420,36 @@ class GaussianModel:
 
 
     def optimizer_step(self, iteration,radii=None):
-        ''' An optimization schdeuler. The goal is similar to the sparse Adam of taming 3dgs.'''
-        if self.optimizer_type == "default":
-            if iteration <= 15000:
-                self.optimizer.step()
-                self.optimizer.zero_grad(set_to_none = True)
-                self.shoptimizer.step()
-                self.shoptimizer.zero_grad(set_to_none = True)
-            elif iteration <= 20000:
-                if iteration % 32 ==0:
-                    self.optimizer.step()
-                    self.optimizer.zero_grad(set_to_none = True)
-                    self.shoptimizer.step()
-                    self.shoptimizer.zero_grad(set_to_none = True)
-            else:
-                if iteration % 64 ==0:
-                    self.optimizer.step()
-                    self.optimizer.zero_grad(set_to_none = True)
-                    self.shoptimizer.step()
-                    self.shoptimizer.zero_grad(set_to_none = True)
-        elif self.optimizer_type == "sparse_adam":
-            visible = radii > 0
-            self.optimizer.step(visible,radii.shape[0])
+        if self.optimizer is not None:
+            self.optimizer.step()
+            self.optimizer.zero_grad(set_to_none = True)
+        if self.shoptimizer is not None:
+            self.shoptimizer.step()
+            self.shoptimizer.zero_grad(set_to_none = True)
+
+        # ''' An optimization schdeuler. The goal is similar to the sparse Adam of taming 3dgs.'''
+        
+        # if self.optimizer_type == "default":
+        #     if iteration <= 15000:
+        #         self.optimizer.step()
+        #         self.optimizer.zero_grad(set_to_none = True)
+        #         self.shoptimizer.step()
+        #         self.shoptimizer.zero_grad(set_to_none = True)
+        #     elif iteration <= 20000:
+        #         if iteration % 32 ==0:
+        #             self.optimizer.step()
+        #             self.optimizer.zero_grad(set_to_none = True)
+        #             self.shoptimizer.step()
+        #             self.shoptimizer.zero_grad(set_to_none = True)
+        #     else:
+        #         if iteration % 64 ==0:
+        #             self.optimizer.step()
+        #             self.optimizer.zero_grad(set_to_none = True)
+        #             self.shoptimizer.step()
+        #             self.shoptimizer.zero_grad(set_to_none = True)
+        # elif self.optimizer_type == "sparse_adam":
+        #     visible = radii > 0
+        #     self.optimizer.step(visible,radii.shape[0])
 
     def update_learning_rate(self, iteration):
         ''' Learning rate scheduling per step '''
@@ -535,7 +544,7 @@ class GaussianModel:
                 if self.rot_4d:
                     self._rotation_r = optimizable_tensors["rotation_r"]
 
-            for _iterations,densifier in self.densifiers:
+            for densifier in self.densifiers:
                 densifier.prune_points(mask)
         else:
             # pruning without optimizer step, for inference only
@@ -633,7 +642,7 @@ class GaussianModel:
             if self.rot_4d:
                 self._rotation_r = optimizable_tensors['rotation_r']
 
-        for _iterations,densifier in self.densifiers:
+        for densifier in self.densifiers:
             densifier.densification_postfix(self) 
 
     def compute_temporal_score(self, timestamps):
@@ -724,22 +733,22 @@ class GaussianModel:
 
 
     def add_densification_stats(self, *,iteration, viewspace_point_tensor, update_filter, radii,avg_t_grad=None):
-        for _,densifier in self.densifiers:
+        for densifier in self.densifiers:
             densifier.add_densification_stats(self, iteration=iteration, viewspace_point_tensor=viewspace_point_tensor, 
                                               update_filter=update_filter, radii=radii, avg_t_grad=avg_t_grad)
         
     def add_densification_stats_grad(self, *,iteration, viewspace_point_grad, update_filter, radii, avg_t_grad=None):
-        for _,densifier in self.densifiers:
+        for densifier in self.densifiers:
             densifier.add_densification_stats_grad(gaussians=self, iteration=iteration, viewspace_point_grad=viewspace_point_grad, 
                                                    update_filter=update_filter, radii=radii, avg_t_gradient=avg_t_grad)
 
     def run_densifiers(self, iteration, scene, radii, pipe, bg):
-        for densifier_iterations,densifier in self.densifiers:
-            if iteration in densifier_iterations:
+        for densifier in self.densifiers:
+            if densifier.needs_densification(iteration):
                 densifier.densify_and_prune(iteration, scene, self, radii, pipe, bg)
 
     def call_densifier_per_iteration(self, iteration, scene, radii, pipe, bg):
-        for densifier_iterations,densifier in self.densifiers:
+        for densifier in self.densifiers:
             densifier.per_iteration(iteration, scene, self, radii, pipe, bg)
 
     

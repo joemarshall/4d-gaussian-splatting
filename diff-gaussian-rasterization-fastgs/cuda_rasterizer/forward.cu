@@ -156,24 +156,158 @@ __device__ void computeCov3D(const glm::vec3 scale, float mod, const glm::vec4 r
 	cov3D[5] = Sigma[2][2];
 }
 
+// 4D covariance: compute conditional 3D covariance given a timestamp.
+// Also adjusts the Gaussian mean position and modulates the opacity.
+__device__ void computeCov3D_conditional(const glm::vec3 scale, const float scale_t, float mod,
+		const glm::vec4 rot, const glm::vec4 rot_r, float* cov3D, float3& p_orig,
+		float t, const float timestamp, int idx, bool& mask, float& opacity, const float prefilter_var)
+{
+	float dt = timestamp - t;
+	glm::mat4 S = glm::mat4(1.0f);
+	S[0][0] = mod * scale.x;
+	S[1][1] = mod * scale.y;
+	S[2][2] = mod * scale.z;
+	S[3][3] = mod * scale_t;
+
+	float a = rot.x;  float b = rot.y;  float c = rot.z;  float d = rot.w;
+	float p = rot_r.x; float q = rot_r.y; float r = rot_r.z; float s = rot_r.w;
+
+	glm::mat4 M_l = glm::mat4(
+		 a,  b, -c,  d,
+		-b,  a,  d,  c,
+		 c, -d,  a,  b,
+		-d, -c, -b,  a
+	);
+	glm::mat4 M_r = glm::mat4(
+		p,  q, -r, -s,
+		-q, p,  s, -r,
+		r, -s,  p, -q,
+		s,  r,  q,  p
+	);
+	glm::mat4 R = M_r * M_l;
+	glm::mat4 M = S * R;
+	glm::mat4 Sigma = glm::transpose(M) * M;
+
+	float cov_t = Sigma[3][3];
+	float marginal_t = __expf(-0.5f * dt * dt / ((prefilter_var > 0.0f) ? (prefilter_var + cov_t) : cov_t));
+	mask = marginal_t > 0.05f;
+	if (!mask) return;
+	opacity *= marginal_t;
+
+	glm::mat3 cov11 = glm::mat3(Sigma);
+	glm::vec3 cov12 = glm::vec3(Sigma[0][3], Sigma[1][3], Sigma[2][3]);
+	glm::mat3 cov3D_condition = cov11 - glm::outerProduct(cov12, cov12) / cov_t;
+
+	cov3D[0] = cov3D_condition[0][0];
+	cov3D[1] = cov3D_condition[0][1];
+	cov3D[2] = cov3D_condition[0][2];
+	cov3D[3] = cov3D_condition[1][1];
+	cov3D[4] = cov3D_condition[1][2];
+	cov3D[5] = cov3D_condition[2][2];
+
+	glm::vec3 delta_mean = cov12 / cov_t * dt;
+	p_orig.x += delta_mean.x;
+	p_orig.y += delta_mean.y;
+	p_orig.z += delta_mean.z;
+}
+
+// 4D spherical harmonic color (spatial + temporal).
+__device__ glm::vec3 computeColorFromSH_4D(int idx, int deg, int deg_t, int max_coeffs,
+		const glm::vec3* means, glm::vec3 campos, const float* shs, bool* clamped,
+		const float* ts, const float timestamp, const float time_duration)
+{
+	glm::vec3 pos = means[idx];
+	glm::vec3 dir = pos - campos;
+	dir = dir / glm::length(dir);
+	const float dir_t = ts[idx] - timestamp;
+	glm::vec3* sh = ((glm::vec3*)shs) + idx * max_coeffs;
+
+	float l0m0 = SH_C0;
+	glm::vec3 result = l0m0 * sh[0];
+
+	if (deg > 0)
+	{
+		float x = dir.x, y = dir.y, z = dir.z;
+		float l1m1 = -1 * SH_C1 * y;
+		float l1m0 =  SH_C1 * z;
+		float l1p1 = -1 * SH_C1 * x;
+		result += l1m1 * sh[1] + l1m0 * sh[2] + l1p1 * sh[3];
+
+		if (deg > 1)
+		{
+			float xx = x*x, yy = y*y, zz = z*z;
+			float xy = x*y, yz = y*z, xz = x*z;
+			float l2m2 = SH_C2[0] * xy;
+			float l2m1 = SH_C2[1] * yz;
+			float l2m0 = SH_C2[2] * (2.0f*zz - xx - yy);
+			float l2p1 = SH_C2[3] * xz;
+			float l2p2 = SH_C2[4] * (xx - yy);
+			result += l2m2*sh[4] + l2m1*sh[5] + l2m0*sh[6] + l2p1*sh[7] + l2p2*sh[8];
+
+			if (deg > 2)
+			{
+				float l3m3 = SH_C3[0]*y*(3*xx - yy);
+				float l3m2 = SH_C3[1]*xy*z;
+				float l3m1 = SH_C3[2]*y*(4*zz - xx - yy);
+				float l3m0 = SH_C3[3]*z*(2*zz - 3*xx - 3*yy);
+				float l3p1 = SH_C3[4]*x*(4*zz - xx - yy);
+				float l3p2 = SH_C3[5]*z*(xx - yy);
+				float l3p3 = SH_C3[6]*x*(xx - 3*yy);
+				result += l3m3*sh[9]+l3m2*sh[10]+l3m1*sh[11]+l3m0*sh[12]+l3p1*sh[13]+l3p2*sh[14]+l3p3*sh[15];
+
+				if (deg_t > 0)
+				{
+					float t1 = cos(2.0f * MY_PI * dir_t / time_duration);
+					result += t1 * (l0m0*sh[16] + l1m1*sh[17] + l1m0*sh[18] + l1p1*sh[19]
+						+ l2m2*sh[20] + l2m1*sh[21] + l2m0*sh[22] + l2p1*sh[23] + l2p2*sh[24]
+						+ l3m3*sh[25] + l3m2*sh[26] + l3m1*sh[27] + l3m0*sh[28]
+						+ l3p1*sh[29] + l3p2*sh[30] + l3p3*sh[31]);
+
+					if (deg_t > 1)
+					{
+						float t2 = cos(2.0f * MY_PI * dir_t * 2.0f / time_duration);
+						result += t2 * (l0m0*sh[32] + l1m1*sh[33] + l1m0*sh[34] + l1p1*sh[35]
+							+ l2m2*sh[36] + l2m1*sh[37] + l2m0*sh[38] + l2p1*sh[39] + l2p2*sh[40]
+							+ l3m3*sh[41] + l3m2*sh[42] + l3m1*sh[43] + l3m0*sh[44]
+							+ l3p1*sh[45] + l3p2*sh[46] + l3p3*sh[47]);
+					}
+				}
+			}
+		}
+	}
+	result += 0.5f;
+	clamped[3*idx+0] = (result.x < 0);
+	clamped[3*idx+1] = (result.y < 0);
+	clamped[3*idx+2] = (result.z < 0);
+	return glm::max(result, 0.0f);
+}
+
 // Perform initial steps for each Gaussian prior to rasterization.
 template<int C>
 __global__ void preprocessCUDA(
-	int P, int D, int M,
+	int P, int D, int D_t, int M,
 	const float* orig_points,
+	float* out_means3D,
+	const float* ts,
 	const glm::vec3* scales,
+	const float* scales_t,
 	const float scale_modifier,
 	const glm::vec4* rotations,
+	const glm::vec4* rotations_r,
 	const float* opacities,
 	const float* dc,
 	const float* shs,
 	bool* clamped,
 	const float* cov3D_precomp,
+	const float prefilter_var,
 	const float* colors_precomp,
 	const float* viewmatrix,
 	const float* projmatrix,
 	const glm::vec3* cam_pos,
-    const float mult,
+	const float mult,
+	const float timestamp,
+	const float time_duration,
+	const bool rot_4d, const int gaussian_dim, const bool force_sh_3d,
 	const int W, int H,
 	const float tan_fovx, float tan_fovy,
 	const float focal_x, float focal_y,
@@ -191,39 +325,53 @@ __global__ void preprocessCUDA(
 	if (idx >= P)
 		return;
 
-	// Initialize radius and touched tiles to 0. If this isn't changed,
-	// this Gaussian will not be processed further.
 	radii[idx] = 0;
 	tiles_touched[idx] = 0;
 
-	// Perform near culling, quit if outside.
-	float3 p_view;
-	if (!in_frustum(idx, orig_points, viewmatrix, projmatrix, prefiltered, p_view))
-		return;
+	float3 p_orig = { orig_points[3*idx], orig_points[3*idx+1], orig_points[3*idx+2] };
+	float opacity = opacities[idx];
 
-	if(opacities[idx] <= 0.001f){
-		// drop invisible points
-		return;
-	}
-
-	// Transform point by projecting
-	float3 p_orig = { orig_points[3 * idx], orig_points[3 * idx + 1], orig_points[3 * idx + 2] };
-	float4 p_hom = transformPoint4x4(p_orig, projmatrix);
-	float p_w = 1.0f / (p_hom.w + 0.0000001f);
-	float3 p_proj = { p_hom.x * p_w, p_hom.y * p_w, p_hom.z * p_w };
-
-	// If 3D covariance matrix is precomputed, use it, otherwise compute
-	// from scaling and rotation parameters. 
+	// Compute 3D covariance, handling 4D case if requested.
 	const float* cov3D;
 	if (cov3D_precomp != nullptr)
 	{
 		cov3D = cov3D_precomp + idx * 6;
 	}
+	else if (rot_4d)
+	{
+		bool time_mask = true;
+		computeCov3D_conditional(scales[idx], scales_t[idx], scale_modifier,
+			rotations[idx], rotations_r[idx], cov3Ds + idx*6, p_orig,
+			ts[idx], timestamp, idx, time_mask, opacity, prefilter_var);
+		if (!time_mask) return;
+		cov3D = cov3Ds + idx * 6;
+		out_means3D[idx*3+0] = p_orig.x;
+		out_means3D[idx*3+1] = p_orig.y;
+		out_means3D[idx*3+2] = p_orig.z;
+	}
 	else
 	{
-		computeCov3D(scales[idx], scale_modifier, rotations[idx], cov3Ds + idx * 6);
+		computeCov3D(scales[idx], scale_modifier, rotations[idx], cov3Ds + idx*6);
 		cov3D = cov3Ds + idx * 6;
+		if (gaussian_dim == 4)
+		{
+			float dt = ts[idx] - timestamp;
+			float sigma = scales_t[idx] * scale_modifier;
+			float marginal_t = __expf(-0.5f * dt * dt / ((prefilter_var > 0.0f) ? (prefilter_var + sigma) : sigma));
+			if (marginal_t <= 0.05f) return;
+			opacity *= marginal_t;
+		}
 	}
+
+	// Perform near culling using the (potentially displaced) p_orig.
+	float3 p_view;
+	if (!in_frustum(p_orig, viewmatrix, projmatrix, prefiltered, p_view))
+		return;
+
+	// Transform point by projecting
+	float4 p_hom = transformPoint4x4(p_orig, projmatrix);
+	float p_w = 1.0f / (p_hom.w + 0.0000001f);
+	float3 p_proj = { p_hom.x * p_w, p_hom.y * p_w, p_hom.z * p_w };
 
 	// Compute 2D screen-space covariance matrix
 	float3 cov = computeCov2D(p_orig, focal_x, focal_y, tan_fovx, tan_fovy, cov3D, viewmatrix);
@@ -235,39 +383,39 @@ __global__ void preprocessCUDA(
 	float det_inv = 1.f / det;
 	float3 conic = { cov.z * det_inv, -cov.y * det_inv, cov.x * det_inv };
 
-	// Compute extent in screen space (by finding eigenvalues of
-	// 2D covariance matrix). Use extent to compute a bounding rectangle
-	// of screen-space tiles that this Gaussian overlaps with. Quit if
-	// rectangle covers 0 tiles. 
 	float mid = 0.5f * (cov.x + cov.z);
 	float lambda1 = mid + sqrt(max(0.1f, mid * mid - det));
 	float lambda2 = mid - sqrt(max(0.1f, mid * mid - det));
 	float my_radius = ceil(3.f * sqrt(max(lambda1, lambda2)));
 	float2 point_image = { ndc2Pix(p_proj.x, W), ndc2Pix(p_proj.y, H) };
 
-	float4 con_o = { conic.x, conic.y, conic.z, opacities[idx] };
-    // Only counts tiles touched when nullptr is passed as array argment. 
-	// This is built upon Speedy-Splat — many thanks for their excellent work.
-    uint32_t tiles_count = duplicateToTilesTouched(point_image, con_o, grid, mult, 0, 0, 0, nullptr, nullptr);
-    if (tiles_count == 0)
-        return;
+	float4 con_o = { conic.x, conic.y, conic.z, opacity };
+	uint32_t tiles_count = duplicateToTilesTouched(point_image, con_o, grid, mult, 0, 0, 0, nullptr, nullptr);
+	if (tiles_count == 0)
+		return;
 
-	// If colors have been precomputed, use them, otherwise convert
-	// spherical harmonics coefficients to RGB color.
+	// Compute colors from SH or use precomputed colors.
 	if (colors_precomp == nullptr)
 	{
-		glm::vec3 result = computeColorFromSH(idx, D, M, (glm::vec3*)orig_points, *cam_pos, dc, shs, clamped);
-		rgb[idx * C + 0] = result.x;
-		rgb[idx * C + 1] = result.y;
-		rgb[idx * C + 2] = result.z;
+		if (gaussian_dim == 3 || force_sh_3d)
+		{
+			glm::vec3 result = computeColorFromSH(idx, D, M, (glm::vec3*)orig_points, *cam_pos, dc, shs, clamped);
+			rgb[idx * C + 0] = result.x;
+			rgb[idx * C + 1] = result.y;
+			rgb[idx * C + 2] = result.z;
+		}
+		else
+		{
+			glm::vec3 result = computeColorFromSH_4D(idx, D, D_t, M, (glm::vec3*)orig_points, *cam_pos, shs, clamped, ts, timestamp, time_duration);
+			rgb[idx * C + 0] = result.x;
+			rgb[idx * C + 1] = result.y;
+			rgb[idx * C + 2] = result.z;
+		}
 	}
 
-	// Store some useful helper data for the next steps.
 	depths[idx] = p_view.z;
 	radii[idx] = my_radius;
 	points_xy_image[idx] = point_image;
-
-	// Inverse 2D covariance and opacity neatly pack into one float4
 	conic_opacity[idx] = con_o;
 	tiles_touched[idx] = tiles_count;
 }
@@ -657,21 +805,29 @@ void FORWARD::accumulateVisibilityContributions(
 }
 
 void FORWARD::preprocess(
-	int P, int D, int M,
+	int P, int D, int D_t, int M,
 	const float* means3D,
+	float* out_means3D,
+	const float* ts,
 	const glm::vec3* scales,
+	const float* scales_t,
 	const float scale_modifier,
 	const glm::vec4* rotations,
+	const glm::vec4* rotations_r,
 	const float* opacities,
 	const float* dc,
 	const float* shs,
 	bool* clamped,
 	const float* cov3D_precomp,
+	const float prefilter_var,
 	const float* colors_precomp,
 	const float* viewmatrix,
 	const float* projmatrix,
 	const glm::vec3* cam_pos,
-    const float mult,
+	const float mult,
+	const float timestamp,
+	const float time_duration,
+	const bool rot_4d, const int gaussian_dim, const bool force_sh_3d,
 	const int W, int H,
 	const float focal_x, float focal_y,
 	const float tan_fovx, float tan_fovy,
@@ -686,21 +842,29 @@ void FORWARD::preprocess(
 	bool prefiltered)
 {
 	preprocessCUDA<NUM_CHANNELS_4DGS> << <(P + 255) / 256, 256 >> > (
-		P, D, M,
+		P, D, D_t, M,
 		means3D,
+		out_means3D,
+		ts,
 		scales,
+		scales_t,
 		scale_modifier,
 		rotations,
+		rotations_r,
 		opacities,
 		dc,
 		shs,
 		clamped,
 		cov3D_precomp,
+		prefilter_var,
 		colors_precomp,
-		viewmatrix, 
+		viewmatrix,
 		projmatrix,
 		cam_pos,
-        mult,
+		mult,
+		timestamp,
+		time_duration,
+		rot_4d, gaussian_dim, force_sh_3d,
 		W, H,
 		tan_fovx, tan_fovy,
 		focal_x, focal_y,

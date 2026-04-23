@@ -8,7 +8,7 @@ from .split_ops import *
 
 class PlainDensifier(DensifierBase):
     def __init__(self, opt):
-        self.options = opt
+        super().__init__(opt, "plain")
 
     def training_setup(self, gaussians, reset_accumulated_gradients=True):
         """ Any setup that needs to be done before training starts can be done here, such as initializing accumulators."""
@@ -64,8 +64,8 @@ class PlainDensifier(DensifierBase):
 
 
         prune_mask = (gaussians.get_opacity < min_opacity).squeeze()
-        if max_screen_size and prune_only:
-            big_points_vs = self.max_radii2D > max_screen_size
+        if max_screen_size:
+            big_points_vs = torch.zeros_like(prune_mask) #self.max_radii2D > max_screen_size
             big_points_ws = gaussians.get_scaling.max(dim=1).values > 0.1 * extent
             print(f"Densification iteration {iteration}: {clone_pts_mask.sum().item()} clones, {split_pts_mask.sum().item()} splits, {prune_mask.sum().item()} prunes, {big_points_vs.sum().item()} big_points_vs, {big_points_ws.sum().item()} big_points_ws, extents {extent}, max_screen_size {max_screen_size}")
             prune_mask = torch.logical_or(torch.logical_or(prune_mask, big_points_vs), big_points_ws)
