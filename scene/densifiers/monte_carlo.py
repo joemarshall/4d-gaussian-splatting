@@ -19,7 +19,7 @@ class MontecarloPruner:
             viewpoint_cam=viewpoint_cam.cuda()
             gt_image=gt_image.detach()
 
-            render_pkg = render_fastgs(viewpoint_cam, gaussians, pipe, bg, fastgs_mult)
+            render_pkg = render(viewpoint_cam, gaussians, pipe, bg)
             render_image = render_pkg["render"]
             l1_norm = _get_loss_map(render_image, gt_image)
             print(gaussians._opacities.grad)

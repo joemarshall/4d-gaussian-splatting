@@ -49,8 +49,8 @@ from omegaconf import OmegaConf
 from omegaconf.dictconfig import DictConfig
 from torch.utils.data import DataLoader
 
-# torch.use_deterministic_algorithms(True)
-# torch.utils.deterministic.fill_uninitialized_memory=True
+torch.use_deterministic_algorithms(True)
+torch.utils.deterministic.fill_uninitialized_memory=True
 
 torch.set_float32_matmul_precision('high')
 #torch.backends.fp32_precision = "tf32"

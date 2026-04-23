@@ -216,6 +216,7 @@ def C_RasterizeGaussiansCUDA_FAKE(
 def C_RasterizeGaussiansBackwardCUDA(
     background: torch.Tensor,
     means3D: torch.Tensor,
+    out_means3D: torch.Tensor,
     radii: torch.Tensor,
     colors: torch.Tensor,
     scales: torch.Tensor,
@@ -267,6 +268,7 @@ def C_RasterizeGaussiansBackwardCUDA(
     return _C.rasterize_gaussians_backward(
         background,
         means3D,
+        out_means3D,
         radii,
         colors,
         scales,
@@ -307,6 +309,7 @@ def C_RasterizeGaussiansBackwardCUDA(
 def C_RasterizeGaussiansBackwardCUDA_FAKE(
     background: torch.Tensor,
     means3D: torch.Tensor,
+    out_means3D: torch.Tensor,
     radii: torch.Tensor,
     colors: torch.Tensor,
     scales: torch.Tensor,
@@ -428,8 +431,8 @@ def calculateGaussianVisibilityContribution(
         scales = torch.Tensor([])
     if rotations is None:
         rotations = torch.Tensor([])
-    if cov3Ds_precomp is None:
-        cov3Ds_precomp = torch.Tensor([])
+    if cov3D_precomp is None:
+        cov3D_precomp = torch.Tensor([])
 
     dc = torch.Tensor([])
     sh = torch.Tensor([])
@@ -439,7 +442,7 @@ def calculateGaussianVisibilityContribution(
         opacities,
         scales,
         rotations,
-        cov3Ds_precomp,
+        cov3D_precomp,
         raster_viewmatrix,
         raster_settings.projmatrix,
         raster_settings.tanfovx,
@@ -473,7 +476,7 @@ def calculateGaussianVisibilityContribution(
     return gaussian_contrib
 
 
-def rasterize_gaussians_fastgs(
+def rasterize_gaussians_fastgs(*,
     means3D,
     means2D,
     dc,
@@ -482,7 +485,7 @@ def rasterize_gaussians_fastgs(
     opacities,
     scales,
     rotations,
-    cov3Ds_precomp,
+    cov3D_precomp,
     raster_settings,
     # 4D Gaussian params
     ts: torch.Tensor,
@@ -498,7 +501,7 @@ def rasterize_gaussians_fastgs(
         opacities,
         scales,
         rotations,
-        cov3Ds_precomp,
+        cov3D_precomp,
         raster_settings,
         ts,
         scales_t,
@@ -518,7 +521,7 @@ class _RasterizeGaussiansFastGS(torch.autograd.Function):
         opacities,
         scales,
         rotations,
-        cov3Ds_precomp,
+        cov3D_precomp,
         raster_settings,
         ts,
         scales_t,
@@ -534,18 +537,18 @@ class _RasterizeGaussiansFastGS(torch.autograd.Function):
             opacities,
             scales,
             rotations,
-            cov3Ds_precomp,
+            cov3D_precomp,
             raster_settings,
             ts,
             scales_t,
             rotations_r,
         )
 
-        # for i, x in enumerate(inputs):
-        #     if x is not None and (isinstance(x, torch.Tensor) or isinstance(x,torch.nn.Parameter)):
-        #         print(i, x.shape, x.dtype, x.device)
-        #     else:
-        #         print(i)
+        for i, x in enumerate(inputs):
+             if x is not None and (isinstance(x, torch.Tensor) or isinstance(x,torch.nn.Parameter)) and x.shape[0]>0:
+                 print(i, x.shape, x.dtype, x.device,torch.min(x),torch.max(x))
+             else:
+                 print(i)
 
         # Restructure arguments the way that the C++ lib expects them
         args = (
@@ -556,7 +559,7 @@ class _RasterizeGaussiansFastGS(torch.autograd.Function):
             scales,
             rotations,
             raster_settings.scale_modifier,
-            cov3Ds_precomp,
+            cov3D_precomp,
             (
                 raster_settings.metric_map
                 if raster_settings.metric_map is not None
@@ -649,9 +652,10 @@ class _RasterizeGaussiansFastGS(torch.autograd.Function):
         ctx.save_for_backward(
             colors_precomp,
             means3D,
+            out_means3D,
             scales,
             rotations,
-            cov3Ds_precomp,
+            cov3D_precomp,
             radii,
             dc,
             sh,
@@ -677,9 +681,10 @@ class _RasterizeGaussiansFastGS(torch.autograd.Function):
         (
             colors_precomp,
             means3D,
+            out_means3D,
             scales,
             rotations,
-            cov3Ds_precomp,
+            cov3D_precomp,
             radii,
             dc,
             sh,
@@ -697,12 +702,13 @@ class _RasterizeGaussiansFastGS(torch.autograd.Function):
         args = (
             raster_settings.bg,
             means3D,
+            out_means3D,
             radii,
             colors_precomp,
             scales,
             rotations,
             raster_settings.scale_modifier,
-            cov3Ds_precomp,
+            cov3D_precomp,
             raster_settings.viewmatrix,
             raster_settings.projmatrix,
             raster_settings.tanfovx,
@@ -805,11 +811,30 @@ class _RasterizeGaussiansFastGS(torch.autograd.Function):
             grad_rotations_r,
         )
 
-        # for i, x in enumerate(grads):
-        #     if x is not None:
-        #         print(i, x.shape, x.dtype, x.device)
-        #     else:
-        #         print(i)
+        grad_names = [
+            "grad_means3D",
+            "grad_means2D",
+            "grad_dc",
+            "grad_sh",
+            "grad_colors_precomp",
+            "grad_opacities",
+            "grad_scales",
+            "grad_rotations",
+            "grad_cov3Ds_precomp",
+            "None (raster_settings)",
+            "grad_ts",
+            "grad_scales_t",
+            "grad_rotations_r",
+        ]
+        print("\n---------------------------------")
+        print("\nBackward pass gradients (fastgs):")
+        print("\n---------------------------------")
+        for x in sorted(zip(grad_names, grads)):
+            mean_val = torch.mean(x[1]) if type(x[1]) is torch.Tensor else None
+            max_val = torch.max(x[1]) if type(x[1]) is torch.Tensor else None
+            min_val = torch.min(x[1]) if type(x[1]) is torch.Tensor else None
+            print(f"{x[0]}: {min_val}, {mean_val}, {max_val}")
+        print("\n---------------------------------")
 
         return grads
 
@@ -884,17 +909,17 @@ class GaussianRasterizer(nn.Module):
             rotations_r = torch.Tensor([])
 
         return rasterize_gaussians_fastgs(
-            means3D,
-            means2D,
-            dc,
-            shs,
-            colors_precomp,
-            opacities,
-            scales,
-            rotations,
-            cov3D_precomp,
-            raster_settings,
-            ts=ts,
-            scales_t=scales_t,
-            rotations_r=rotations_r,
+            means3D = means3D,
+            means2D = means2D,
+            dc = dc,
+            sh = shs,
+            colors_precomp = colors_precomp,
+            opacities = opacities,
+            scales = scales,
+            rotations = rotations,
+            cov3D_precomp = cov3D_precomp,
+            raster_settings = raster_settings,
+            ts = ts,
+            scales_t = scales_t,
+            rotations_r = rotations_r,
         )

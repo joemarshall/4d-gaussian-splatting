@@ -10,7 +10,7 @@ candidates for densification, while low-scoring ones may be pruned.
 
 import random
 import torch
-from gaussian_renderer import render_fastgs
+from gaussian_renderer import render
 from .loss_utils import l1_loss
 import numpy as np
 
@@ -113,7 +113,7 @@ def compute_visible_gaussians(camlist,gaussians,pipe,bg,args):
         viewpoint_cam=viewpoint_cam.cuda()
         gt_image=gt_image.detach()
 
-        render_pkg = render_fastgs(viewpoint_cam, gaussians, pipe, bg, fastgs_mult)
+        render_pkg = render(viewpoint_cam, gaussians, pipe, bg)
         render_image = render_pkg["render"]
 
         gt_image = gt_image.cuda()
@@ -123,9 +123,9 @@ def compute_visible_gaussians(camlist,gaussians,pipe,bg,args):
         l1_norm = _get_loss_map(render_image, gt_image)
         metric_map = (l1_norm > 0.1).to(torch.int32)
 
-        render_pkg2 = render_fastgs(
-            viewpoint_cam, gaussians, pipe, bg, fastgs_mult,
-            get_flag=True, metric_map=metric_map,
+        render_pkg2 = render(
+            viewpoint_cam, gaussians, pipe, bg,
+             metric_map=metric_map,
         )
         accum_loss_counts = render_pkg2["accum_metric_counts"]
 
