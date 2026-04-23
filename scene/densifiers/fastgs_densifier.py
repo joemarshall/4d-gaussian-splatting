@@ -21,7 +21,7 @@ class FastGSDensifier(DensifierBase):
             else:
                 self.t_gradient_accum = None
 
-    def densify_and_prune(self, iteration, scene, gaussians, radii, pipe, bg):
+    def densify_and_prune(self, iteration, scene, gaussians, radii, pipe, bg, *, prune_only):
         num_cams = getattr(self.options, 'fastgs_num_sample_cams', 40)
         my_viewpoint_stack = scene.getTrainCameras()
         camlist = sampling_cameras(my_viewpoint_stack, num_cams,dimensions=4)
@@ -37,7 +37,8 @@ class FastGSDensifier(DensifierBase):
             radii=radii,
             args=self.options,
             camlist = camlist,
-             pipe=pipe, bg=bg
+             pipe=pipe, bg=bg,
+             prune_only=prune_only
         )
 
 
@@ -94,7 +95,7 @@ class FastGSDensifier(DensifierBase):
 
 
     def _densify_and_prune_fastgs(self, *,camlist, pipe, bg, gaussians, max_screen_size, min_opacity, extent, radii,
-                                  args):
+                                  args, prune_only):
         """FastGS multi-view consistent densification and pruning.
 
         Steps:
@@ -168,9 +169,10 @@ class FastGSDensifier(DensifierBase):
         prune_budget = int(prune_mask.sum() * 0.5)
         per_frame_prune_budget = (prune_budget // len(camlist))+1
 
+
         for frame_cameras in camlist:
             importance_score, pruning_score = compute_gaussian_score_fastgs(
-                frame_cameras, gaussians, pipe, bg, self.options, DENSIFY=True
+                frame_cameras, gaussians, pipe, bg, self.options, DENSIFY= not prune_only
             )
 
 
@@ -180,19 +182,21 @@ class FastGSDensifier(DensifierBase):
             importance_threshold = getattr(args, 'fastgs_importance_threshold', 5)
             metric_mask = importance_score > importance_threshold
 
-            # points to be split or cloned for this frame
-            this_clones = torch.logical_and(metric_mask,all_clones)
-            this_splits = torch.logical_and(metric_mask,all_splits)
+            if not prune_only:
 
-            if final_clones is None:
-                final_clones = this_clones
-            else:
-                final_clones = torch.logical_or(final_clones, this_clones)
+                # points to be split or cloned for this frame
+                this_clones = torch.logical_and(metric_mask,all_clones)
+                this_splits = torch.logical_and(metric_mask,all_splits)
 
-            if final_splits is None:
-                final_splits = this_splits
-            else:
-                final_splits = torch.logical_or(final_splits, this_splits)
+                if final_clones is None:
+                    final_clones = this_clones
+                else:
+                    final_clones = torch.logical_or(final_clones, this_clones)
+
+                if final_splits is None:
+                    final_splits = this_splits
+                else:
+                    final_splits = torch.logical_or(final_splits, this_splits)
 
             # choose for pruning based on pruning scores
             # pruning score of 0 = no error, 1 = high error
@@ -210,9 +214,10 @@ class FastGSDensifier(DensifierBase):
                 # don't ever prune untested points
                 sampling_importance[~possible_prunes] = 0.0
                 # or points that are already marked for split / clone/ prune
-                sampling_importance[final_clones] = 0.0
-                sampling_importance[final_splits] = 0.0
-                sampling_importance[final_prune] = 0.0
+                if not prune_only:
+                    sampling_importance[final_clones] = 0.0
+                    sampling_importance[final_splits] = 0.0
+                    sampling_importance[final_prune] = 0.0
                 if sampling_importance.sum() != 0:
                     # importance = 1/ 1.000001 for no error
                     # 1/0.000001 = 1 million for high error
@@ -222,12 +227,14 @@ class FastGSDensifier(DensifierBase):
                     print("No possible prunes")
             final_prune|= prune_mask_frame
 
-            # anything pruned can't be cloned or split in later steps
-            all_splits = torch.logical_and(all_splits, ~final_prune)
-            all_clones = torch.logical_and(all_clones, ~final_prune)
+            if not prune_only:
+                # anything pruned can't be cloned or split in later steps
+                all_splits = torch.logical_and(all_splits, ~final_prune)
+                all_clones = torch.logical_and(all_clones, ~final_prune)
 
-        final_clones = torch.logical_and(final_clones, ~final_prune)
-        final_splits = torch.logical_and(final_splits, ~final_prune)
+        if not prune_only:
+            final_clones = torch.logical_and(final_clones, ~final_prune)
+            final_splits = torch.logical_and(final_splits, ~final_prune)
 
         important_prunes = final_prune.sum()
         prune_budget_left = min(prune_budget - final_prune.sum(), unimportant_prunes.sum())
@@ -241,10 +248,14 @@ class FastGSDensifier(DensifierBase):
         print("FastGS prune budget: {} points ({} per frame)".format(prune_budget, per_frame_prune_budget))
 
 
-
-        print("By importance [{} frames]: selected {} points for cloning, {} for splitting, {}+{} for pruning.".format(
-            len(camlist), final_clones.sum(), final_splits.sum(), important_prunes, prune_budget_left
-        ))
+        if prune_only:
+            print("By importance [{} frames]: selected  {}+{} for pruning only.".format(
+                len(camlist),important_prunes, prune_budget_left
+            ))
+        else:
+            print("By importance [{} frames]: selected {} points for cloning, {} for splitting, {}+{} for pruning.".format(
+                len(camlist), final_clones.sum(), final_splits.sum(), important_prunes, prune_budget_left
+            ))
 
         # now do actual densify, split etc.
         clone_split_prune(gaussians, final_clones, final_splits, final_prune, long_axis_split=self.options.split_on_long_axis)

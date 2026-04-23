@@ -143,15 +143,16 @@ __device__ void computeColorFromSH(int idx, int deg, int max_coeffs, const glm::
 // Backward pass for 4D spherical harmonics (spatial + temporal).
 __device__ void computeColorFromSH_4D(int idx, int deg, int deg_t, int max_coeffs,
 	const glm::vec3* means, glm::vec3 campos,
-	const float* shs, const bool* clamped,
+	const float* dc, const float* shs, const bool* clamped,
 	const float* ts, const float timestamp, const float time_duration,
-	const glm::vec3* dL_dcolor, glm::vec3* dL_dmeans, glm::vec3* dL_dshs, float* dL_dts)
+	const glm::vec3* dL_dcolor, glm::vec3* dL_dmeans, glm::vec3* dL_ddc, glm::vec3* dL_dshs, float* dL_dts)
 {
 	const float dir_t = ts[idx] - timestamp;
 	glm::vec3 pos = means[idx];
 	glm::vec3 dir_orig = pos - campos;
 	glm::vec3 dir = dir_orig / glm::length(dir_orig);
 
+	glm::vec3* direct_color = ((glm::vec3*)dc) + idx;
 	glm::vec3* sh = ((glm::vec3*)shs) + idx * max_coeffs;
 
 	glm::vec3 dL_dRGB = dL_dcolor[idx];
@@ -160,10 +161,11 @@ __device__ void computeColorFromSH_4D(int idx, int deg, int deg_t, int max_coeff
 	dL_dRGB.z *= clamped[3*idx+2] ? 0 : 1;
 
 	glm::vec3 dRGBdx(0,0,0), dRGBdy(0,0,0), dRGBdz(0,0,0), dRGBdt(0,0,0);
+	glm::vec3* dL_ddirect_color = dL_ddc + idx;
 	glm::vec3* dL_dsh = dL_dshs + idx * max_coeffs;
 
 	float l0m0 = SH_C0;
-	dL_dsh[0] = l0m0 * dL_dRGB;
+	dL_ddirect_color[0] = l0m0 * dL_dRGB;
 
 	if (deg > 0)
 	{
@@ -171,13 +173,13 @@ __device__ void computeColorFromSH_4D(int idx, int deg, int deg_t, int max_coeff
 		float l1m1 = -1*SH_C1*y, l1m0 = SH_C1*z, l1p1 = -1*SH_C1*x;
 		float dl1m1_dy = -1*SH_C1, dl1m0_dz = SH_C1, dl1p1_dx = -1*SH_C1;
 
-		dL_dsh[1] = l1m1 * dL_dRGB;
-		dL_dsh[2] = l1m0 * dL_dRGB;
-		dL_dsh[3] = l1p1 * dL_dRGB;
+		dL_dsh[0] = l1m1 * dL_dRGB;
+		dL_dsh[1] = l1m0 * dL_dRGB;
+		dL_dsh[2] = l1p1 * dL_dRGB;
 
-		dRGBdx = dl1p1_dx * sh[3];
-		dRGBdy = dl1m1_dy * sh[1];
-		dRGBdz = dl1m0_dz * sh[2];
+		dRGBdx = dl1p1_dx * sh[2];
+		dRGBdy = dl1m1_dy * sh[0];
+		dRGBdz = dl1m0_dz * sh[1];
 
 		if (deg > 1)
 		{
@@ -189,12 +191,12 @@ __device__ void computeColorFromSH_4D(int idx, int deg, int deg_t, int max_coeff
 			float dl2p1_dx=SH_C2[3]*z, dl2p1_dz=SH_C2[3]*x;
 			float dl2p2_dx=2*SH_C2[4]*x, dl2p2_dy=-2*SH_C2[4]*y;
 
-			dL_dsh[4]=l2m2*dL_dRGB; dL_dsh[5]=l2m1*dL_dRGB; dL_dsh[6]=l2m0*dL_dRGB;
-			dL_dsh[7]=l2p1*dL_dRGB; dL_dsh[8]=l2p2*dL_dRGB;
+			dL_dsh[3]=l2m2*dL_dRGB; dL_dsh[4]=l2m1*dL_dRGB; dL_dsh[5]=l2m0*dL_dRGB;
+			dL_dsh[6]=l2p1*dL_dRGB; dL_dsh[7]=l2p2*dL_dRGB;
 
-			dRGBdx += dl2m2_dx*sh[4]+dl2m0_dx*sh[6]+dl2p1_dx*sh[7]+dl2p2_dx*sh[8];
-			dRGBdy += dl2m2_dy*sh[4]+dl2m1_dy*sh[5]+dl2m0_dy*sh[6]+dl2p2_dy*sh[8];
-			dRGBdz += dl2m1_dz*sh[5]+dl2m0_dz*sh[6]+dl2p1_dz*sh[7];
+			dRGBdx += dl2m2_dx*sh[3]+dl2m0_dx*sh[5]+dl2p1_dx*sh[6]+dl2p2_dx*sh[7];
+			dRGBdy += dl2m2_dy*sh[3]+dl2m1_dy*sh[4]+dl2m0_dy*sh[5]+dl2p2_dy*sh[7];
+			dRGBdz += dl2m1_dz*sh[4]+dl2m0_dz*sh[5]+dl2p1_dz*sh[6];
 
 			if (deg > 2)
 			{
@@ -209,37 +211,37 @@ __device__ void computeColorFromSH_4D(int idx, int deg, int deg_t, int max_coeff
 				float dl3p2_dx=SH_C3[5]*z*2*x, dl3p2_dy=-SH_C3[5]*z*2*y, dl3p2_dz=SH_C3[5]*(xx-yy);
 				float dl3p3_dx=SH_C3[6]*(3*xx-3*yy), dl3p3_dy=-SH_C3[6]*x*6*y;
 
-				dL_dsh[9]=l3m3*dL_dRGB; dL_dsh[10]=l3m2*dL_dRGB; dL_dsh[11]=l3m1*dL_dRGB;
-				dL_dsh[12]=l3m0*dL_dRGB; dL_dsh[13]=l3p1*dL_dRGB; dL_dsh[14]=l3p2*dL_dRGB; dL_dsh[15]=l3p3*dL_dRGB;
+				dL_dsh[8]=l3m3*dL_dRGB; dL_dsh[9]=l3m2*dL_dRGB; dL_dsh[10]=l3m1*dL_dRGB;
+				dL_dsh[11]=l3m0*dL_dRGB; dL_dsh[12]=l3p1*dL_dRGB; dL_dsh[13]=l3p2*dL_dRGB; dL_dsh[14]=l3p3*dL_dRGB;
 
-				dRGBdx += dl3m3_dx*sh[9]+dl3m2_dx*sh[10]+dl3m1_dx*sh[11]+dl3m0_dx*sh[12]+dl3p1_dx*sh[13]+dl3p2_dx*sh[14]+dl3p3_dx*sh[15];
-				dRGBdy += dl3m3_dy*sh[9]+dl3m2_dy*sh[10]+dl3m1_dy*sh[11]+dl3m0_dy*sh[12]+dl3p1_dy*sh[13]+dl3p2_dy*sh[14]+dl3p3_dy*sh[15];
-				dRGBdz += dl3m2_dz*sh[10]+dl3m1_dz*sh[11]+dl3m0_dz*sh[12]+dl3p1_dz*sh[13]+dl3p2_dz*sh[14];
+				dRGBdx += dl3m3_dx*sh[8]+dl3m2_dx*sh[9]+dl3m1_dx*sh[10]+dl3m0_dx*sh[11]+dl3p1_dx*sh[12]+dl3p2_dx*sh[13]+dl3p3_dx*sh[14];
+				dRGBdy += dl3m3_dy*sh[8]+dl3m2_dy*sh[9]+dl3m1_dy*sh[10]+dl3m0_dy*sh[11]+dl3p1_dy*sh[12]+dl3p2_dy*sh[13]+dl3p3_dy*sh[14];
+				dRGBdz += dl3m2_dz*sh[9]+dl3m1_dz*sh[10]+dl3m0_dz*sh[11]+dl3p1_dz*sh[12]+dl3p2_dz*sh[13];
 
 				if (deg_t > 0)
 				{
 					float t1 = cos(2*MY_PI*dir_t/time_duration);
 					float dt1_dt = sin(2*MY_PI*dir_t/time_duration)*2*MY_PI/time_duration;
-					dL_dsh[16]=t1*l0m0*dL_dRGB; dL_dsh[17]=t1*l1m1*dL_dRGB; dL_dsh[18]=t1*l1m0*dL_dRGB; dL_dsh[19]=t1*l1p1*dL_dRGB;
-					dL_dsh[20]=t1*l2m2*dL_dRGB; dL_dsh[21]=t1*l2m1*dL_dRGB; dL_dsh[22]=t1*l2m0*dL_dRGB; dL_dsh[23]=t1*l2p1*dL_dRGB; dL_dsh[24]=t1*l2p2*dL_dRGB;
-					dL_dsh[25]=t1*l3m3*dL_dRGB; dL_dsh[26]=t1*l3m2*dL_dRGB; dL_dsh[27]=t1*l3m1*dL_dRGB; dL_dsh[28]=t1*l3m0*dL_dRGB;
-					dL_dsh[29]=t1*l3p1*dL_dRGB; dL_dsh[30]=t1*l3p2*dL_dRGB; dL_dsh[31]=t1*l3p3*dL_dRGB;
-					dRGBdt = dt1_dt*(l0m0*sh[16]+l1m1*sh[17]+l1m0*sh[18]+l1p1*sh[19]+l2m2*sh[20]+l2m1*sh[21]+l2m0*sh[22]+l2p1*sh[23]+l2p2*sh[24]+l3m3*sh[25]+l3m2*sh[26]+l3m1*sh[27]+l3m0*sh[28]+l3p1*sh[29]+l3p2*sh[30]+l3p3*sh[31]);
-					dRGBdx += t1*(dl1p1_dx*sh[19]+dl2m2_dx*sh[20]+dl2m0_dx*sh[22]+dl2p1_dx*sh[23]+dl2p2_dx*sh[24]+dl3m3_dx*sh[25]+dl3m2_dx*sh[26]+dl3m1_dx*sh[27]+dl3m0_dx*sh[28]+dl3p1_dx*sh[29]+dl3p2_dx*sh[30]+dl3p3_dx*sh[31]);
-					dRGBdy += t1*(dl1m1_dy*sh[17]+dl2m2_dy*sh[20]+dl2m1_dy*sh[21]+dl2m0_dy*sh[22]+dl2p2_dy*sh[24]+dl3m3_dy*sh[25]+dl3m2_dy*sh[26]+dl3m1_dy*sh[27]+dl3m0_dy*sh[28]+dl3p1_dy*sh[29]+dl3p2_dy*sh[30]+dl3p3_dy*sh[31]);
-					dRGBdz += t1*(dl1m0_dz*sh[18]+dl2m1_dz*sh[21]+dl2m0_dz*sh[22]+dl2p1_dz*sh[23]+dl3m2_dz*sh[26]+dl3m1_dz*sh[27]+dl3m0_dz*sh[28]+dl3p1_dz*sh[29]+dl3p2_dz*sh[30]);
+					dL_dsh[15]=t1*l0m0*dL_dRGB; dL_dsh[16]=t1*l1m1*dL_dRGB; dL_dsh[17]=t1*l1m0*dL_dRGB; dL_dsh[18]=t1*l1p1*dL_dRGB;
+					dL_dsh[19]=t1*l2m2*dL_dRGB; dL_dsh[20]=t1*l2m1*dL_dRGB; dL_dsh[21]=t1*l2m0*dL_dRGB; dL_dsh[22]=t1*l2p1*dL_dRGB; dL_dsh[23]=t1*l2p2*dL_dRGB;
+					dL_dsh[24]=t1*l3m3*dL_dRGB; dL_dsh[25]=t1*l3m2*dL_dRGB; dL_dsh[26]=t1*l3m1*dL_dRGB; dL_dsh[27]=t1*l3m0*dL_dRGB;
+					dL_dsh[28]=t1*l3p1*dL_dRGB; dL_dsh[29]=t1*l3p2*dL_dRGB; dL_dsh[30]=t1*l3p3*dL_dRGB;
+					dRGBdt = dt1_dt*(l0m0*sh[15]+l1m1*sh[16]+l1m0*sh[17]+l1p1*sh[18]+l2m2*sh[19]+l2m1*sh[20]+l2m0*sh[21]+l2p1*sh[22]+l2p2*sh[23]+l3m3*sh[24]+l3m2*sh[25]+l3m1*sh[26]+l3m0*sh[27]+l3p1*sh[28]+l3p2*sh[29]+l3p3*sh[30]);
+					dRGBdx += t1*(dl1p1_dx*sh[18]+dl2m2_dx*sh[19]+dl2m0_dx*sh[21]+dl2p1_dx*sh[22]+dl2p2_dx*sh[23]+dl3m3_dx*sh[24]+dl3m2_dx*sh[25]+dl3m1_dx*sh[26]+dl3m0_dx*sh[27]+dl3p1_dx*sh[28]+dl3p2_dx*sh[29]+dl3p3_dx*sh[30]);
+					dRGBdy += t1*(dl1m1_dy*sh[16]+dl2m2_dy*sh[19]+dl2m1_dy*sh[20]+dl2m0_dy*sh[21]+dl2p2_dy*sh[23]+dl3m3_dy*sh[24]+dl3m2_dy*sh[25]+dl3m1_dy*sh[26]+dl3m0_dy*sh[27]+dl3p1_dy*sh[28]+dl3p2_dy*sh[29]+dl3p3_dy*sh[30]);
+					dRGBdz += t1*(dl1m0_dz*sh[17]+dl2m1_dz*sh[20]+dl2m0_dz*sh[21]+dl2p1_dz*sh[22]+dl3m2_dz*sh[25]+dl3m1_dz*sh[26]+dl3m0_dz*sh[27]+dl3p1_dz*sh[28]+dl3p2_dz*sh[29]);
 					if (deg_t > 1)
 					{
 						float t2 = cos(2*MY_PI*dir_t*2/time_duration);
 						float dt2_dt = sin(2*MY_PI*dir_t*2/time_duration)*2*MY_PI*2/time_duration;
-						dL_dsh[32]=t2*l0m0*dL_dRGB; dL_dsh[33]=t2*l1m1*dL_dRGB; dL_dsh[34]=t2*l1m0*dL_dRGB; dL_dsh[35]=t2*l1p1*dL_dRGB;
-						dL_dsh[36]=t2*l2m2*dL_dRGB; dL_dsh[37]=t2*l2m1*dL_dRGB; dL_dsh[38]=t2*l2m0*dL_dRGB; dL_dsh[39]=t2*l2p1*dL_dRGB; dL_dsh[40]=t2*l2p2*dL_dRGB;
-						dL_dsh[41]=t2*l3m3*dL_dRGB; dL_dsh[42]=t2*l3m2*dL_dRGB; dL_dsh[43]=t2*l3m1*dL_dRGB; dL_dsh[44]=t2*l3m0*dL_dRGB;
-						dL_dsh[45]=t2*l3p1*dL_dRGB; dL_dsh[46]=t2*l3p2*dL_dRGB; dL_dsh[47]=t2*l3p3*dL_dRGB;
-						dRGBdt += dt2_dt*(l0m0*sh[32]+l1m1*sh[33]+l1m0*sh[34]+l1p1*sh[35]+l2m2*sh[36]+l2m1*sh[37]+l2m0*sh[38]+l2p1*sh[39]+l2p2*sh[40]+l3m3*sh[41]+l3m2*sh[42]+l3m1*sh[43]+l3m0*sh[44]+l3p1*sh[45]+l3p2*sh[46]+l3p3*sh[47]);
-						dRGBdx += t2*(dl1p1_dx*sh[35]+dl2m2_dx*sh[36]+dl2m0_dx*sh[38]+dl2p1_dx*sh[39]+dl2p2_dx*sh[40]+dl3m3_dx*sh[41]+dl3m2_dx*sh[42]+dl3m1_dx*sh[43]+dl3m0_dx*sh[44]+dl3p1_dx*sh[45]+dl3p2_dx*sh[46]+dl3p3_dx*sh[47]);
-						dRGBdy += t2*(dl1m1_dy*sh[33]+dl2m2_dy*sh[36]+dl2m1_dy*sh[37]+dl2m0_dy*sh[38]+dl2p2_dy*sh[40]+dl3m3_dy*sh[41]+dl3m2_dy*sh[42]+dl3m1_dy*sh[43]+dl3m0_dy*sh[44]+dl3p1_dy*sh[45]+dl3p2_dy*sh[46]+dl3p3_dy*sh[47]);
-						dRGBdz += t2*(dl1m0_dz*sh[34]+dl2m1_dz*sh[37]+dl2m0_dz*sh[38]+dl2p1_dz*sh[39]+dl3m2_dz*sh[42]+dl3m1_dz*sh[43]+dl3m0_dz*sh[44]+dl3p1_dz*sh[45]+dl3p2_dz*sh[46]);
+						dL_dsh[31]=t2*l0m0*dL_dRGB; dL_dsh[32]=t2*l1m1*dL_dRGB; dL_dsh[33]=t2*l1m0*dL_dRGB; dL_dsh[34]=t2*l1p1*dL_dRGB;
+						dL_dsh[35]=t2*l2m2*dL_dRGB; dL_dsh[36]=t2*l2m1*dL_dRGB; dL_dsh[37]=t2*l2m0*dL_dRGB; dL_dsh[38]=t2*l2p1*dL_dRGB; dL_dsh[39]=t2*l2p2*dL_dRGB;
+						dL_dsh[40]=t2*l3m3*dL_dRGB; dL_dsh[41]=t2*l3m2*dL_dRGB; dL_dsh[42]=t2*l3m1*dL_dRGB; dL_dsh[43]=t2*l3m0*dL_dRGB;
+						dL_dsh[44]=t2*l3p1*dL_dRGB; dL_dsh[45]=t2*l3p2*dL_dRGB; dL_dsh[46]=t2*l3p3*dL_dRGB;
+						dRGBdt += dt2_dt*(l0m0*sh[31]+l1m1*sh[32]+l1m0*sh[33]+l1p1*sh[34]+l2m2*sh[35]+l2m1*sh[36]+l2m0*sh[37]+l2p1*sh[38]+l2p2*sh[39]+l3m3*sh[40]+l3m2*sh[41]+l3m1*sh[42]+l3m0*sh[43]+l3p1*sh[44]+l3p2*sh[45]+l3p3*sh[46]);
+						dRGBdx += t2*(dl1p1_dx*sh[34]+dl2m2_dx*sh[35]+dl2m0_dx*sh[37]+dl2p1_dx*sh[38]+dl2p2_dx*sh[39]+dl3m3_dx*sh[40]+dl3m2_dx*sh[41]+dl3m1_dx*sh[42]+dl3m0_dx*sh[43]+dl3p1_dx*sh[44]+dl3p2_dx*sh[45]+dl3p3_dx*sh[46]);
+						dRGBdy += t2*(dl1m1_dy*sh[32]+dl2m2_dy*sh[35]+dl2m1_dy*sh[36]+dl2m0_dy*sh[37]+dl2p2_dy*sh[39]+dl3m3_dy*sh[40]+dl3m2_dy*sh[41]+dl3m1_dy*sh[42]+dl3m0_dy*sh[43]+dl3p1_dy*sh[44]+dl3p2_dy*sh[45]+dl3p3_dy*sh[46]);
+						dRGBdz += t2*(dl1m0_dz*sh[33]+dl2m1_dz*sh[36]+dl2m0_dz*sh[37]+dl2p1_dz*sh[38]+dl3m2_dz*sh[41]+dl3m1_dz*sh[42]+dl3m0_dz*sh[43]+dl3p1_dz*sh[44]+dl3p2_dz*sh[45]);
 					}
 				}
 			}
@@ -633,8 +635,8 @@ __global__ void preprocessCUDA(
 		if (gaussian_dim == 3 || force_sh_3d)
 			computeColorFromSH(idx, D, M, (glm::vec3*)means, *campos, dc, shs, clamped, (glm::vec3*)dL_dcolor, (glm::vec3*)dL_dmeans, (glm::vec3*)dL_ddc, (glm::vec3*)dL_dsh);
 		else
-			computeColorFromSH_4D(idx, D, D_t, M, (glm::vec3*)means, *campos, shs, clamped, ts, timestamp, time_duration,
-				(glm::vec3*)dL_dcolor, (glm::vec3*)dL_dmeans, (glm::vec3*)dL_dsh, dL_dts);
+			computeColorFromSH_4D(idx, D, D_t, M, (glm::vec3*)means, *campos, dc, shs, clamped, ts, timestamp, time_duration,
+				(glm::vec3*)dL_dcolor, (glm::vec3*)dL_dmeans, (glm::vec3*)dL_ddc, (glm::vec3*)dL_dsh, dL_dts);
 	}
 
 	// Compute gradient updates due to computing covariance from scale/rotation

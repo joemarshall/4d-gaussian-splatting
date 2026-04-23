@@ -91,7 +91,7 @@ def launch_viewer(args, name):
 
 
 
-#@torch.compile
+@torch.compile
 def run_batch(batch_data, batch_size, gaussians, pipe, background, opt):
     
     batch_point_grad = []
@@ -121,8 +121,9 @@ def run_batch(batch_data, batch_size, gaussians, pipe, background, opt):
         if opt.lambda_depth > 0:
             # depth loss - difference between rendered depth and median-filtered
             # because big jumps in depth are often artifacts
-            depth_difference = torch.conv2d()
-            assert(False, "Depth loss not implemented yet")
+            print("Depth loss not implemented yet")
+            sys.exit(1)
+
 
         # Opa mask loss removed: requires alpha, which is not returned by the new renderer
 
@@ -549,10 +550,7 @@ def training(
                         env_map_optimizer.zero_grad(set_to_none=True)
 
                 # Densification
-                if iteration < opt.densify_until_iter and (
-                     opt.densify_until_num_points < 0
-                     or gaussians.get_xyz.shape[0] < opt.densify_until_num_points
-                 ):
+                if iteration < opt.densify_until_iter:
                     if TRACK_MEMORY:
                         torch.cuda.memory._dump_snapshot(f"temp.pickle")
 
@@ -575,8 +573,11 @@ def training(
                             avg_t_grad = batch_t_grad if gaussians.gaussian_dim == 4 else None,
                         )
 
+                    prune_only = opt.densify_until_num_points > 0 and  gaussians.get_xyz.shape[0] >= opt.densify_until_num_points
+
+
                     # run any densifiers configured for this step
-                    gaussians.run_densifiers(iteration, scene, radii, pipe, background)
+                    gaussians.run_densifiers(iteration, scene, radii, pipe, background,prune_only = prune_only)
 
                     if iteration % opt.opacity_reset_interval == 0 or (
                         dataset.white_background and iteration == opt.densify_from_iter

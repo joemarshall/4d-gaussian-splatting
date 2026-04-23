@@ -7,7 +7,7 @@ class DensifierBase:
         """ Any setup that needs to be done before training starts can be done here, such as initializing accumulators."""
         pass
 
-    def densify_and_prune(self, iteration, scene, gaussians, radii,pipe, bg):
+    def densify_and_prune(self, iteration, scene, gaussians, radii,pipe, bg,*,prune_only):
         """ Do densification and pruning on gaussians using this method. """
         raise NotImplementedError("Densify method must be implemented by subclasses.")
     

@@ -132,7 +132,7 @@ def render_fastgs(viewpoint_camera, pc: GaussianModel, pipe, bg_color: torch.Ten
         rot_4d = pc.rot_4d if pc.gaussian_dim == 4 else None,
         gaussian_dim = pc.gaussian_dim,
         force_sh_3d = pc.force_sh_3d,
-        degree_t = pc.active_sh_degree_t if pc.gaussian_dim == 4 else None,
+        sh_degree_t = pc.active_sh_degree_t if pc.gaussian_dim == 4 else None,
         timestamp = viewpoint_camera.timestamp if pc.gaussian_dim == 4 else None,
         prefilter_var = prefilter_var
     )
@@ -163,6 +163,9 @@ def render_fastgs(viewpoint_camera, pc: GaussianModel, pipe, bg_color: torch.Ten
         else:
             dc = pc.get_sh_features_dc
             shs = pc.get_sh_features_rest
+            if pc.gaussian_dim == 4 and ts is None:
+                ts = pc.get_t
+
     else:
         colors_precomp = override_color
 
@@ -176,6 +179,10 @@ def render_fastgs(viewpoint_camera, pc: GaussianModel, pipe, bg_color: torch.Ten
         scales=scales,
         rotations=rotations,
         cov3D_precomp=cov3D_precomp,
+        ts=ts if pc.gaussian_dim == 4 else None,
+        scales_t=scales_t if pc.gaussian_dim == 4 else None,
+        rotations_r=rotations_r if (pc.gaussian_dim == 4 and pc.rot_4d) else None,
+
     )
 
     return {

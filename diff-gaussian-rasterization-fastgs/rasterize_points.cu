@@ -275,8 +275,8 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Te
   torch::Tensor dL_dsh = torch::zeros({P, M, 3}, means3D.options());
   torch::Tensor dL_dscales = torch::zeros({P, 3}, means3D.options());
   torch::Tensor dL_drotations = torch::zeros({P, 4}, means3D.options());
-  torch::Tensor dL_dts = torch::zeros({P}, means3D.options());
-  torch::Tensor dL_dscales_t = torch::zeros({P}, means3D.options());
+  torch::Tensor dL_dts = torch::zeros({P, 1}, means3D.options());
+  torch::Tensor dL_dscales_t = torch::zeros({P, 1}, means3D.options());
   torch::Tensor dL_drotations_r = torch::zeros({P, 4}, means3D.options());
   torch::Tensor dL_dopacity_out = torch::zeros({P, 1}, means3D.options());
   

@@ -56,7 +56,7 @@ class LFFDensifier(DensifierBase):
             radii[update_filter],
         )
 
-    def densify_and_prune(self, iteration, scene, gaussians, radii, pipe, bg):
+    def densify_and_prune(self, iteration, scene, gaussians, radii, pipe, bg, *, prune_only):
         max_grad = self.options.densify_grad_threshold
         min_opacity = self.options.thresh_opa_prune
         extent = scene.cameras_extent

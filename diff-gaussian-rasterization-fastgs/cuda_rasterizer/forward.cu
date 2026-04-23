@@ -212,18 +212,20 @@ __device__ void computeCov3D_conditional(const glm::vec3 scale, const float scal
 }
 
 // 4D spherical harmonic color (spatial + temporal).
+// dc stores the constant SH term; shs stores only non-DC terms.
 __device__ glm::vec3 computeColorFromSH_4D(int idx, int deg, int deg_t, int max_coeffs,
-		const glm::vec3* means, glm::vec3 campos, const float* shs, bool* clamped,
+		const glm::vec3* means, glm::vec3 campos, const float* dc, const float* shs, bool* clamped,
 		const float* ts, const float timestamp, const float time_duration)
 {
 	glm::vec3 pos = means[idx];
 	glm::vec3 dir = pos - campos;
 	dir = dir / glm::length(dir);
 	const float dir_t = ts[idx] - timestamp;
+	glm::vec3* direct_color = ((glm::vec3*)dc) + idx;
 	glm::vec3* sh = ((glm::vec3*)shs) + idx * max_coeffs;
 
 	float l0m0 = SH_C0;
-	glm::vec3 result = l0m0 * sh[0];
+	glm::vec3 result = l0m0 * direct_color[0];
 
 	if (deg > 0)
 	{
@@ -231,7 +233,7 @@ __device__ glm::vec3 computeColorFromSH_4D(int idx, int deg, int deg_t, int max_
 		float l1m1 = -1 * SH_C1 * y;
 		float l1m0 =  SH_C1 * z;
 		float l1p1 = -1 * SH_C1 * x;
-		result += l1m1 * sh[1] + l1m0 * sh[2] + l1p1 * sh[3];
+		result += l1m1 * sh[0] + l1m0 * sh[1] + l1p1 * sh[2];
 
 		if (deg > 1)
 		{
@@ -242,7 +244,7 @@ __device__ glm::vec3 computeColorFromSH_4D(int idx, int deg, int deg_t, int max_
 			float l2m0 = SH_C2[2] * (2.0f*zz - xx - yy);
 			float l2p1 = SH_C2[3] * xz;
 			float l2p2 = SH_C2[4] * (xx - yy);
-			result += l2m2*sh[4] + l2m1*sh[5] + l2m0*sh[6] + l2p1*sh[7] + l2p2*sh[8];
+			result += l2m2*sh[3] + l2m1*sh[4] + l2m0*sh[5] + l2p1*sh[6] + l2p2*sh[7];
 
 			if (deg > 2)
 			{
@@ -253,23 +255,23 @@ __device__ glm::vec3 computeColorFromSH_4D(int idx, int deg, int deg_t, int max_
 				float l3p1 = SH_C3[4]*x*(4*zz - xx - yy);
 				float l3p2 = SH_C3[5]*z*(xx - yy);
 				float l3p3 = SH_C3[6]*x*(xx - 3*yy);
-				result += l3m3*sh[9]+l3m2*sh[10]+l3m1*sh[11]+l3m0*sh[12]+l3p1*sh[13]+l3p2*sh[14]+l3p3*sh[15];
+				result += l3m3*sh[8]+l3m2*sh[9]+l3m1*sh[10]+l3m0*sh[11]+l3p1*sh[12]+l3p2*sh[13]+l3p3*sh[14];
 
 				if (deg_t > 0)
 				{
 					float t1 = cos(2.0f * MY_PI * dir_t / time_duration);
-					result += t1 * (l0m0*sh[16] + l1m1*sh[17] + l1m0*sh[18] + l1p1*sh[19]
-						+ l2m2*sh[20] + l2m1*sh[21] + l2m0*sh[22] + l2p1*sh[23] + l2p2*sh[24]
-						+ l3m3*sh[25] + l3m2*sh[26] + l3m1*sh[27] + l3m0*sh[28]
-						+ l3p1*sh[29] + l3p2*sh[30] + l3p3*sh[31]);
+					result += t1 * (l0m0*sh[15] + l1m1*sh[16] + l1m0*sh[17] + l1p1*sh[18]
+						+ l2m2*sh[19] + l2m1*sh[20] + l2m0*sh[21] + l2p1*sh[22] + l2p2*sh[23]
+						+ l3m3*sh[24] + l3m2*sh[25] + l3m1*sh[26] + l3m0*sh[27]
+						+ l3p1*sh[28] + l3p2*sh[29] + l3p3*sh[30]);
 
 					if (deg_t > 1)
 					{
 						float t2 = cos(2.0f * MY_PI * dir_t * 2.0f / time_duration);
-						result += t2 * (l0m0*sh[32] + l1m1*sh[33] + l1m0*sh[34] + l1p1*sh[35]
-							+ l2m2*sh[36] + l2m1*sh[37] + l2m0*sh[38] + l2p1*sh[39] + l2p2*sh[40]
-							+ l3m3*sh[41] + l3m2*sh[42] + l3m1*sh[43] + l3m0*sh[44]
-							+ l3p1*sh[45] + l3p2*sh[46] + l3p3*sh[47]);
+						result += t2 * (l0m0*sh[31] + l1m1*sh[32] + l1m0*sh[33] + l1p1*sh[34]
+							+ l2m2*sh[35] + l2m1*sh[36] + l2m0*sh[37] + l2p1*sh[38] + l2p2*sh[39]
+							+ l3m3*sh[40] + l3m2*sh[41] + l3m1*sh[42] + l3m0*sh[43]
+							+ l3p1*sh[44] + l3p2*sh[45] + l3p3*sh[46]);
 					}
 				}
 			}
@@ -406,7 +408,7 @@ __global__ void preprocessCUDA(
 		}
 		else
 		{
-			glm::vec3 result = computeColorFromSH_4D(idx, D, D_t, M, (glm::vec3*)orig_points, *cam_pos, shs, clamped, ts, timestamp, time_duration);
+			glm::vec3 result = computeColorFromSH_4D(idx, D, D_t, M, (glm::vec3*)orig_points, *cam_pos, dc, shs, clamped, ts, timestamp, time_duration);
 			rgb[idx * C + 0] = result.x;
 			rgb[idx * C + 1] = result.y;
 			rgb[idx * C + 2] = result.z;

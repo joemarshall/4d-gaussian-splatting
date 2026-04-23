@@ -12,18 +12,28 @@
 # and multi-view consistency scoring via metric_map accumulation.
 #
 
-from typing import NamedTuple,Tuple
+from typing import NamedTuple, Tuple
 import torch.nn as nn
 import torch
 import os
 from torch.utils.cpp_extension import load
 
-_parent_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "diff-gaussian-rasterization-fastgs")
-_glm_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "diff-gaussian-rasterization-fastgs", "third_party", "glm")
-torch_include_dir = os.path.join(os.getenv("CONDA_PREFIX"), "Library", "include", "torch", "csrc", "api", "include")
+_parent_dir = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "diff-gaussian-rasterization-fastgs",
+)
+_glm_dir = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "diff-gaussian-rasterization-fastgs",
+    "third_party",
+    "glm",
+)
+torch_include_dir = os.path.join(
+    os.getenv("CONDA_PREFIX"), "Library", "include", "torch", "csrc", "api", "include"
+)
 torch_lib_dir = os.path.join(os.getenv("CONDA_PREFIX"), "Library", "lib")
 _C = load(
-    name='diff_gaussian_rasterization_fastgs',
+    name="diff_gaussian_rasterization_fastgs",
     extra_cflags=["-I " + _glm_dir, "-I" + torch_include_dir],
     extra_cuda_cflags=["-I " + _glm_dir, "-I" + torch_include_dir],
     # extra_cflags=["-I " + _glm_dir, "-I" + torch_include_dir, "-G"],
@@ -40,7 +50,8 @@ _C = load(
     verbose=True,
 )
 
-#@torch.library.custom_op("fastgs::rasterize_fwd", mutates_args=())
+
+# @torch.library.custom_op("fastgs::rasterize_fwd", mutates_args=())
 def C_RasterizeGaussiansCUDA(
     background: torch.Tensor,
     means3D: torch.Tensor,
@@ -74,43 +85,20 @@ def C_RasterizeGaussiansCUDA(
     rot_4d: bool,
     gaussian_dim: int,
     force_sh_3d: bool,
-    degree_t: int,
-) -> Tuple[int, int, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-    for x in [        background,
-        means3D,
-        colors,
-        opacity,
-        scales,
-        rotations,
-        scale_modifier,
-        cov3D_precomp,
-        metric_map,
-        viewmatrix,
-        projmatrix,
-        tan_fovx,
-        tan_fovy,
-        image_height,
-        image_width,
-        dc,
-        sh,
-        degree,
-        campos,
-        mult,
-        prefiltered,
-        debug,
-        get_flag,
-        ts,
-        scales_t,
-        rotations_r,
-        prefilter_var,
-        timestamp,
-        time_duration,
-        rot_4d,
-        gaussian_dim,
-        force_sh_3d,
-        degree_t,
+    sh_degree_t: int,
+) -> Tuple[
+    int,
+    int,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
 ]:
-       print(type(x)) 
     return _C.rasterize_gaussians(
         background,
         means3D,
@@ -144,10 +132,11 @@ def C_RasterizeGaussiansCUDA(
         rot_4d,
         gaussian_dim,
         force_sh_3d,
-        degree_t,
+        sh_degree_t,
     )
 
-#@C_RasterizeGaussiansCUDA.register_fake
+
+# @C_RasterizeGaussiansCUDA.register_fake
 def C_RasterizeGaussiansCUDA_FAKE(
     background: torch.Tensor,
     means3D: torch.Tensor,
@@ -172,7 +161,18 @@ def C_RasterizeGaussiansCUDA_FAKE(
     prefiltered: bool,
     debug: bool,
     get_flag: bool,
-) -> Tuple[int, int, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+) -> Tuple[
+    int,
+    int,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+]:
     # Fake implementation for compiler checks in torch dynamo
     ctx = torch.library.get_ctx()
     P = means3D.shape[0]
@@ -181,21 +181,38 @@ def C_RasterizeGaussiansCUDA_FAKE(
     radii = torch.zeros((P,), device=background.device)
     metricCount = torch.zeros((P,), device=background.device, dtype=torch.int32)
 
-    rendered =0
+    rendered = 0
     num_buckets = 0
     num_geom = ctx.new_dynamic_size()
     num_binning = ctx.new_dynamic_size()
     num_imgBuffer = ctx.new_dynamic_size()
     num_sampleBuffer = ctx.new_dynamic_size()
     geomBuffer = torch.tensor(shape=(num_geom,), dtype=torch.uint8, device=bg.device)
-    binningBuffer = torch.tensor(shape=(num_binning,), dtype=torch.uint8, device=bg.device)
-    imgBuffer = torch.tensor(shape=(num_imgBuffer, ), dtype=torch.uint8, device=bg.device)
-    sampleBuffer = torch.tensor(shape=(num_sampleBuffer,), dtype=torch.uint8, device=bg.device)
+    binningBuffer = torch.tensor(
+        shape=(num_binning,), dtype=torch.uint8, device=bg.device
+    )
+    imgBuffer = torch.tensor(
+        shape=(num_imgBuffer,), dtype=torch.uint8, device=bg.device
+    )
+    sampleBuffer = torch.tensor(
+        shape=(num_sampleBuffer,), dtype=torch.uint8, device=bg.device
+    )
 
-    return rendered, num_buckets,out_color, out_depth, radii, geomBuffer, binningBuffer, imgBuffer, sampleBuffer, metricCount
+    return (
+        rendered,
+        num_buckets,
+        out_color,
+        out_depth,
+        radii,
+        geomBuffer,
+        binningBuffer,
+        imgBuffer,
+        sampleBuffer,
+        metricCount,
+    )
 
 
-#@torch.library.custom_op("fastgs::rasterize_bwd", mutates_args=())
+# @torch.library.custom_op("fastgs::rasterize_bwd", mutates_args=())
 def C_RasterizeGaussiansBackwardCUDA(
     background: torch.Tensor,
     means3D: torch.Tensor,
@@ -231,8 +248,22 @@ def C_RasterizeGaussiansBackwardCUDA(
     rot_4d: bool,
     gaussian_dim: int,
     force_sh_3d: bool,
-    degree_t: int,
-) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    sh_degree_t: int,
+) -> Tuple[
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+]:
     return _C.rasterize_gaussians_backward(
         background,
         means3D,
@@ -268,10 +299,11 @@ def C_RasterizeGaussiansBackwardCUDA(
         rot_4d,
         gaussian_dim,
         force_sh_3d,
-        degree_t,
-    ) 
+        sh_degree_t,
+    )
 
-#@C_RasterizeGaussiansBackwardCUDA.register_fake
+
+# @C_RasterizeGaussiansBackwardCUDA.register_fake
 def C_RasterizeGaussiansBackwardCUDA_FAKE(
     background: torch.Tensor,
     means3D: torch.Tensor,
@@ -297,10 +329,20 @@ def C_RasterizeGaussiansBackwardCUDA_FAKE(
     B: int,
     sampleBuffer: torch.Tensor,
     debug: bool,
-) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-# Fake implementation for compiler checks in torch dynamo
+) -> Tuple[
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+    torch.Tensor,
+]:
+    # Fake implementation for compiler checks in torch dynamo
     P = means3D.shape[0]
-    
+
     dL_dmeans3D = torch.zeros_like(means3D)
     dL_dcolors = torch.zeros_like(colors)
     dL_dcov3D_precomp = torch.zeros_like(cov3D_precomp)
@@ -310,13 +352,25 @@ def C_RasterizeGaussiansBackwardCUDA_FAKE(
     dL_ddc = torch.zeros_like(dc)
     dL_dbackground = torch.zeros_like(background)
     dL_dviewmatrix = torch.zeros_like(viewmatrix)
-    
-    return dL_dmeans3D, dL_dcolors, dL_dcov3D_precomp, dL_dsh, dL_dscales, dL_drotations, dL_ddc, dL_dbackground, dL_dviewmatrix 
 
+    return (
+        dL_dmeans3D,
+        dL_dcolors,
+        dL_dcov3D_precomp,
+        dL_dsh,
+        dL_dscales,
+        dL_drotations,
+        dL_ddc,
+        dL_dbackground,
+        dL_dviewmatrix,
+    )
 
 
 def cpu_deep_copy_tuple(input_tuple):
-    copied_tensors = [item.cpu().clone() if isinstance(item, torch.Tensor) else item for item in input_tuple]
+    copied_tensors = [
+        item.cpu().clone() if isinstance(item, torch.Tensor) else item
+        for item in input_tuple
+    ]
     return tuple(copied_tensors)
 
 
@@ -340,11 +394,9 @@ class GaussianRasterizationSettings(NamedTuple):
     rot_4d: bool
     gaussian_dim: int
     force_sh_3d: bool
-    degree_t: int
+    sh_degree_t: int
     timestamp: float
-    prefilter_var: float 
-
-
+    prefilter_var: float
 
 
 def calculateGaussianVisibilityContribution(
@@ -432,7 +484,7 @@ def rasterize_gaussians_fastgs(
     rotations,
     cov3Ds_precomp,
     raster_settings,
-# 4D Gaussian params
+    # 4D Gaussian params
     ts: torch.Tensor,
     scales_t: torch.Tensor,
     rotations_r: torch.Tensor,
@@ -473,6 +525,28 @@ class _RasterizeGaussiansFastGS(torch.autograd.Function):
         rotations_r,
     ):
 
+        inputs = (
+            means3D,
+            means2D,
+            dc,
+            sh,
+            colors_precomp,
+            opacities,
+            scales,
+            rotations,
+            cov3Ds_precomp,
+            raster_settings,
+            ts,
+            scales_t,
+            rotations_r,
+        )
+
+        # for i, x in enumerate(inputs):
+        #     if x is not None and (isinstance(x, torch.Tensor) or isinstance(x,torch.nn.Parameter)):
+        #         print(i, x.shape, x.dtype, x.device)
+        #     else:
+        #         print(i)
+
         # Restructure arguments the way that the C++ lib expects them
         args = (
             raster_settings.bg,
@@ -483,9 +557,15 @@ class _RasterizeGaussiansFastGS(torch.autograd.Function):
             rotations,
             raster_settings.scale_modifier,
             cov3Ds_precomp,
-            raster_settings.metric_map if raster_settings.metric_map is not None
-                else torch.zeros(raster_settings.image_height * raster_settings.image_width,
-                                 dtype=torch.int32, device="cuda"),
+            (
+                raster_settings.metric_map
+                if raster_settings.metric_map is not None
+                else torch.zeros(
+                    raster_settings.image_height * raster_settings.image_width,
+                    dtype=torch.int32,
+                    device="cuda",
+                )
+            ),
             raster_settings.viewmatrix,
             raster_settings.projmatrix,
             raster_settings.tanfovx,
@@ -505,48 +585,112 @@ class _RasterizeGaussiansFastGS(torch.autograd.Function):
             rotations_r,
             raster_settings.prefilter_var,
             raster_settings.timestamp if raster_settings.timestamp is not None else 0.0,
-            raster_settings.time_duration if raster_settings.time_duration is not None else 1.0,
+            (
+                raster_settings.time_duration
+                if raster_settings.time_duration is not None
+                else 1.0
+            ),
             raster_settings.rot_4d if raster_settings.rot_4d is not None else False,
-            raster_settings.gaussian_dim if raster_settings.gaussian_dim is not None else 3,
-            raster_settings.force_sh_3d if raster_settings.force_sh_3d is not None else False,
-            raster_settings.degree_t if raster_settings.degree_t is not None else 0,
+            (
+                raster_settings.gaussian_dim
+                if raster_settings.gaussian_dim is not None
+                else 3
+            ),
+            (
+                raster_settings.force_sh_3d
+                if raster_settings.force_sh_3d is not None
+                else False
+            ),
+            raster_settings.sh_degree_t if raster_settings.sh_degree_t is not None else 0,
         )
 
         if raster_settings.debug:
             cpu_args = cpu_deep_copy_tuple(args)
             try:
-                
-                num_rendered, num_buckets, color, depth, radii, geomBuffer, binningBuffer, imgBuffer, sampleBuffer, metricCount, out_means3D = C_RasterizeGaussiansCUDA(*args)
+
+                (
+                    num_rendered,
+                    num_buckets,
+                    color,
+                    depth,
+                    radii,
+                    geomBuffer,
+                    binningBuffer,
+                    imgBuffer,
+                    sampleBuffer,
+                    metricCount,
+                    out_means3D,
+                ) = C_RasterizeGaussiansCUDA(*args)
             except Exception as ex:
                 torch.save(cpu_args, "snapshot_fw_fastgs.dump")
-                print("\nAn error occurred in forward (fastgs). Please forward snapshot_fw_fastgs.dump for debugging.")
+                print(
+                    "\nAn error occurred in forward (fastgs). Please forward snapshot_fw_fastgs.dump for debugging."
+                )
                 raise ex
         else:
-            num_rendered, num_buckets, color, depth, radii, geomBuffer, binningBuffer, imgBuffer, sampleBuffer, metricCount, out_means3D = C_RasterizeGaussiansCUDA(*args)
+            (
+                num_rendered,
+                num_buckets,
+                color,
+                depth,
+                radii,
+                geomBuffer,
+                binningBuffer,
+                imgBuffer,
+                sampleBuffer,
+                metricCount,
+                out_means3D,
+            ) = C_RasterizeGaussiansCUDA(*args)
 
         # Keep relevant tensors for backward
         ctx.raster_settings = raster_settings
         ctx.num_rendered = num_rendered
         ctx.num_buckets = num_buckets
         ctx.save_for_backward(
-            colors_precomp, means3D, scales, rotations, cov3Ds_precomp,
-            radii, dc, sh, opacities,
-            geomBuffer, binningBuffer, imgBuffer, sampleBuffer,
-            ts, scales_t, rotations_r,
+            colors_precomp,
+            means3D,
+            scales,
+            rotations,
+            cov3Ds_precomp,
+            radii,
+            dc,
+            sh,
+            opacities,
+            geomBuffer,
+            binningBuffer,
+            imgBuffer,
+            sampleBuffer,
+            ts,
+            scales_t,
+            rotations_r,
         )
         return color, depth, radii, metricCount, out_means3D
 
     @staticmethod
-    def backward(ctx, grad_out_color, grad_depth, grad_radii, grad_metricCount, grad_out_means3D):
+    def backward(
+        ctx, grad_out_color, grad_depth, grad_radii, grad_metricCount, grad_out_means3D
+    ):
         # Restore necessary values from context
         num_rendered = ctx.num_rendered
         num_buckets = ctx.num_buckets
         raster_settings = ctx.raster_settings
         (
-            colors_precomp, means3D, scales, rotations, cov3Ds_precomp,
-            radii, dc, sh, opacities,
-            geomBuffer, binningBuffer, imgBuffer, sampleBuffer,
-            ts, scales_t, rotations_r,
+            colors_precomp,
+            means3D,
+            scales,
+            rotations,
+            cov3Ds_precomp,
+            radii,
+            dc,
+            sh,
+            opacities,
+            geomBuffer,
+            binningBuffer,
+            imgBuffer,
+            sampleBuffer,
+            ts,
+            scales_t,
+            rotations_r,
         ) = ctx.saved_tensors
 
         # Restructure args as C++ method expects them
@@ -579,31 +723,71 @@ class _RasterizeGaussiansFastGS(torch.autograd.Function):
             opacities,
             scales_t,
             rotations_r,
-            raster_settings.prefilter_var if raster_settings.prefilter_var is not None else 0.0,
+            (
+                raster_settings.prefilter_var
+                if raster_settings.prefilter_var is not None
+                else 0.0
+            ),
             raster_settings.timestamp if raster_settings.timestamp is not None else 0.0,
-            raster_settings.time_duration if raster_settings.time_duration is not None else 1.0,
+            (
+                raster_settings.time_duration
+                if raster_settings.time_duration is not None
+                else 1.0
+            ),
             raster_settings.rot_4d if raster_settings.rot_4d is not None else False,
-            raster_settings.gaussian_dim if raster_settings.gaussian_dim is not None else 3,
-            raster_settings.force_sh_3d if raster_settings.force_sh_3d is not None else False,
-            raster_settings.degree_t if raster_settings.degree_t is not None else 0,
+            (
+                raster_settings.gaussian_dim
+                if raster_settings.gaussian_dim is not None
+                else 3
+            ),
+            (
+                raster_settings.force_sh_3d
+                if raster_settings.force_sh_3d is not None
+                else False
+            ),
+            raster_settings.sh_degree_t if raster_settings.sh_degree_t is not None else 0,
         )
 
         if raster_settings.debug:
             cpu_args = cpu_deep_copy_tuple(args)
             try:
-                (grad_means2D, grad_colors_precomp, grad_opacities, grad_means3D,
-                 grad_cov3Ds_precomp, grad_dc, grad_sh, grad_scales,
-                 grad_rotations, grad_ts, grad_scales_t, grad_rotations_r,
-                 grad_opacity_out) = C_RasterizeGaussiansBackwardCUDA(*args)
+                (
+                    grad_means2D,
+                    grad_colors_precomp,
+                    grad_opacities,
+                    grad_means3D,
+                    grad_cov3Ds_precomp,
+                    grad_dc,
+                    grad_sh,
+                    grad_scales,
+                    grad_rotations,
+                    grad_ts,
+                    grad_scales_t,
+                    grad_rotations_r,
+                    grad_opacity_out,
+                ) = C_RasterizeGaussiansBackwardCUDA(*args)
             except Exception as ex:
                 torch.save(cpu_args, "snapshot_bw_fastgs.dump")
-                print("\nAn error occurred in backward (fastgs). Writing snapshot_bw_fastgs.dump for debugging.\n")
+                print(
+                    "\nAn error occurred in backward (fastgs). Writing snapshot_bw_fastgs.dump for debugging.\n"
+                )
                 raise ex
         else:
-            (grad_means2D, grad_colors_precomp, grad_opacities, grad_means3D,
-             grad_cov3Ds_precomp, grad_dc, grad_sh, grad_scales,
-             grad_rotations, grad_ts, grad_scales_t, grad_rotations_r,
-             grad_opacity_out) = C_RasterizeGaussiansBackwardCUDA(*args)
+            (
+                grad_means2D,
+                grad_colors_precomp,
+                grad_opacities,
+                grad_means3D,
+                grad_cov3Ds_precomp,
+                grad_dc,
+                grad_sh,
+                grad_scales,
+                grad_rotations,
+                grad_ts,
+                grad_scales_t,
+                grad_rotations_r,
+                grad_opacity_out,
+            ) = C_RasterizeGaussiansBackwardCUDA(*args)
 
         grads = (
             grad_means3D,
@@ -615,11 +799,17 @@ class _RasterizeGaussiansFastGS(torch.autograd.Function):
             grad_scales,
             grad_rotations,
             grad_cov3Ds_precomp,
-            None, # raster settings (no gradients)
+            None,  # raster settings (no gradients)
             grad_ts,
             grad_scales_t,
             grad_rotations_r,
         )
+
+        # for i, x in enumerate(grads):
+        #     if x is not None:
+        #         print(i, x.shape, x.dtype, x.device)
+        #     else:
+        #         print(i)
 
         return grads
 
@@ -656,13 +846,19 @@ class GaussianRasterizer(nn.Module):
     ):
         raster_settings = self.raster_settings
 
-        if (shs is None and colors_precomp is None) or (shs is not None and colors_precomp is not None):
-            raise Exception('Please provide exactly one of either SHs or precomputed colors!')
+        if (shs is None and colors_precomp is None) or (
+            shs is not None and colors_precomp is not None
+        ):
+            raise Exception(
+                "Please provide exactly one of either SHs or precomputed colors!"
+            )
 
         if ((scales is None or rotations is None) and cov3D_precomp is None) or (
             (scales is not None or rotations is not None) and cov3D_precomp is not None
         ):
-            raise Exception('Please provide exactly one of either scale/rotation pair or precomputed 3D covariance!')
+            raise Exception(
+                "Please provide exactly one of either scale/rotation pair or precomputed 3D covariance!"
+            )
 
         if dc is None:
             dc = torch.Tensor([])
@@ -677,6 +873,10 @@ class GaussianRasterizer(nn.Module):
         if cov3D_precomp is None:
             cov3D_precomp = torch.Tensor([])
         if ts is None:
+            if raster_settings.gaussian_dim == 4:
+                print(
+                    "Warning: Rasterization expects 4D Gaussian parameters but no timestamps provided. Defaulting to zeros."
+                )
             ts = torch.Tensor([])
         if scales_t is None:
             scales_t = torch.Tensor([])

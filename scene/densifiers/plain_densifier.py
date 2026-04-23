@@ -31,12 +31,11 @@ class PlainDensifier(DensifierBase):
             self.t_gradient_accum[update_filter] += avg_t_gradient[update_filter]
 
 
-    def densify_and_prune(self, iteration, scene, gaussians, radii, pipe, bg):
+    def densify_and_prune(self, iteration, scene, gaussians, radii, pipe, bg, *, prune_only):
         max_grad = self.options.densify_grad_threshold
         min_opacity = self.options.thresh_opa_prune
         max_grad_t = self.options.densify_grad_t_threshold
         extent = scene.cameras_extent
-        prune_only = False
         max_screen_size = (
             20 if iteration > self.options.opacity_reset_interval else None
         )

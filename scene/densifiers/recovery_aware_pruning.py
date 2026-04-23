@@ -6,7 +6,7 @@ class RecoveryAwarePruner(DensifierBase):
     def __init__(self,opt):
         super().__init__(opt, "recovery_aware")
 
-    def densify_and_prune(self, iteration, scene, gaussians, radii,pipe, bg):
+    def densify_and_prune(self, iteration, scene, gaussians, radii,pipe, bg, *, prune_only):
         # we do nothing on densification iterations
         pass
 

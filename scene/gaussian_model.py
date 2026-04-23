@@ -166,6 +166,44 @@ class GaussianModel:
         # print("DENSIFIER VARS:",model_args["densifier_vars"].keys())
         # for d,vals in model_args["densifier_vars"].items():
         #     print("DENSIFIER {} VARS:".format(d),vals.keys())
+        if type(model_args) == tuple:
+            print("LOADING OLD MODEL ARGS, display only please!")
+            if self.gaussian_dim == 3:
+                (self.active_sh_degree, 
+                self._xyz, 
+                self._features_dc, 
+                self._features_rest,
+                self._scaling, 
+                self._rotation, 
+                self._opacity,
+                self.max_radii2D, 
+                xyz_gradient_accum, 
+                denom,
+                opt_dict, 
+                self.spatial_lr_scale) = model_args
+            elif self.gaussian_dim == 4:
+                (self.active_sh_degree, 
+                self._xyz, 
+                self._features_dc, 
+                self._features_rest,
+                self._scaling, 
+                self._rotation, 
+                self._opacity,
+                self.max_radii2D, 
+                xyz_gradient_accum, 
+                t_gradient_accum,
+                denom,
+                opt_dict, 
+                self.spatial_lr_scale,
+                self._t,
+                self._scaling_t,
+                self._rotation_r,
+                self.rot_4d,
+                self.env_map,
+                self.active_sh_degree_t) = model_args
+            return
+        
+
         gaussian_dim = model_args["gaussian_dim"]
         if gaussian_dim != self.gaussian_dim:
             raise ValueError(f"Gaussian dimension mismatch in load: expected {self.gaussian_dim}, got {gaussian_dim}")
@@ -742,10 +780,10 @@ class GaussianModel:
             densifier.add_densification_stats_grad(gaussians=self, iteration=iteration, viewspace_point_grad=viewspace_point_grad, 
                                                    update_filter=update_filter, radii=radii, avg_t_gradient=avg_t_grad)
 
-    def run_densifiers(self, iteration, scene, radii, pipe, bg):
+    def run_densifiers(self, iteration, scene, radii, pipe, bg,prune_only):
         for densifier in self.densifiers:
             if densifier.needs_densification(iteration):
-                densifier.densify_and_prune(iteration, scene, self, radii, pipe, bg)
+                densifier.densify_and_prune(iteration, scene, self, radii, pipe, bg,prune_only=prune_only)
 
     def call_densifier_per_iteration(self, iteration, scene, radii, pipe, bg):
         for densifier in self.densifiers:
