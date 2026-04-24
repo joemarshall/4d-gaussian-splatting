@@ -564,6 +564,8 @@ renderCUDA(
 	float Flow[2] = { 0 };
 	float D = { 0 };
 
+
+	
 	// Iterate over batches until all done or range is complete
 	for (int i = 0; i < rounds; i++, toDo -= BLOCK_SIZE)
 	{

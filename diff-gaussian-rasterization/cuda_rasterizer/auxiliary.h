@@ -20,7 +20,7 @@
 #define MY_PI 3.14159265
 
 // if this = 1 then we only render to buckets if the tile 
-// is covered by a lot of gaussian
+// is covered by a lot of gaussians
 // otherwise we render to all tiles within radius of the gaussian
 #define FASTGS_CULLING 1
 

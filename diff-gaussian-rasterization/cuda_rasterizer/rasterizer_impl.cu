@@ -137,7 +137,7 @@ __global__ void duplicateWithKeys(
 // Check keys to see if it is at the start/end of one tile's range in
 // the full sorted list. If yes, write start/end of this tile.
 // Run once per instanced (duplicated) Gaussian ID.
-__global__ void identifyTileRanges(int L, uint64_t *point_list_keys, uint2 *ranges)
+__global__ void identifyTileRanges(int L, uint64_t* point_list_keys, uint2* ranges,dim3 tile_grid)
 {
 	auto idx = cg::this_grid().thread_rank();
 	if (idx >= L)
@@ -146,18 +146,30 @@ __global__ void identifyTileRanges(int L, uint64_t *point_list_keys, uint2 *rang
 	// Read tile ID from key. Update start/end of tile range if at limit.
 	uint64_t key = point_list_keys[idx];
 	uint32_t currtile = key >> 32;
+	bool valid_tile = currtile != (uint32_t) -1 && currtile < tile_grid.x * tile_grid.y;
+//	assert(currtile < tile_grid.x * tile_grid.y);
+
 	if (idx == 0)
 		ranges[currtile].x = 0;
 	else
 	{
 		uint32_t prevtile = point_list_keys[idx - 1] >> 32;
+		bool valid_prev_tile = prevtile != (uint32_t) -1 && prevtile < tile_grid.x * tile_grid.y;
+//		assert(prevtile < tile_grid.x * tile_grid.y);
+		if(!valid_prev_tile){
+			printf("Invalid prev tile %d at idx %d\n", prevtile, idx-1);
+		}
 		if (currtile != prevtile)
 		{
-			ranges[prevtile].y = idx;
-			ranges[currtile].x = idx;
+			if(valid_prev_tile){
+				ranges[prevtile].y = idx;
+			}
+			if (valid_tile){ 
+				ranges[currtile].x = idx;
+			}
 		}
 	}
-	if (idx == L - 1)
+	if (idx == L - 1 && valid_tile)
 		ranges[currtile].y = L;
 }
 
@@ -331,6 +343,10 @@ int CudaRasterizer::Rasterizer::forward(
 	size_t binning_chunk_size = required<BinningState>(num_rendered);
 	char *binning_chunkptr = binningBuffer(binning_chunk_size);
 	BinningState binningState = BinningState::fromChunk(binning_chunkptr, num_rendered);
+	
+	// make all keys invalid so that any not written will go to the end of the
+	// sorted list to be ignored in further code
+	cudaMemset(binningState.point_list_keys_unsorted, 0xff, num_rendered * sizeof(uint64_t));
 
 	// For each instance to be rendered, produce adequate [ tile | depth ] key
 	// and corresponding dublicated Gaussian indices to be sorted
@@ -370,7 +386,7 @@ int CudaRasterizer::Rasterizer::forward(
 		identifyTileRanges<<<(num_rendered + 255) / 256, 256>>>(
 			num_rendered,
 			binningState.point_list_keys,
-			imgState.ranges);
+			imgState.ranges,tile_grid);
 	CHECK_CUDA(, debug)
 
 	// Let each tile blend its range of Gaussians independently in parallel
