@@ -217,7 +217,7 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
         print("Rasterizing with FastGS!")
         print("DC",dc.shape)
         print("SH",sh.shape)
-        rendered_image, depth, radii, metricCount, out_means3D = rasterizer(
+        rendered_image, depth, radii, metric_count, out_means3D = rasterizer(
             means3D = means3D,
             means2D = means2D,
             dc = dc,
@@ -234,7 +234,7 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
             )
 
     else:
-        rendered_image, radii, depth, alpha, flow, covs_com,metricCount = rasterizer(
+        rendered_image, radii, depth, alpha, flow, covs_com,metric_count = rasterizer(
             means3D = means3D,
             means2D = means2D,
             shs = shs,
@@ -287,4 +287,4 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
                 "depth": depth,
                 "alpha": alpha,
                 "flow": flow,
-                "metric_count": metricCount}
+                "metric_counts": metric_count}

@@ -8,7 +8,7 @@ class TimeSpacePruner(DensifierBase):
     def __init__(self,opt):
         super().__init__(opt, "time_space_pruner")
 
-    def densify_and_prune(self, iteration, scene, gaussians, radii,pipe, bg, *, prune_only):
+    def densify_and_prune(self, iteration, scene, gaussians, radii,pipe, bg, *, options):
         # we do nothing on densification iterations
         pass
 

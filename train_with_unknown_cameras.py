@@ -791,15 +791,6 @@ PipelineParams:
   env_optimize_from: 0
   eval_shfs_4d: True
 
-PipelineParams:
-  convert_SHs_python: False
-  compute_cov3D_python: False
-  debug: False
-  env_map_res: 512
-  env_optimize_until: 5000
-  env_optimize_from: 0
-  eval_shfs_4d: True
-
 OptimizationParams:
   iterations: 30_000
   position_lr_init: 0.00016

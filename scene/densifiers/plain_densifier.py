@@ -1,7 +1,6 @@
 import torch
 from .densifier_base import DensifierBase   
 
-
 from utils.general_utils import  build_rotation, build_rotation_4d
 from .split_ops import *
 
@@ -31,7 +30,7 @@ class PlainDensifier(DensifierBase):
             self.t_gradient_accum[update_filter] += avg_t_gradient[update_filter]
 
 
-    def densify_and_prune(self, iteration, scene, gaussians, radii, pipe, bg, *, prune_only):
+    def densify_and_prune(self, iteration, scene, gaussians, radii, pipe, bg, *, options):
         max_grad = self.options.densify_grad_threshold
         min_opacity = self.options.thresh_opa_prune
         max_grad_t = self.options.densify_grad_t_threshold
@@ -42,7 +41,7 @@ class PlainDensifier(DensifierBase):
 
         clone_pts_mask = None
         split_pts_mask = None
-        if not prune_only:
+        if options["densify"]:
             grads = self.xyz_gradient_accum / self.denom
             grads[grads.isnan()] = 0.0
             if gaussians.gaussian_dim == 4:
@@ -66,10 +65,8 @@ class PlainDensifier(DensifierBase):
         if max_screen_size:
             big_points_vs = torch.zeros_like(prune_mask) #self.max_radii2D > max_screen_size
             big_points_ws = gaussians.get_scaling.max(dim=1).values > 0.1 * extent
-#            if not prune_only:
-            # print(f"Densification iteration {iteration}: {clone_pts_mask.sum().item()} clones, {split_pts_mask.sum().item()} splits, {prune_mask.sum().item()} prunes, {big_points_vs.sum().item()} big_points_vs, {big_points_ws.sum().item()} big_points_ws, extents {extent}, max_screen_size {max_screen_size}")
             # prune_mask = torch.logical_or(torch.logical_or(prune_mask, big_points_vs), big_points_ws)
-        clone_split_prune(gaussians,clone_pts_mask,split_pts_mask,prune_mask,long_axis_split=self.options.split_on_long_axis)
+        clone_split_prune(gaussians,clone_pts_mask,split_pts_mask,prune_mask,long_axis_split=self._get_option("split_on_long_axis",False),repeat_count=self._get_option('densify_repeat_count', 2))
 
         #print("Pruned {} points. Remaining points: {}".format(prune_mask.sum(), gaussians.get_xyz.shape[0]))
 

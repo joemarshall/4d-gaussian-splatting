@@ -7,7 +7,7 @@ class DensifierBase:
         """ Any setup that needs to be done before training starts can be done here, such as initializing accumulators."""
         pass
 
-    def densify_and_prune(self, iteration, scene, gaussians, radii,pipe, bg,*,prune_only):
+    def densify_and_prune(self, iteration, scene, gaussians, radii,pipe, bg,*,options):
         """ Do densification and pruning on gaussians using this method. """
         raise NotImplementedError("Densify method must be implemented by subclasses.")
     
@@ -29,25 +29,47 @@ class DensifierBase:
     def _get_option(self, option_name, default_value):
         """Helper method to get an option value with a default and a potential
         per_densifier override with prefix name_."""
-        return getattr(self.options,self.name+"_"+option_name, getattr(self.options, option_name, default_value))
+        # n.b. can't just getattr because if it isn't set then
+        # we want to return default value from base class rather than
+        # always returning default value from our customized option
+        retval = getattr(self.options,self.name+"_"+option_name,None)
+        if retval is None: 
+            retval = getattr(self.options, option_name,None)
+            if retval is None:
+                return default_value
+        #print("Options for {}: {}={}".format(self.name, option_name, retval))
+        return retval
 
-    def needs_densification(self, iteration):
+    def needs_densification_or_pruning(self, gaussians, iteration):
         """ Determine if densification needs to be called based on the current iteration and densifier options. """
         densification_interval = self._get_option("densification_interval", 100)
         densify_from_iter = self._get_option("densify_from_iter", 0)
         densify_until_iter = self._get_option("densify_until_iter", 1e9)
-        if iteration >= densify_from_iter and iteration < densify_until_iter and iteration % densification_interval == 0:
-            return True
-        return False
+
+        # print(iteration, densify_from_iter, densify_until_iter, densification_interval)
+
+        needs_densify = iteration >= densify_from_iter and iteration < densify_until_iter and iteration % densification_interval == 0
+        needs_prune = needs_densify
+        final_prune = self._get_option("final_prune_from_iter", -1) > 0 and iteration >= self._get_option("final_prune_from_iter", -1) and iteration % self._get_option("final_prune_interval", 1000) == 0
+
+        if self._get_option("densify_until_num_points", 0) > 0 and  gaussians.get_xyz.shape[0] >= self._get_option("densify_until_num_points", 0):
+            needs_densify = False
+
+        if needs_densify or needs_prune or final_prune:
+            return {"densify":needs_densify, "prune":needs_prune, "final_prune":final_prune}
+        else:
+            return None
 
 
     def densification_postfix(self, gaussians):
         """ resize accumulation variables after size change"""
-        print("Called base densification_postfix, but this should be implemented by subclasses that have accumulation variables to resize after densification.")
+        if len(self.get_save_vars(gaussians))>0:
+            print("Called base densification_postfix, but this should be implemented by subclasses that have accumulation variables to resize after densification.")
 
-    def prune_points(self, valid_points_mask):
+    def prune_points(self, gaussians,valid_points_mask):
         """ prune points according to the mask"""
-        print("Called base prune_points, but this should be implemented by subclasses that have accumulation variables to resize after pruning.")
+        if len(self.get_save_vars(gaussians))>0:
+            print("Called base prune_points, but this should be implemented by subclasses that have accumulation variables to resize after pruning.")
 
     def per_iteration(self, iteration, scene, gaussians, radii, pipe, bg):
         """ Any per-iteration code that needs to be run for this densifier can be put here. 

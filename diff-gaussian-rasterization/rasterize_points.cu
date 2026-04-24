@@ -107,7 +107,7 @@ RasterizeGaussiansCUDA(
 	  }
 	  metric_map_ptr = metric_map.contiguous().data_ptr<int>();
 
-	  out_metric_count = torch::full({NUM_CHANNELS, H, W}, 0.0, float_opts);
+	  out_metric_count = torch::full({P}, 0, int_opts);
 	  metric_count_out_data = out_metric_count.contiguous().data_ptr<int>();
 
   }else{

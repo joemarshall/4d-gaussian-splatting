@@ -329,8 +329,7 @@ try:
                             recursive_merge(key1, host[key])
                     else:
                         if key != "model_path" and key != "loaded_pth":  # don't override these from the config file
-                            if hasattr(render_args, key):
-                                setattr(render_args, key, host[key])
+                            setattr(render_args, key, host[key])
 
             for k in cfg.keys():
                 recursive_merge(k, cfg)            
@@ -344,9 +343,9 @@ try:
 
             scene = Scene(model, gaussians, shuffle=False)
 
-            # prune_mask = (gaussians.get_opacity < 0.1).squeeze()
-            # clone_split_prune(gaussians, None, None, prune_mask)
-            # print("Pruned:",prune_mask.shape[0]," -> ",gaussians.get_xyz.shape[0])
+            #prune_mask = (gaussians.get_opacity < 0.1).squeeze()
+            #clone_split_prune(gaussians, None, None, prune_mask)
+            #print("Pruned:",prune_mask.shape[0]," -> ",gaussians.get_xyz.shape[0])
 
 
 

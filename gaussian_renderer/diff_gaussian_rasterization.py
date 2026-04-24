@@ -119,6 +119,10 @@ class _RasterizeGaussians(torch.autograd.Function):
             raster_settings.metric_map,
         )
 
+        # print("-----------------------------------  ")
+        # for x in args:
+        #     print(type(x), x.shape if isinstance(x, torch.Tensor) else None,x.dtype if isinstance(x, torch.Tensor) else None)
+
         # Invoke C++/CUDA rasterizer
         if raster_settings.debug:
             cpu_args = cpu_deep_copy_tuple(args) # Copy them before they can be corrupted

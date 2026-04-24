@@ -583,7 +583,7 @@ class GaussianModel:
                     self._rotation_r = optimizable_tensors["rotation_r"]
 
             for densifier in self.densifiers:
-                densifier.prune_points(mask)
+                densifier.prune_points(self,mask)
         else:
             # pruning without optimizer step, for inference only
             self._xyz = self._xyz[valid_points_mask]
@@ -780,10 +780,11 @@ class GaussianModel:
             densifier.add_densification_stats_grad(gaussians=self, iteration=iteration, viewspace_point_grad=viewspace_point_grad, 
                                                    update_filter=update_filter, radii=radii, avg_t_gradient=avg_t_grad)
 
-    def run_densifiers(self, iteration, scene, radii, pipe, bg,prune_only):
+    def run_densifiers(self, iteration, scene, radii, pipe, bg):
         for densifier in self.densifiers:
-            if densifier.needs_densification(iteration):
-                densifier.densify_and_prune(iteration, scene, self, radii, pipe, bg,prune_only=prune_only)
+            options = densifier.needs_densification_or_pruning(self,iteration)
+            if options is not None:
+                densifier.densify_and_prune(iteration, scene, self, radii, pipe, bg,options = options)
 
     def call_densifier_per_iteration(self, iteration, scene, radii, pipe, bg):
         for densifier in self.densifiers:

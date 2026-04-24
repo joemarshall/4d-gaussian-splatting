@@ -13,6 +13,8 @@ from argparse import ArgumentParser, Namespace
 import sys
 import os
 
+from .densifier_options import list_densifier_options
+
 class GroupParams:
     pass
 
@@ -80,6 +82,7 @@ class PipelineParams(ParamGroup):
 
 class OptimizationParams(ParamGroup):
     def __init__(self, parser):
+        self.densifiers = "PlainDensifier"
         self.iterations = 30_000
         self.position_lr_init = 0.00016
         self.position_t_lr_init = -1.0
@@ -92,9 +95,16 @@ class OptimizationParams(ParamGroup):
         self.scaling_lr = 0.005
         self.rotation_lr = 0.001
         self.percent_dense = 0.01
+        # loss weights
         self.lambda_dssim = 0.2
+        self.lambda_opa_mask = 0.0
+        self.lambda_rigid = 0.0
+        self.lambda_motion = 0.0
+        self.lambda_depth = 0.0
         self.thresh_opa_prune = 0.005
         self.densification_interval = 100
+
+
         self.split_on_long_axis = False
         self.opacity_reset_interval = 3000
         self.densify_from_iter = 500
@@ -105,10 +115,6 @@ class OptimizationParams(ParamGroup):
         self.final_prune_from_iter = -1
         self.prune_st_score_threshold = -1.0
         self.sh_increase_interval = 1000
-        self.lambda_opa_mask = 0.0
-        self.lambda_rigid = 0.0
-        self.lambda_motion = 0.0
-        self.lambda_depth = 0.0
         # FastGS parameters
         self.use_fastgs_densification = False
         self.fastgs_mult = 0.5
@@ -121,6 +127,7 @@ class OptimizationParams(ParamGroup):
         self.fastgs_final_prune_min_opacity = 0.1
         self.fastgs_final_num_sample_cams = 10
         self.fastgs_num_sample_cams = 10
+        self.fastgs_densify_repeat_count = 3
         # LFF densification parameters (EFA-GS style)
         self.use_lff_densification = False
         self.lff_split_multiplier = 2.0
@@ -132,6 +139,12 @@ class OptimizationParams(ParamGroup):
         self.lff_splitting_lb = 0.5
         self.lff_tolerance = 1e-5
         self.lff_diffscale = False
+
+        # densifier options - 
+        for option, _default in list_densifier_options().items():
+            if not hasattr(self, option):
+                setattr(self, option, None)
+
         super().__init__(parser, "Optimization Parameters")
 
 def get_combined_args(parser : ArgumentParser,cmdlne_string = None):

@@ -15,18 +15,18 @@ from .loss_utils import l1_loss
 import numpy as np
 
 
-def sampling_cameras(viewpoint_stack, num_cams=10,dimensions = 3):
+def sampling_cameras(viewpoint_stack, num_cams=10, dimensions=3):
     """Randomly sample cameras from the viewpoint stack and copy.
 
     Args:
-        viewpoint_stack (list): list of camera objects.  
+        viewpoint_stack (list): list of camera objects.
         num_cams (int): number of cameras to sample (default 10).
 
     Returns:
         list: sampled camera objects.
     """
     camlist = []
-    if dimensions==3:
+    if dimensions == 3:
         first_list = []
         num_cams = min(num_cams, len(viewpoint_stack))
         indices = np.random.permutation(len(viewpoint_stack))
@@ -43,7 +43,7 @@ def sampling_cameras(viewpoint_stack, num_cams=10,dimensions = 3):
         ts = np.array(frames)
         np.random.shuffle(ts)
         total_cams = 0
-        while total_cams < num_cams and len(ts)>0:
+        while total_cams < num_cams and len(ts) > 0:
             frame_list = []
             timestamp = ts[0]
             ts = ts[1:]
@@ -51,10 +51,9 @@ def sampling_cameras(viewpoint_stack, num_cams=10,dimensions = 3):
             indices = viewpoint_stack.get_indices_for_timestamp(timestamp)
             for i in indices[:num_left]:
                 frame_list.append(viewpoint_stack[i])
-                total_cams+=1
+                total_cams += 1
             camlist.append(frame_list)
     return camlist
-
 
 
 def _get_loss_map(render_image, gt_image):
@@ -91,7 +90,8 @@ def _compute_photometric_loss(viewpoint_cam, image, lambda_dssim=0.2):
     gt_image = viewpoint_cam.original_image.cuda()
     return l1_loss(image, gt_image)
 
-def compute_visible_gaussians(camlist,gaussians,pipe,bg,args):
+
+def compute_visible_gaussians(camlist, gaussians, pipe, bg, args):
     """Compute a count of how many training views each Gaussians is in
 
     Args:
@@ -104,28 +104,31 @@ def compute_visible_gaussians(camlist,gaussians,pipe,bg,args):
         Tensor: per-Gaussian integer counts of how many views flagged the Gaussian as visible.
     """
     full_metric_counts = None
-    fastgs_mult = getattr(args, 'fastgs_mult', getattr(args, 'mult', 0.5))
+    fastgs_mult = getattr(args, "fastgs_mult", getattr(args, "mult", 0.5))
 
     for view in range(len(camlist)):
-        #calculateGaussianVisibilityContribution(camlist[view][1], gaussians, pipe, bg, fastgs_mult)
-        
-        gt_image,viewpoint_cam = camlist[view]
-        viewpoint_cam=viewpoint_cam.cuda()
-        gt_image=gt_image.detach()
+        # calculateGaussianVisibilityContribution(camlist[view][1], gaussians, pipe, bg, fastgs_mult)
+
+        gt_image, viewpoint_cam = camlist[view]
+        viewpoint_cam = viewpoint_cam.cuda()
+        gt_image = gt_image.detach()
 
         render_pkg = render(viewpoint_cam, gaussians, pipe, bg)
         render_image = render_pkg["render"]
 
         gt_image = gt_image.cuda()
 
-        photometric_loss =l1_loss(gt_image,render_image)
+        photometric_loss = l1_loss(gt_image, render_image)
 
         l1_norm = _get_loss_map(render_image, gt_image)
         metric_map = (l1_norm > 0.1).to(torch.int32)
 
         render_pkg2 = render(
-            viewpoint_cam, gaussians, pipe, bg,
-             metric_map=metric_map,
+            viewpoint_cam,
+            gaussians,
+            pipe,
+            bg,
+            metric_map=metric_map,
         )
         accum_loss_counts = render_pkg2["accum_metric_counts"]
 
@@ -137,9 +140,7 @@ def compute_visible_gaussians(camlist,gaussians,pipe,bg,args):
     return full_metric_counts
 
 
-
-
-def compute_gaussian_score_fastgs(camlist, gaussians, pipe, bg, args, DENSIFY=False):
+def compute_gaussian_score_fastgs(camlist, gaussians, pipe, bg, loss_thresh, DENSIFY=False):
     """Compute multi-view consistency scores for Gaussians to guide densification.
 
     For each camera in *camlist* the function renders the scene with the FastGS
@@ -170,40 +171,32 @@ def compute_gaussian_score_fastgs(camlist, gaussians, pipe, bg, args, DENSIFY=Fa
     # for x in camlist:
     #     print(x[1].image_name,",",end="")
     # print("")
-    
+
     # print("*************************************")
 
     full_metric_counts = None
     full_metric_score = None
 
 
-    # Read FastGS parameters with fallbacks for backward compatibility.
-    fastgs_mult = getattr(args, 'fastgs_mult', getattr(args, 'mult', 0.5))
-    loss_thresh = getattr(args, 'fastgs_loss_thresh', getattr(args, 'loss_thresh', 0.1))
-
     for view in range(len(camlist)):
-        gt_image,viewpoint_cam = camlist[view]
-        viewpoint_cam=viewpoint_cam.cuda()
-        gt_image=gt_image.detach()
-
+        gt_image, viewpoint_cam = camlist[view]
+        viewpoint_cam = viewpoint_cam.cuda()
+        gt_image = gt_image.detach()
 
         # First render: get the rendered image and the plain photometric loss.
-        render_pkg = render_fastgs(viewpoint_cam, gaussians, pipe, bg, fastgs_mult)
+        render_pkg = render(viewpoint_cam, gaussians, pipe, bg)
         render_image = render_pkg["render"]
 
         gt_image = gt_image.cuda()
 
-        photometric_loss =l1_loss(gt_image,render_image)
+        photometric_loss = l1_loss(gt_image, render_image)
 
         # Build binary metric map: 1 where per-pixel error exceeds threshold.
         l1_norm = _get_loss_map(render_image, gt_image)
         metric_map = (l1_norm > loss_thresh).to(torch.int32)
         # Second render: accumulate per-Gaussian metric counts via get_flag.
-        render_pkg2 = render_fastgs(
-            viewpoint_cam, gaussians, pipe, bg, fastgs_mult,
-            get_flag=True, metric_map=metric_map,
-        )
-        accum_loss_counts = render_pkg2["accum_metric_counts"]
+        render_pkg2 = render(viewpoint_cam, gaussians, pipe, bg, metric_map=metric_map)
+        accum_loss_counts = render_pkg2["metric_counts"]
 
         if DENSIFY:
             if full_metric_counts is None:
@@ -226,7 +219,9 @@ def compute_gaussian_score_fastgs(camlist, gaussians, pipe, bg, args, DENSIFY=Fa
         pruning_score = torch.zeros_like(full_metric_score)
 
     if DENSIFY:
-        importance_score = torch.div(full_metric_counts, len(camlist), rounding_mode='floor')
+        importance_score = torch.div(
+            full_metric_counts, len(camlist), rounding_mode="floor"
+        )
     else:
         importance_score = None
 

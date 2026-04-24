@@ -5,7 +5,7 @@ class MontecarloPruner:
     def training_setup(self, gaussians,reset_accumulated_gradients = True):
         pass
 
-    def densify_and_prune(self, iteration, scene, gaussians, radii, pipe, bg, *, prune_only):
+    def densify_and_prune(self, iteration, scene, gaussians, radii, pipe, bg, *, options):
         num_cams = 40
         my_viewpoint_stack = scene.getTrainCameras()            
         camlist = sampling_cameras(my_viewpoint_stack, num_cams,dimensions=4)
@@ -43,7 +43,7 @@ class MontecarloPruner:
     def densification_postfix(self, gaussians):
         pass
 
-    def prune_points(self, prune_mask):
+    def prune_points(self, gaussians, prune_mask):
         pass
 
     @torch.no_grad()

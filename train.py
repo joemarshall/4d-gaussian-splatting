@@ -1,11 +1,24 @@
 # TODO:
-# pluggable prune / densifiers:
+# command for densifier choice by name
+# to try:
+# time/space pruining from 4dgs paper (can do at end - keep a model for it)
+# X check out fastgs optimisation
+# and llff densfication 
+# and splitting lengthways
+
+# pruning support in show_images for testing of pruning
+
+# optimisation of display a.la. fastgs
+#
 # prune floaters (at end?)
 # prune invisibles (render outside in, frame by frame and remove totally invisibles)
 # prune v short time span gaussians in 4d
 # 
-# better optimisation strategies (e.g. train over all frames at timepoint then backprop
-# - using a loss which combines multiple frame info)
+# try with different ordering
+
+# fast 4d prefilter -
+# even with rotation, opacity can be scaled by at best max(dimension) so can 4d clip
+# before running any calculations by just looking at scaling vector
 
 
 #
@@ -296,6 +309,7 @@ def training(
     if use_lff:
         densifiers.append(LFFDensifier(opt))
 
+    densifiers.append(OpacityReset(opt))
     densifiers.append(RecoveryAwarePruner(opt))
     
 
@@ -549,45 +563,34 @@ def training(
                         env_map_optimizer.step()
                         env_map_optimizer.zero_grad(set_to_none=True)
 
+                if TRACK_MEMORY:
+                    torch.cuda.memory._dump_snapshot(f"temp.pickle")
+
                 # Densification
-                if iteration < opt.densify_until_iter:
-                    if TRACK_MEMORY:
-                        torch.cuda.memory._dump_snapshot(f"temp.pickle")
+                # n.b. densifiers keep track of densification stats internally and also decide when to
+                # keep track, so we don't need to use the densify_until etc here
 
-#                    print(f"[ITER {iteration}] Densifying Gaussians: {gaussians.get_xyz.shape[0]}")
-                    # Keep track of max radii in image-space for pruning
-                    if batch_size == 1:
-                        gaussians.add_densification_stats(
-                            iteration = iteration,
-                            viewspace_point_tensor = viewspace_point_tensor,
-                            update_filter = visibility_filter,
-                            radii = radii,
-                            avg_t_grad = batch_t_grad if gaussians.gaussian_dim == 4 else None,
-                        )
-                    else:
-                        gaussians.add_densification_stats_grad(
-                            iteration = iteration,
-                            viewspace_point_grad = batch_viewspace_point_grad,
-                            update_filter = visibility_filter,
-                            radii = radii,
-                            avg_t_grad = batch_t_grad if gaussians.gaussian_dim == 4 else None,
-                        )
-
-                    prune_only = opt.densify_until_num_points > 0 and  gaussians.get_xyz.shape[0] >= opt.densify_until_num_points
+                if batch_size == 1:
+                    gaussians.add_densification_stats(
+                        iteration = iteration,
+                        viewspace_point_tensor = viewspace_point_tensor,
+                        update_filter = visibility_filter,
+                        radii = radii,
+                        avg_t_grad = batch_t_grad if gaussians.gaussian_dim == 4 else None,
+                    )
+                else:
+                    gaussians.add_densification_stats_grad(
+                        iteration = iteration,
+                        viewspace_point_grad = batch_viewspace_point_grad,
+                        update_filter = visibility_filter,
+                        radii = radii,
+                        avg_t_grad = batch_t_grad if gaussians.gaussian_dim == 4 else None,
+                    )
 
 
-                    # run any densifiers configured for this step
-                    gaussians.run_densifiers(iteration, scene, radii, pipe, background,prune_only = prune_only)
 
-                    if iteration % opt.opacity_reset_interval == 0 or (
-                        dataset.white_background and iteration == opt.densify_from_iter
-                    ):
-                        gaussians.reset_opacity()
-                    
-                    if CLEAR_CACHE:
-                        torch.cuda.empty_cache()
-                    if TRACK_MEMORY:
-                        torch.cuda.memory._dump_snapshot(f"temp.pickle")
+                # run any densifiers configured for this step
+                gaussians.run_densifiers(iteration, scene, radii, pipe, background)
 
                 # call densifier per iteration for any densifiers that need to run every iteration 
                 # or that need to do cleanup after the main densification phase (e.g. FastGS final pruning)
