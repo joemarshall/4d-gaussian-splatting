@@ -315,3 +315,93 @@ torch::Tensor markVisible(
   
   return present;
 }
+
+std::tuple<int, torch::Tensor, torch::Tensor>
+CalculateGaussianContributionsCUDA(
+	const torch::Tensor& means3D,
+    const torch::Tensor& opacity,
+	const torch::Tensor& ts,
+	const torch::Tensor& scales,
+	const torch::Tensor& scales_t,
+	const torch::Tensor& rotations,
+	const torch::Tensor& rotations_r,
+	const float scale_modifier,
+	const torch::Tensor& cov3D_precomp,
+	const float prefilter_var, 
+	const torch::Tensor& viewmatrix,
+	const torch::Tensor& projmatrix,
+	const float tan_fovx,
+	const float tan_fovy,
+    const int image_height,
+    const int image_width,
+	const torch::Tensor& campos,
+	const float timestamp,
+	const float time_duration,
+	const bool rot_4d,
+	const int gaussian_dim,
+	const bool prefiltered,
+	const bool debug,
+	const torch::Tensor& per_pixel_error_map)
+{
+	const int P = means3D.size(0);
+	const int H = image_height;
+	const int W = image_width;
+
+	torch::Tensor out_visibility_contribution = torch::full({P}, 0, means3D.options().dtype(torch::kFloat32));
+	torch::Tensor out_weighted_contribution = torch::full({P}, 0, means3D.options().dtype(torch::kFloat32));
+
+	// binning stuff for rendering
+	torch::Device device(torch::kCUDA);
+	torch::TensorOptions options(torch::kByte);
+	torch::Tensor geomBuffer = torch::empty({0}, options.device(device));
+	torch::Tensor binningBuffer = torch::empty({0}, options.device(device));
+	torch::Tensor imgBuffer = torch::empty({0}, options.device(device));
+	std::function<char*(size_t)> geomFunc = resizeFunctional(geomBuffer);
+	std::function<char*(size_t)> binningFunc = resizeFunctional(binningBuffer);
+	std::function<char*(size_t)> imgFunc = resizeFunctional(imgBuffer);
+
+	float* per_pixel_error_map_ptr = nullptr;
+  	if (per_pixel_error_map.ndimension() != 0){
+	  if (per_pixel_error_map.ndimension() != 1 || per_pixel_error_map.size(0) != H * W) {
+		AT_ERROR("per_pixel_error_map must have dimensions (H * W)");
+	  }
+	  per_pixel_error_map_ptr = per_pixel_error_map.contiguous().data_ptr<float>();
+	}
+  
+
+
+	int rendered = CudaRasterizer::Rasterizer::calculateGaussianVisibilityContribution(
+	    geomFunc,
+		binningFunc,
+		imgFunc,
+	    P, 
+		W, H,
+		means3D.contiguous().data<float>(),
+		opacity.contiguous().data<float>(), 
+		ts.contiguous().data_ptr<float>(), 
+		scales.contiguous().data_ptr<float>(),
+		scales_t.contiguous().data_ptr<float>(), 
+		scale_modifier,
+		rotations.contiguous().data_ptr<float>(),
+		rotations_r.contiguous().data_ptr<float>(),
+		cov3D_precomp.contiguous().data<float>(), 
+		prefilter_var, 
+		viewmatrix.contiguous().data<float>(), 
+		projmatrix.contiguous().data<float>(),
+		campos.contiguous().data<float>(),
+		timestamp,
+		time_duration,
+		rot_4d,
+		gaussian_dim,
+		tan_fovx,
+		tan_fovy,
+		prefiltered,
+		per_pixel_error_map_ptr,
+		out_visibility_contribution.contiguous().data<float>(),
+		out_weighted_contribution.contiguous().data<float>(),
+		debug
+		);
+
+	return std::make_tuple(rendered, out_visibility_contribution, out_weighted_contribution);
+
+}

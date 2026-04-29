@@ -387,5 +387,163 @@ __device__ inline uint32_t duplicateToTilesTouched(
     );
 }
 
+// Forward version of 2D covariance matrix computation
+__device__ inline float3 computeCov2D(const float3& mean, float focal_x, float focal_y, float tan_fovx, float tan_fovy, const float* cov3D, const float* viewmatrix)
+{
+	// The following models the steps outlined by equations 29
+	// and 31 in "EWA Splatting" (Zwicker et al., 2002). 
+	// Additionally considers aspect / scaling of viewport.
+	// Transposes used to account for row-/column-major conventions.
+	float3 t = transformPoint4x3(mean, viewmatrix);
+
+	const float limx = 1.3f * tan_fovx;
+	const float limy = 1.3f * tan_fovy;
+	const float txtz = t.x / t.z;
+	const float tytz = t.y / t.z;
+	t.x = min(limx, max(-limx, txtz)) * t.z;
+	t.y = min(limy, max(-limy, tytz)) * t.z;
+
+	glm::mat3 J = glm::mat3(
+		focal_x / t.z, 0.0f, -(focal_x * t.x) / (t.z * t.z),
+		0.0f, focal_y / t.z, -(focal_y * t.y) / (t.z * t.z),
+		0, 0, 0);
+
+	glm::mat3 W = glm::mat3(
+		viewmatrix[0], viewmatrix[4], viewmatrix[8],
+		viewmatrix[1], viewmatrix[5], viewmatrix[9],
+		viewmatrix[2], viewmatrix[6], viewmatrix[10]);
+
+	glm::mat3 T = W * J;
+
+	glm::mat3 Vrk = glm::mat3(
+		cov3D[0], cov3D[1], cov3D[2],
+		cov3D[1], cov3D[3], cov3D[4],
+		cov3D[2], cov3D[4], cov3D[5]);
+
+	glm::mat3 cov = glm::transpose(T) * glm::transpose(Vrk) * T;
+
+	// Apply low-pass filter: every Gaussian should be at least
+	// one pixel wide/high. Discard 3rd row and column.
+	cov[0][0] += 0.3f;
+	cov[1][1] += 0.3f;
+	return { float(cov[0][0]), float(cov[0][1]), float(cov[1][1]) };
+}
+
+// Forward method for converting scale and rotation properties of each
+// Gaussian to a 3D covariance matrix in world space. Also takes care
+// of quaternion normalization.
+__device__ inline void computeCov3D(const glm::vec3 scale, float mod, const glm::vec4 rot, float* cov3D)
+{
+	// Create scaling matrix
+	glm::mat3 S = glm::mat3(1.0f);
+	S[0][0] = mod * scale.x;
+	S[1][1] = mod * scale.y;
+	S[2][2] = mod * scale.z;
+
+	// Normalize quaternion to get valid rotation
+	glm::vec4 q = rot;// / glm::length(rot);
+	float r = q.x;
+	float x = q.y;
+	float y = q.z;
+	float z = q.w;
+
+	// Compute rotation matrix from quaternion
+	glm::mat3 R = glm::mat3(
+		1.f - 2.f * (y * y + z * z), 2.f * (x * y - r * z), 2.f * (x * z + r * y),
+		2.f * (x * y + r * z), 1.f - 2.f * (x * x + z * z), 2.f * (y * z - r * x),
+		2.f * (x * z - r * y), 2.f * (y * z + r * x), 1.f - 2.f * (x * x + y * y)
+	);
+
+	glm::mat3 M = S * R;
+
+	// Compute 3D world covariance matrix Sigma
+	glm::mat3 Sigma = glm::transpose(M) * M;
+
+	// Covariance is symmetric, only store upper right
+	cov3D[0] = Sigma[0][0];
+	cov3D[1] = Sigma[0][1];
+	cov3D[2] = Sigma[0][2];
+	cov3D[3] = Sigma[1][1];
+	cov3D[4] = Sigma[1][2];
+	cov3D[5] = Sigma[2][2];
+}
+
+
+__device__ inline void computeCov3D_conditional(const glm::vec3 scale, const float scale_t, float mod,
+		const glm::vec4 rot, const glm::vec4 rot_r, float* cov3D, float3& p_orig,
+		float t, const float timestamp, int idx, bool& mask, float& opacity, const float prefilter_var)
+{
+	// Create scaling matrix
+	float dt=timestamp-t;
+	glm::mat4 S = glm::mat4(1.0f);
+	S[0][0] = mod * scale.x;
+	S[1][1] = mod * scale.y;
+	S[2][2] = mod * scale.z;
+	S[3][3] = mod * scale_t;
+
+	float a = rot.x;
+	float b = rot.y;
+	float c = rot.z;
+	float d = rot.w;
+
+	float p = rot_r.x;
+	float q = rot_r.y;
+	float r = rot_r.z;
+	float s = rot_r.w;
+
+	// glm::mat4 M_l = glm::mat4(
+	// 	a, -b, -c, -d,
+	// 	b, a,-d, c,
+	// 	c, d, a,-b,
+	// 	d,-c, b, a
+	// );
+
+	// glm::mat4 M_r = glm::mat4(
+	// 	p, q, r, s,
+	// 	-q, p,-s, r,
+	// 	-r, s, p,-q,
+	// 	-s,-r, q, p
+	// );
+	
+	glm::mat4 M_l = glm::mat4(
+		 a,  b, -c,  d,
+		-b,  a,  d,  c,
+		 c, -d,  a,  b,
+		-d, -c, -b,  a
+	);
+
+	glm::mat4 M_r = glm::mat4(
+		p,  q, -r, -s,
+		-q, p,  s, -r,
+		r, -s,  p, -q,
+		s,  r,  q,  p
+	);
+	// glm stores in column major
+	glm::mat4 R = M_r * M_l;
+	glm::mat4 M = S * R;
+	glm::mat4 Sigma = glm::transpose(M) * M;
+	float cov_t = Sigma[3][3];
+	float marginal_t = __expf(-0.5*dt*dt/((prefilter_var > 0.0) ? (prefilter_var + cov_t) : cov_t));
+	mask = marginal_t > 0.05;
+	if (!mask) return;
+	opacity*=marginal_t;;
+	glm::mat3 cov11 = glm::mat3(Sigma);
+	glm::vec3 cov12 = glm::vec3(Sigma[0][3],Sigma[1][3],Sigma[2][3]);
+	glm::mat3 cov3D_condition = cov11 - glm::outerProduct(cov12, cov12) / cov_t;
+
+	// Covariance is symmetric, only store upper right
+	cov3D[0] = cov3D_condition[0][0];
+	cov3D[1] = cov3D_condition[0][1];
+	cov3D[2] = cov3D_condition[0][2];
+	cov3D[3] = cov3D_condition[1][1];
+	cov3D[4] = cov3D_condition[1][2];
+	cov3D[5] = cov3D_condition[2][2];
+    glm::vec3 delta_mean = cov12 / cov_t * dt;
+	p_orig.x+=delta_mean.x;
+	p_orig.y+=delta_mean.y;
+	p_orig.z+=delta_mean.z;
+}
+
+
 
 #endif

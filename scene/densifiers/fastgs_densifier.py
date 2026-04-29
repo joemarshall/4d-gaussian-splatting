@@ -2,7 +2,7 @@ import torch
 from .split_ops import *
 from .densifier_base import DensifierBase   
 
-from utils.fast_utils import compute_gaussian_score_fastgs, sampling_cameras
+from utils.fast_utils import calculate_per_gaussian_error_contribution, compute_gaussian_score_fastgs, sampling_cameras
 
 
 class FastGSDensifier(DensifierBase):
@@ -255,36 +255,52 @@ class FastGSDensifier(DensifierBase):
     def apply_debug_colour(self, gaussians, scene,pipe,bg, debug_type=""):
         from utils.sh_utils import RGB2SH
         # debug colours based on multiview-consistency score
-        num_cams = 10
+        num_cams = 90
         my_viewpoint_stack = scene.getTrainCameras()
         camlist = sampling_cameras(my_viewpoint_stack, num_cams,dimensions=4)
         loss_thresh = self._get_option('fastgs_loss_thresh', 0.1)
 
         print(len(camlist))
-        if debug_type == "flagged_errors":
-            display_score, _ = compute_gaussian_score_fastgs(
-                camlist, gaussians, pipe, bg, loss_thresh, DENSIFY=True
-            )
-            display_score = display_score.float()
-        elif debug_type == "multiview_importance":
-            _, display_score = compute_gaussian_score_fastgs(
-                camlist, gaussians, pipe, bg, loss_thresh, DENSIFY=False
-            )
-        print(display_score.shape)
-        first_mask = display_score > 0
-        quantiles = torch.quantile(display_score[first_mask], torch.tensor([0, 0.25, 0.5, 0.75, .8,.9,1], device=display_score.device))
+        total_display_score = torch.zeros((gaussians.get_xyz.shape[0],), device=gaussians.get_xyz.device)
+        total_display_score_count = torch.zeros((gaussians.get_xyz.shape[0],), device=gaussians.get_xyz.device)
+        for frame_cameras in camlist:
+            if debug_type == "flagged_errors":
+                # how many pixels above error threshold contain this gaussian
+                display_score, _ = compute_gaussian_score_fastgs(
+                    frame_cameras, gaussians, pipe, bg, loss_thresh, DENSIFY= True)
+                display_score = display_score.float()
+            elif debug_type == "multiview_importance":
+                # how bad is the error for this gaussian
+                _, display_score = compute_gaussian_score_fastgs(
+                    frame_cameras, gaussians, pipe, bg, loss_thresh, DENSIFY=False)
+            elif debug_type == "gaussian_importance":
+                display_score, _ = calculate_per_gaussian_error_contribution(
+                    frame_cameras, gaussians, pipe, bg)
+            elif debug_type == "error_importance":
+                _,display_score = calculate_per_gaussian_error_contribution(
+                    frame_cameras, gaussians, pipe, bg)
+            first_mask = display_score > 0.0
+#            total_display_score = torch.max(display_score,total_display_score)
+            total_display_score+= display_score
+            total_display_score_count[first_mask] += 1.0
+        total_display_score_count[total_display_score_count == 0] = 1.0
+        total_display_score /= total_display_score_count
+        print(total_display_score.shape)
+        total_display_score = torch.log(total_display_score + 1e-6)
+        first_mask = total_display_score > 0
+        quantiles = torch.quantile(total_display_score[first_mask], torch.tensor([0, 0.25, 0.5, 0.75, .95,.98,1], device=total_display_score.device))
         print(quantiles)
-        update_mask = display_score > quantiles[4]
-        display_score-= quantiles[4]
-        display_score /= (quantiles[5] - quantiles[4])
+        total_display_score = (total_display_score - quantiles[0]) / (quantiles[-1] - quantiles[0])
 
 #        display_score*=5.0
-        display_score = torch.clamp(display_score, 0.0, 1.0)
-        print(torch.max(display_score), torch.min(display_score))
-        rgb_tensor = RGB2SH(torch.stack((display_score[update_mask], 1.0 - display_score[update_mask], torch.zeros_like(display_score[update_mask])), dim=1))
+        total_display_score = torch.clamp(total_display_score, 0.0, 1.0)
+        update_mask = total_display_score > 0.0
+
+        print(torch.max(total_display_score), torch.min(total_display_score))
+        rgb_tensor = RGB2SH(torch.stack((total_display_score[update_mask], 1.0 - total_display_score[update_mask], torch.zeros_like(total_display_score[update_mask])), dim=1))
         #gaussians._opacity = torch.ones_like(gaussians.get_opacity)
-        num_gaussians = len(display_score)
-        #gaussians._features_dc[update_mask,0] = rgb_tensor
-        gaussians._opacity[update_mask] = torch.min(gaussians._opacity)
-        #gaussians._features_rest = torch.zeros_like(gaussians.get_sh_features_rest)
+        num_gaussians = len(total_display_score)
+        gaussians._features_dc[update_mask,0] = rgb_tensor
+        gaussians._features_rest[update_mask] = torch.zeros_like(gaussians.get_sh_features_rest)[update_mask]
+        #gaussians._opacity[update_mask] = torch.min(gaussians._opacity)
 

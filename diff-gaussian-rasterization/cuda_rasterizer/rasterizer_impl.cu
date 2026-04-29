@@ -29,6 +29,7 @@ namespace cg = cooperative_groups;
 #include "auxiliary.h"
 #include "forward.h"
 #include "backward.h"
+#include "calc_contribution.h"
 
 // Helper function to find the next-highest bit of the MSB
 // on the CPU.
@@ -133,6 +134,84 @@ __global__ void duplicateWithKeys(
 	}
 #endif
 }
+
+
+// the same but keys in inverse order (for contribution calculation)
+__global__ void duplicateWithKeysReverse(
+	int P,
+	const float2 *points_xy,
+	const float *depths,
+	const uint32_t *offsets,
+	uint64_t *gaussian_keys_unsorted,
+	uint32_t *gaussian_values_unsorted,
+#if FASTGS_CULLING
+	float4 *con_o,
+	uint32_t *tiles_touched,
+	const float mult,
+#else
+	int *radii,
+#endif
+	dim3 grid)
+{
+	auto idx = cg::this_grid().thread_rank();
+	if (idx >= P)
+		return;
+
+#if FASTGS_CULLING
+	if (tiles_touched[idx] > 0)
+	{
+		// Find this Gaussian's offset in buffer for writing keys/values.
+		uint32_t off = (idx == 0) ? 0 : offsets[idx - 1];
+		// Update unsorted arrays with Gaussian idx for every tile that
+		// Gaussian touches
+
+		// Invert the depth bits so ascending key sort gives back-to-front order
+		uint32_t inv_depth_bits = ~__float_as_uint(depths[idx]);
+		float depth_key = __uint_as_float(inv_depth_bits);
+
+		duplicateToTilesTouched(
+			points_xy[idx], con_o[idx], grid, mult,
+			idx, off, depth_key,
+			gaussian_keys_unsorted,
+			gaussian_values_unsorted);
+	}
+#else
+
+	// Generate no key/value pair for invisible Gaussians
+	if (radii[idx] > 0)
+	{
+		// Find this Gaussian's offset in buffer for writing keys/values.
+		uint32_t off = (idx == 0) ? 0 : offsets[idx - 1];
+		uint2 rect_min, rect_max;
+
+		getRect(points_xy[idx], radii[idx], rect_min, rect_max, grid);
+
+		// For each tile that the bounding rect overlaps, emit a
+		// key/value pair. The key is |  tile ID  |      depth      |,
+		// and the value is the ID of the Gaussian. Sorting the values
+		// with this key yields Gaussian IDs in a list, such that they
+		// are first sorted by tile and then by depth.
+		uint32_t inv_depth_bits = ~__float_as_uint(depths[idx]);
+
+
+		for (int y = rect_min.y; y < rect_max.y; y++)
+		{
+			for (int x = rect_min.x; x < rect_max.x; x++)
+			{
+				uint64_t key = y * grid.x + x;
+				key <<= 32;
+				key |= inv_depth_bits;
+				gaussian_keys_unsorted[off] = key;
+				gaussian_values_unsorted[off] = idx;
+				off++;
+			}
+		}
+	}
+#endif
+}
+
+
+
 
 // Check keys to see if it is at the start/end of one tile's range in
 // the full sorted list. If yes, write start/end of this tile.
@@ -414,6 +493,168 @@ int CudaRasterizer::Rasterizer::forward(
 	CHECK_CUDA(cudaMemcpy(out_T, imgState.accum_alpha, width * height * sizeof(float), cudaMemcpyDeviceToDevice), debug);
 	return num_rendered;
 }
+
+
+// calculate gaussian contribution based on 
+int CudaRasterizer::Rasterizer::calculateGaussianVisibilityContribution(
+			std::function<char* (size_t)> geometryBuffer,
+			std::function<char* (size_t)> binningBuffer,
+			std::function<char* (size_t)> imageBuffer,
+			const int P, 
+			const int width, int height,
+			const float* means3D,
+			const float* opacities,
+			const float* ts,
+			const float* scales,
+			const float* scales_t,
+			const float scale_modifier,
+			const float* rotations,
+			const float* rotations_r,
+			const float* cov3D_precomp,
+			const float prefilter_var, 
+			const float* viewmatrix,
+			const float* projmatrix,
+			const float* cam_pos,
+			const float timestamp,
+			const float time_duration,
+			const bool rot_4d, const int gaussian_dim, 
+			const float tan_fovx, float tan_fovy,
+			const bool prefiltered,
+			const float * per_pixel_error_map,
+			float* out_visibility_contribution,
+			float* out_weighted_contribution,
+			bool debug)
+{
+	const float focal_y = height / (2.0f * tan_fovy);
+	const float focal_x = width / (2.0f * tan_fovx);
+
+	size_t chunk_size = required<GeometryState>(P);
+	char *chunkptr = geometryBuffer(chunk_size);
+	GeometryState geomState = GeometryState::fromChunk(chunkptr, P);
+	int* radii=nullptr;
+	if (radii == nullptr)
+	{
+		radii = geomState.internal_radii;
+	}
+
+	dim3 tile_grid((width + BLOCK_X - 1) / BLOCK_X, (height + BLOCK_Y - 1) / BLOCK_Y, 1);
+	dim3 block(BLOCK_X, BLOCK_Y, 1);
+
+	// Dynamically resize image-based auxiliary buffers during training
+	size_t img_chunk_size = required<ImageState>(width * height);
+	char *img_chunkptr = imageBuffer(img_chunk_size);
+	ImageState imgState = ImageState::fromChunk(img_chunkptr, width * height);
+
+
+	// Run preprocessing per-Gaussian (transformation, bounding, conversion of SHs to RGB)
+	CHECK_CUDA(CALC_CONTRIBUTION::preprocess(
+				   P,
+				   means3D,
+				   ts,
+				   (glm::vec3 *)scales,
+				   scales_t,
+				   scale_modifier,
+				   (glm::vec4 *)rotations,
+				   (glm::vec4 *)rotations_r,
+				   opacities,
+				   geomState.clamped,
+				   cov3D_precomp,
+				   prefilter_var,
+				   viewmatrix, projmatrix,
+				   (glm::vec3 *)cam_pos,
+				   timestamp,
+				   time_duration,
+				   rot_4d, gaussian_dim, 
+				   width, height,
+				   focal_x, focal_y,
+				   tan_fovx, tan_fovy,
+				   geomState.means2D,
+				   geomState.depths,
+				   geomState.cov3D,
+				   geomState.conic_opacity,
+				   tile_grid,
+				   geomState.tiles_touched,
+				   prefiltered),
+			   debug)
+
+	const float mult = 0.5f;
+
+	// Compute prefix sum over full list of touched tile counts by Gaussians
+	// E.g., [2, 3, 0, 2, 1] -> [2, 5, 5, 7, 8]
+	CHECK_CUDA(cub::DeviceScan::InclusiveSum(geomState.scanning_space, geomState.scan_size, geomState.tiles_touched, geomState.point_offsets, P), debug)
+
+	// Retrieve total number of Gaussian instances to launch and resize aux buffers
+	int num_rendered;
+	CHECK_CUDA(cudaMemcpy(&num_rendered, geomState.point_offsets + P - 1, sizeof(int), cudaMemcpyDeviceToHost), debug);
+
+	size_t binning_chunk_size = required<BinningState>(num_rendered);
+	char *binning_chunkptr = binningBuffer(binning_chunk_size);
+	BinningState binningState = BinningState::fromChunk(binning_chunkptr, num_rendered);
+	
+	// make all keys invalid so that any not written will go to the end of the
+	// sorted list to be ignored in further code
+	cudaMemset(binningState.point_list_keys_unsorted, 0xff, num_rendered * sizeof(uint64_t));
+
+	// For each instance to be rendered, produce adequate [ tile | depth ] key
+	// and corresponding dublicated Gaussian indices to be sorted
+	duplicateWithKeysReverse<<<(P + 255) / 256, 256>>>(
+		P,
+		geomState.means2D,
+		geomState.depths,
+		geomState.point_offsets,
+		binningState.point_list_keys_unsorted,
+		binningState.point_list_unsorted,
+#if FASTGS_CULLING
+		geomState.conic_opacity,
+		geomState.tiles_touched,
+		mult,
+#else
+		radii,
+#endif
+		tile_grid)
+	
+		CHECK_CUDA(, debug)
+
+		// int bit = getHigherMsb(tile_grid.x * tile_grid.y);
+		int bit = 32;
+
+	// Sort complete list of (duplicated) Gaussian indices by keys
+	CHECK_CUDA(cub::DeviceRadixSort::SortPairs(
+				   binningState.list_sorting_space,
+				   binningState.sorting_size,
+				   binningState.point_list_keys_unsorted, binningState.point_list_keys,
+				   binningState.point_list_unsorted, binningState.point_list,
+				   num_rendered, 0, 32 + bit),
+			   debug)
+
+	CHECK_CUDA(cudaMemset(imgState.ranges, 0, tile_grid.x * tile_grid.y * sizeof(uint2)), debug);
+
+	// Identify start and end of per-tile workloads in sorted list
+	if (num_rendered > 0)
+		identifyTileRanges<<<(num_rendered + 255) / 256, 256>>>(
+			num_rendered,
+			binningState.point_list_keys,
+			imgState.ranges,tile_grid);
+	CHECK_CUDA(, debug)
+
+	// Let each tile blend its range of Gaussians independently in parallel
+	CHECK_CUDA(CALC_CONTRIBUTION::render(
+				   tile_grid, block,
+				   imgState.ranges,
+				   binningState.point_list,
+				   width, height,
+				   geomState.means2D,
+				   per_pixel_error_map,
+				   geomState.depths,
+				   geomState.conic_opacity,
+				   imgState.n_contrib,
+				   out_visibility_contribution,
+				out_weighted_contribution),
+			   debug)
+
+	return num_rendered;
+}
+
 
 // Produce necessary gradients for optimization, corresponding
 // to forward render pass

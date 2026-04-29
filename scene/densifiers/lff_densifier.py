@@ -14,7 +14,7 @@ class LFFDensifier(DensifierBase):
 
     def __init__(self, opt):
         super().__init__(opt, "lff")
-        self.split_multiplier = getattr(opt, "lff_split_multiplier", 2.0)
+        self.split_multiplier = self._get_option("split_multiplier", 2.0)
         self.new_selected_mask = None
 
     def training_setup(self, gaussians, reset_accumulated_gradients=True):
@@ -57,17 +57,20 @@ class LFFDensifier(DensifierBase):
         )
 
     def densify_and_prune(self, iteration, scene, gaussians, radii, pipe, bg, *, options):
-        max_grad = self.options.densify_grad_threshold
-        min_opacity = self.options.thresh_opa_prune
+        max_grad = self._get_option("densify_grad_threshold", 0.001)
+        min_opacity = self._get_option("thresh_opa_prune", 0.005)
         extent = scene.cameras_extent
         max_screen_size = (
-            20 if iteration > self.options.opacity_reset_interval else None
+            20 if iteration > self._get_option("opacity_reset_interval", 3000) else None
         )
 
         cameras_no_images = scene.getTrainCameras()
         cameras_no_images.set_names_only(True)
         ts_zero = cameras_no_images.get_timestamps()[0]
         cameras = [cameras_no_images[c][1] for c in cameras_no_images.get_indices_for_timestamp(ts_zero)]
+
+        if options["densify"]==False:
+            return
 
 
         def calculate_training_percent_powered(iter, min_densify_iter, max_densify_iter, power=1.0, lower_bound=0):
@@ -80,10 +83,10 @@ class LFFDensifier(DensifierBase):
 
         percent_lb = 0.0
         power = 1.0
-        training_percent_powered = calculate_training_percent_powered(iteration, self.options.densify_from_iter, self.options.densify_until_iter, power, percent_lb)
+        training_percent_powered = calculate_training_percent_powered(iteration, self._get_option("densify_from_iter", 0), self._get_option("densify_until_iter", 1e9), power, percent_lb)
         print(f"Percent powered for this iteration: {iteration} = {training_percent_powered}")
                     # More training, lower splitting_lb
-        splitting_lb = 1 - (iteration - self.options.densify_from_iter) / (self.options.densify_until_iter - self.options.densify_from_iter)
+        splitting_lb = 1 - (iteration - self._get_option("densify_from_iter", 0)) / (self._get_option("densify_until_iter", 1e9) - self._get_option("densify_from_iter", 0))
         self._densify_and_prune_lff(
             gaussians,
             max_grad=max_grad,
@@ -91,14 +94,14 @@ class LFFDensifier(DensifierBase):
             extent=extent,
             max_screen_size=max_screen_size,
             cameras=cameras,
-            N=getattr(self.options, "lff_num_split_samples", 1),
-            scaling_multiplier_max=getattr(self.options, "lff_scaling_multiplier_max", 1.0),
-            scaling_multiplier_min=getattr(self.options, "lff_scaling_multiplier_min", 1.0),
+            N=self._get_option("lff_num_split_samples", 1),
+            scaling_multiplier_max=self._get_option("scaling_multiplier_max", 1.0),
+            scaling_multiplier_min=self._get_option("scaling_multiplier_min", 1.0),
             training_percent_powered=training_percent_powered,
-            splitting_ub=getattr(self.options, "lff_splitting_ub", 1.0),
+            splitting_ub=self._get_option("lff_splitting_ub", 1.0),
             splitting_lb=splitting_lb,
-            tolerance=getattr(self.options, "lff_tolerance", 1e-5),
-            diffscale=getattr(self.options, "lff_diffscale", True),
+            tolerance=self._get_option("tolerance", 1e-5),
+            diffscale=self._get_option("diffscale", True),
         )
 
     @staticmethod
@@ -280,7 +283,12 @@ class LFFDensifier(DensifierBase):
         )
 
         intersect_selected_pts_mask = torch.logical_and(prev_selected_pts_mask, selected_pts_mask)
-        enlarged_mask = torch.logical_and(torch.logical_not(prev_selected_pts_mask), selected_pts_mask)
+        print("Intersect selected points num: ", intersect_selected_pts_mask.sum().item(),
+              "Selected points num: ", selected_pts_mask.sum().item(),
+              "Previously selected points num: ", prev_selected_pts_mask.sum().item())
+        print("Max gradient norm: ", torch.max(torch.norm(grads, dim=-1)).item())
+
+        enlarged_mask = torch.zeros_like(intersect_selected_pts_mask, dtype=torch.bool)
         splitted_mask = torch.zeros_like(enlarged_mask, dtype=torch.bool)
 
         whether_descending = torch.where(
@@ -488,6 +496,8 @@ class LFFDensifier(DensifierBase):
 
         grads = self.lff_xyz_grad_accum / self.lff_denom
         grads[grads.isnan()] = 0.0
+
+        #print("self.lff_denom ", self.lff_denom)
 
         self._densify_lff(
             gaussians,

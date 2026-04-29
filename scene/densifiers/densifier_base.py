@@ -48,7 +48,7 @@ class DensifierBase:
 
         # print(iteration, densify_from_iter, densify_until_iter, densification_interval)
 
-        needs_densify = iteration >= densify_from_iter and iteration < densify_until_iter and iteration % densification_interval == 0
+        needs_densify = iteration >= densify_from_iter and iteration < densify_until_iter and (iteration-densify_from_iter) % densification_interval == 0
         needs_prune = needs_densify
         final_prune = self._get_option("final_prune_from_iter", -1) > 0 and iteration >= self._get_option("final_prune_from_iter", -1) and iteration % self._get_option("final_prune_interval", 1000) == 0
 

@@ -68,3 +68,30 @@ def msssim(rgb, gts):
     # assert (rgb.max() <= 1.05 and rgb.min() >= -0.05)
     # assert (gts.max() <= 1.05 and gts.min() >= -0.05)
     return ms_ssim(rgb, gts).item()
+
+def combine_losses(losses_list,render_package,gt_image,gaussians,divisor = 1.0):
+    weight_sum = 0
+    loss_sum = 0
+    if divisor>0:
+        multiplier = 1.0/divisor
+    else:
+        multiplier = 1.0
+    result_dict = {}
+    for name,weight,loss_fn in losses_list:
+        if weight >0:
+            result_dict[name] = multiplier *loss_fn(render_package, gt_image, gaussians)
+            loss_sum += weight *result_dict[name]
+        weight_sum+= weight
+    if weight_sum > 0:
+        loss_sum /= weight_sum
+    result_dict["loss"] = loss_sum
+    return result_dict
+
+def loss_ssim(render_package, gt_image, gaussians):
+    return 1.0 - ssim(render_package["render"], gt_image)
+
+def loss_bistable_opacity(render_package, gt_image, gaussians):
+    return torch.xlogy(-gaussians.get_opacity,gaussians.get_opacity).mean()
+
+def loss_l1(render_package, gt_image, gaussians):
+    return l1_loss(render_package["render"], gt_image)

@@ -66,6 +66,36 @@ namespace CudaRasterizer
 			int* out_metric_count,
 			bool debug = false);
 
+		static int calculateGaussianVisibilityContribution(
+			std::function<char* (size_t)> geometryBuffer,
+			std::function<char* (size_t)> binningBuffer,
+			std::function<char* (size_t)> imageBuffer,
+			const int P, 
+			const int width, int height,
+			const float* means3D,
+			const float* opacities,
+			const float* ts,
+			const float* scales,
+			const float* scales_t,
+			const float scale_modifier,
+			const float* rotations,
+			const float* rotations_r,
+			const float* cov3D_precomp,
+			const float prefilter_var, 
+			const float* viewmatrix,
+			const float* projmatrix,
+			const float* cam_pos,
+			const float timestamp,
+			const float time_duration,
+			const bool rot_4d, const int gaussian_dim, 
+			const float tan_fovx, float tan_fovy,
+			const bool prefiltered,
+			const float * per_pixel_error_map,
+			float* out_visibility_contribution,
+			float* out_weighted_contribution,
+			bool debug);
+
+
 		static void backward(
 			const int P, int D, int D_t, int M, int R,
 			const float* background,

@@ -40,7 +40,7 @@ import torch
 import subprocess
 import threading
 from torch import nn
-from utils.loss_utils import l1_loss, ssim, msssim,l2_loss
+from utils.loss_utils import  combine_losses, loss_bistable_opacity, loss_ssim, loss_l1
 from gaussian_renderer import render
 import sys
 from scene import Scene, GaussianModel
@@ -73,6 +73,11 @@ torch._dynamo.config.force_parameter_static_shapes = False
 TRACK_MEMORY = False
 CLEAR_CACHE = False        
 
+RUN_PROFILER = False
+if RUN_PROFILER:
+    from torch.profiler import profile, ProfilerActivity, record_function
+
+
 if TRACK_MEMORY:
     torch.cuda.memory._record_memory_history(
         max_entries=1000000
@@ -104,20 +109,21 @@ def launch_viewer(args, name):
 
 
 
-@torch.compile
-def run_batch(batch_data, batch_size, gaussians, pipe, background, opt):
-    
+@torch.compile()
+#@torch.compile
+def run_batch(batch_data, batch_size, gaussians, pipe, background, opt,tensor_gradient_2d_buffer):
     batch_point_grad = []
     batch_visibility_filter = []
     batch_radii = []
 
-
+    loss_items = {}
     for batch_idx in range(batch_size):
         gt_image, viewpoint_cam = batch_data[batch_idx]
 #        gt_image = gt_image.cuda()
 #        viewpoint_cam = viewpoint_cam.cuda()
 
-        render_pkg = render(viewpoint_cam, gaussians, pipe, background)
+#        with record_function("PROFILE_fwd"):
+        render_pkg = render(viewpoint_cam, gaussians, pipe, background,tensor_gradient_2d_buffer)
         image, viewspace_point_tensor, visibility_filter, radii,depth = (
             render_pkg["render"],
             render_pkg["viewspace_points"],
@@ -126,19 +132,12 @@ def run_batch(batch_data, batch_size, gaussians, pipe, background, opt):
             render_pkg["depth"],
         )
 
-        # Loss
-        Ll1 = l1_loss(image, gt_image)
-        Lssim = 1.0 - ssim(image, gt_image)
-        loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * Lssim
+        losses = [("L1",1.0, loss_l1),
+                ("SSIM", opt.lambda_dssim, loss_ssim),
+                ("Opacity", opt.lambda_opa_bistable, loss_bistable_opacity)]
 
-        if opt.lambda_depth > 0:
-            # depth loss - difference between rendered depth and median-filtered
-            # because big jumps in depth are often artifacts
-            print("Depth loss not implemented yet")
-            sys.exit(1)
-
-
-        # Opa mask loss removed: requires alpha, which is not returned by the new renderer
+        #with record_function("PROFILE_loss"):    
+        loss_dict = combine_losses(losses,render_pkg, gt_image, gaussians,batch_size)
 
         ###### rigid loss ######
         if opt.lambda_rigid > 0:
@@ -179,22 +178,19 @@ def run_batch(batch_data, batch_size, gaussians, pipe, background, opt):
             loss = loss + opt.lambda_motion * Lmotion
         ########################
 
-
-        loss = loss / batch_size
-        loss.backward()
+        #with record_function("PROFILE_bwd"):
+        loss_dict["loss"].backward()
         batch_point_grad.append(
             torch.norm(viewspace_point_tensor.grad[:, :2], dim=-1)
         )
         batch_radii.append(radii)
         batch_visibility_filter.append(visibility_filter)
 
-    losses = {"loss": loss, "Ll1": Ll1, "Lssim": Lssim}
-    if opt.lambda_rigid > 0:
-        losses["Lrigid"] = Lrigid
-    if opt.lambda_motion > 0:
-        losses["Lmotion"] = Lmotion
-    if opt.lambda_depth > 0:
-        losses["Ldepth"] = Ldepth
+        for k,v in loss_dict.items():
+            if k not in loss_items:
+                loss_items[k] = v
+            else:
+                loss_items[k] += v
 
     batch_viewspace_point_grad = None
     if batch_size > 1:
@@ -210,6 +206,7 @@ def run_batch(batch_data, batch_size, gaussians, pipe, background, opt):
         )
         batch_viewspace_point_grad = batch_viewspace_point_grad.unsqueeze(1)
 
+
         if gaussians.gaussian_dim == 4:
             batch_t_grad = gaussians._t.grad.clone()[:, 0].detach()
             batch_t_grad[visibility_filter] = (
@@ -218,11 +215,11 @@ def run_batch(batch_data, batch_size, gaussians, pipe, background, opt):
                 / visibility_count[visibility_filter]
             )
             batch_t_grad = batch_t_grad.unsqueeze(1)
-        return (losses, image, gt_image,visibility_filter,radii,batch_viewspace_point_grad,batch_t_grad,None)
+        return (loss_items, image, gt_image,visibility_filter,radii,batch_viewspace_point_grad,batch_t_grad,None)
     else:
         if gaussians.gaussian_dim == 4:
             batch_t_grad = gaussians._t.grad.clone().detach()
-        return (losses, image, gt_image,visibility_filter,radii,None,batch_t_grad,viewspace_point_tensor)
+        return (loss_items, image, gt_image,visibility_filter,radii,None,batch_t_grad,viewspace_point_tensor)
 
 def collate_fn(x):
     return x
@@ -365,16 +362,7 @@ def training(
     iter_end = torch.cuda.Event(enable_timing=True)
 
     best_psnr = 0.0
-    ema_loss_for_log = 0.0
-    ema_l1loss_for_log = 0.0
-    ema_ssimloss_for_log = 0.0
-    lambda_all = [
-        key
-        for key in opt.__dict__.keys()
-        if key.startswith("lambda") and key != "lambda_dssim"
-    ]
-    for lambda_name in lambda_all:
-        vars()[f"ema_{lambda_name.replace('lambda_','')}_for_log"] = 0.0
+    smoothed_logs = {}
 
     progress_bar = tqdm(
         range(0, opt.iterations), desc="Training progress", initial=first_iter
@@ -477,14 +465,20 @@ def training(
 
             #print("Training {} gaussians on batch of size {} at iteration {} (timestamp {})".format(gaussians.get_xyz.shape[0], batch_size, iteration, ts_batch))
 
-            losses, image, gt_image,visibility_filter,radii,batch_viewspace_point_grad,batch_t_grad,viewspace_point_tensor = run_batch(
-                batch_data, batch_size, gaussians, pipe, background, opt
-            )
-            loss_dict = losses
-            loss = losses["loss"]
-            Ll1 = losses["Ll1"]
-            Lssim = losses["Lssim"]
+            tensor_gradient_2d_buffer = torch.zeros_like(gaussians.get_xyz, dtype=gaussians.get_xyz.dtype, requires_grad=True, device="cuda") + 0
+            tensor_gradient_2d_buffer.retain_grad()
 
+
+            args = batch_data, batch_size, gaussians, pipe, background, opt,tensor_gradient_2d_buffer
+
+            if RUN_PROFILER:
+                with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA], record_shapes=True) as prof:            
+                     results = run_batch(*args)
+                print("PROF:",prof.key_averages().table(sort_by="cuda_time_total", row_limit=100))
+                print("PROFCPU:",prof.key_averages().table(sort_by="cpu_time_total", row_limit=100))
+            else:
+                results = run_batch(*args)
+            losses, image, gt_image,visibility_filter,radii,batch_viewspace_point_grad,batch_t_grad,viewspace_point_tensor = results
             iter_end.record()
 
             if stop_iteration:
@@ -492,68 +486,47 @@ def training(
 
             with torch.no_grad():
                 psnr_for_log = psnr(image, gt_image).mean().double()
-                # Progress bar
-                ema_loss_for_log = 0.4 * loss.item() + 0.6 * ema_loss_for_log
-                ema_l1loss_for_log = 0.4 * Ll1.item() + 0.6 * ema_l1loss_for_log
-                ema_ssimloss_for_log = 0.4 * Lssim.item() + 0.6 * ema_ssimloss_for_log
-
-                for lambda_name in lambda_all:
-                    if opt.__dict__[lambda_name] > 0:
-                        ema = vars()[
-                            f"ema_{lambda_name.replace('lambda_', '')}_for_log"
-                        ]
-                        vars()[f"ema_{lambda_name.replace('lambda_', '')}_for_log"] = (
-                            0.4
-                            * vars()[f"L{lambda_name.replace('lambda_', '')}"].item()
-                            + 0.6 * ema
-                        )
-                        loss_dict[lambda_name.replace("lambda_", "L")] = vars()[
-                            lambda_name.replace("lambda_", "L")
-                        ]
+                for k,v in losses.items():
+                    if k not in smoothed_logs:
+                        smoothed_logs[k] = v.item()
+                    else:
+                        smoothed_logs[k] = 0.4 * v.item() + 0.6 * smoothed_logs[k]
 
                 if iteration % 10 == 0:
                     postfix = {
                         "N": f"{gaussians.get_xyz.shape[0]}",
-                        "Loss": f"{ema_loss_for_log:.{7}f}",
-                        "PSNR": f"{psnr_for_log:.{2}f}",
-                        "Ll1": f"{ema_l1loss_for_log:.{4}f}",
-                        "Lssim": f"{ema_ssimloss_for_log:.{4}f}",
+                        "PSNR": f"{psnr_for_log:.2f}"
                     }
+                    for k,v in smoothed_logs.items():
+                        postfix[k] = f"{v:.{4}f}"
+                    
 
-                    for lambda_name in lambda_all:
-                        if opt.__dict__[lambda_name] > 0:
-                            ema_loss = vars()[
-                                f"ema_{lambda_name.replace('lambda_', '')}_for_log"
-                            ]
-                            postfix[lambda_name.replace("lambda_", "L")] = (
-                                f"{ema_loss:.{4}f}"
-                            )
                     progress_bar.set_postfix(postfix)
                     progress_bar.update(10)
                 if iteration == opt.iterations:
                     progress_bar.close()
                 # Log and save
-                test_psnr = training_report(
-                    tb_writer,
-                    iteration,
-                    Ll1,
-                    loss,
-                    l1_loss,
-                    iter_start.elapsed_time(iter_end),
-                    testing_iterations,
-                    scene,
-                    render,
-                    (pipe, background),
-                    loss_dict,
-                )
+                # test_psnr = training_report(
+                #     tb_writer,
+                #     iteration,
+                #     Ll1,
+                #     loss,
+                #     l1_loss,
+                #     iter_start.elapsed_time(iter_end),
+                #     testing_iterations,
+                #     scene,
+                #     render,
+                #     (pipe, background),
+                #     loss_dict,
+                # )
                 if iteration in saving_iterations:
                     try_save(gaussians, iteration, scene,f"iter_{iteration}")
-                elif iteration in testing_iterations:
-                    if test_psnr >= best_psnr:
-                        best_psnr = test_psnr
-                        try_save(gaussians, iteration, scene,"best")
-                    else:
-                        try_save(gaussians, iteration, scene,"not-best")
+                # elif iteration in testing_iterations:
+                #     if test_psnr >= best_psnr:
+                #         best_psnr = test_psnr
+                #         try_save(gaussians, iteration, scene,"best")
+                #     else:
+                #         try_save(gaussians, iteration, scene,"not-best")
 
 
                 # Optimizer step - n.b. densifier calls may reset gradients so do this first

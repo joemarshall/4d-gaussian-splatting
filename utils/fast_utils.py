@@ -10,8 +10,8 @@ candidates for densification, while low-scoring ones may be pruned.
 
 import random
 import torch
-from gaussian_renderer import render
-from .loss_utils import l1_loss
+from gaussian_renderer import calculate_gaussian_contribution, render
+from .loss_utils import l1_loss, ssim
 import numpy as np
 
 
@@ -189,7 +189,7 @@ def compute_gaussian_score_fastgs(camlist, gaussians, pipe, bg, loss_thresh, DEN
 
         gt_image = gt_image.cuda()
 
-        photometric_loss = l1_loss(gt_image, render_image)
+        photometric_loss = l1_loss(gt_image, render_image)*0.8 + ssim(gt_image,render_image)*0.2
 
         # Build binary metric map: 1 where per-pixel error exceeds threshold.
         l1_norm = _get_loss_map(render_image, gt_image)
@@ -226,3 +226,46 @@ def compute_gaussian_score_fastgs(camlist, gaussians, pipe, bg, loss_thresh, DEN
         importance_score = None
 
     return importance_score, pruning_score
+
+def calculate_per_gaussian_error_contribution(camlist, gaussians, pipe, bg):
+    """
+    Calculate a score for each Gaussian based on how many error pixels it contributed to across multiple views.
+    - we do this by:
+    1) render view vs ground truth to compute per pixel error map
+    2) render again inverted, to get per gaussian contribution to each pixel and multiply the contribution by error map to
+       sum the contribution of each gaussian to error pixels in the view.
+       n.b. by rendering inverted, we can multply by opacity left to make contributions from front pixels more 
+       important than back pixels
+    """
+    # render the views
+    total_error = torch.zeros(gaussians.get_xyz.shape[0], device=gaussians.get_xyz.device)
+    total_visual = torch.zeros(gaussians.get_xyz.shape[0], device=gaussians.get_xyz.device)
+
+    for view in range(len(camlist)):
+        gt_image, viewpoint_cam = camlist[view]
+        viewpoint_cam = viewpoint_cam.cuda()
+        gt_image = gt_image.detach().cuda()
+
+        # render forwards to get error per pixel
+        render_pkg = render(viewpoint_cam, gaussians, pipe, bg)
+        render_image = render_pkg["render"]
+
+        # loss map = normalized l1 norm
+        l1_norm = _get_loss_map(render_image, gt_image)
+
+        # render backwards with ground-truth error map 
+        # this will return 1) error_contribution for each gaussian
+        # and 2) visual_contribution (how much it contributed weighted by opacity) 
+        render_pkg2 = calculate_gaussian_contribution(viewpoint_cam,gaussians,pipe,bg, error_map = l1_norm)
+        
+        error_contribution = render_pkg2["error_contribution"]
+        visual_contribution = render_pkg2["visual_contribution"]
+
+        error_contribution = error_contribution / (visual_contribution.clamp(min=1e-6))
+
+        total_error += error_contribution
+        total_visual += visual_contribution
+
+    return total_error, total_visual
+
+

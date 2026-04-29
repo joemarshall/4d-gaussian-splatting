@@ -35,7 +35,7 @@ opacities,
 scales,
 rotations,
 scale_modifier,
-cov3Ds_precomp,
+cov3D_precomp,
 metric_map,
 viewmatrix,
 projmatrix,
@@ -67,7 +67,7 @@ while True:
             scales,
             rotations,
             scale_modifier,
-            cov3Ds_precomp,
+            cov3D_precomp,
             viewmatrix,
             projmatrix,
             tanfovx,
@@ -86,7 +86,7 @@ while True:
             debug,
         )
         (grad_means2D, grad_colors_precomp, grad_opacities, grad_means3D,
-            grad_cov3Ds_precomp, grad_dc, grad_sh, grad_scales,
+            grad_cov3D_precomp, grad_dc, grad_sh, grad_scales,
             grad_rotations) = _C.rasterize_gaussians_backward(*bw_args)
 
 

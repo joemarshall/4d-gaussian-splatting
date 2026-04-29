@@ -79,7 +79,7 @@ class PlainDensifier(DensifierBase):
         if self.t_gradient_accum is not None:
             self.t_gradient_accum = torch.zeros((gaussians.get_xyz.shape[0], 1), device="cuda")
 
-    def prune_points(self, prune_mask):
+    def prune_points(self, gaussians, prune_mask):
         valid_points_mask = ~prune_mask
         self.xyz_gradient_accum = self.xyz_gradient_accum[valid_points_mask]
         self.denom = self.denom[valid_points_mask]

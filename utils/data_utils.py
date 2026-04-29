@@ -180,7 +180,7 @@ class CameraDataset(Dataset):
         return camlist
 
     def get_frame_batch_sampler(self,suggested_batch_size=4):
-        return CameraDataset.RandomSampler(self,batch_size=suggested_batch_size)
+        #return CameraDataset.RandomSampler(self,batch_size=suggested_batch_size)
         return CameraDataset.CameraAndFrameSampler(self)
     
     def metadata(self):

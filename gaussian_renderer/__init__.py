@@ -24,31 +24,7 @@ if USE_FASTGS:
 else:
     from .diff_gaussian_rasterization import GaussianRasterizationSettings, GaussianRasterizer
 
-def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, scaling_modifier = 1.0, override_color = None, metric_map = None):
-    """
-    Render the scene. 
-    
-    Background tensor (bg_color) must be on GPU!
-    """
-
-
-    # Create zero tensor. We will use it to make pytorch return gradients of the 2D (screen-space) means
-    if USE_FASTGS:
-        screenspace_points = torch.zeros(
-        (pc.get_xyz.shape[0], 4),
-        dtype=pc.get_xyz.dtype,
-        requires_grad=True,
-        device="cuda",
-    ) + 0
-    else:
-        screenspace_points = torch.zeros_like(pc.get_xyz, dtype=pc.get_xyz.dtype, requires_grad=True, device="cuda") + 0
-
-    try:
-        screenspace_points.retain_grad()
-    except:
-        pass
-
-    # Set up rasterization configuration
+def _make_rasterizer(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, scaling_modifier = 1.0, override_color = None, metric_map = None):
     tanfovx = math.tan(viewpoint_camera.FoVx * 0.5)
     tanfovy = math.tan(viewpoint_camera.FoVy * 0.5)
 
@@ -117,9 +93,20 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
 
         )
         rasterizer = GaussianRasterizer(raster_settings=raster_settings)
+    return rasterizer
 
+def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, tensor_gradient_2d_buffer: torch.Tensor,scaling_modifier = 1.0, override_color = None, metric_map = None,):
+    """
+    Render the scene. 
+    
+    Background tensor (bg_color) must be on GPU!
+    """
 
+    tensor_gradient_2d_buffer.grad=None
+    screenspace_points = tensor_gradient_2d_buffer
 
+    # Set up rasterization configuration
+    rasterizer = _make_rasterizer(viewpoint_camera, pc, pipe, bg_color, scaling_modifier, override_color, metric_map)
 
     means3D = pc.get_xyz
     means2D = screenspace_points
@@ -288,3 +275,91 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
                 "alpha": alpha,
                 "flow": flow,
                 "metric_counts": metric_count}
+
+def calculate_gaussian_contribution(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, error_map: torch.Tensor = None):
+    """
+    Calculate the contribution of each Gaussian to the final render, for use in densification criteria. 
+    
+    Background tensor (bg_color) must be on GPU!
+
+    n.b. this renders backwards to get contribution to render for each gaussian
+         - this is only used for pruning so no differentiation is provided
+    
+    """
+
+    # Set up rasterization configuration
+    rasterizer = _make_rasterizer(viewpoint_camera, pc, pipe, bg_color, metric_map=error_map)
+
+    means3D = pc.get_xyz
+    opacity = pc.get_opacity
+
+    # If precomputed 3d covariance is provided, use it. If not, then it will be computed from
+    # scaling / rotation by the rasterizer.
+    scales = None
+    scales_t = None
+    rotations = None
+    rotations_r = None
+    ts = None
+    cov3D_precomp = None
+    prefilter_var = -1.0
+    if pipe.compute_cov3D_python:
+        if pc.rot_4d:
+            cov3D_precomp, delta_mean = pc.get_current_covariance_and_mean_offset(scaling_modifier, viewpoint_camera.timestamp)
+            means3D = means3D + delta_mean
+        else:
+            cov3D_precomp = pc.get_covariance(scaling_modifier)
+        if pc.gaussian_dim == 4:
+            marginal_t = pc.get_marginal_t(viewpoint_camera.timestamp)
+            opacity = opacity * marginal_t
+    else:
+        scales = pc.get_scaling
+        rotations = pc.get_rotation
+        if pc.gaussian_dim == 4:
+            scales_t = pc.get_scaling_t
+            ts = pc.get_t
+            if pc.rot_4d:
+                rotations_r = pc.get_rotation_r
+            if pc.prefilter_var > 0.0:
+                prefilter_var = pc.prefilter_var
+
+
+    if pipe.compute_cov3D_python:
+        if pc.rot_4d:
+            cov3D_precomp, delta_mean = pc.get_current_covariance_and_mean_offset(scaling_modifier, viewpoint_camera.timestamp)
+            means3D = means3D + delta_mean
+        else:
+            cov3D_precomp = pc.get_covariance(scaling_modifier)
+        if pc.gaussian_dim == 4:
+            marginal_t = pc.get_marginal_t(viewpoint_camera.timestamp)
+            opacity = opacity * marginal_t
+    else:
+        scales = pc.get_scaling
+        rotations = pc.get_rotation
+        if pc.gaussian_dim == 4:
+            scales_t = pc.get_scaling_t
+            ts = pc.get_t
+            if pc.rot_4d:
+                rotations_r = pc.get_rotation_r
+            if pc.prefilter_var > 0.0:
+                prefilter_var = pc.prefilter_var
+
+
+    if USE_FASTGS:
+        print("Gaussian contribution calculation not implemented for FastGS yet.")
+        render_outputs = None
+    else:    
+        num_pts,gaussian_contribution,weighted_contribution = rasterizer.calculate_gaussian_contributions(
+            means3D=pc.get_xyz,
+            ts = ts,
+            scales = scales,
+            scales_t = scales_t,
+            rotations = rotations,
+            rotations_r = rotations_r,
+            cov3D_precomp = cov3D_precomp,
+            opacities = opacity,
+            prefilter_var = prefilter_var,
+        )
+
+    render_outputs = {"num_pts": num_pts, "visual_contribution": gaussian_contribution, "error_contribution": weighted_contribution}
+
+    return render_outputs
