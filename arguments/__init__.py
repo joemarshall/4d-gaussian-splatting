@@ -101,6 +101,7 @@ class OptimizationParams(ParamGroup):
         self.lambda_rigid = 0.0
         self.lambda_motion = 0.0
         self.lambda_depth = 0.0
+        self.lambda_opa_bistable = 0.0
         self.thresh_opa_prune = 0.005
         self.densification_interval = 100
 
