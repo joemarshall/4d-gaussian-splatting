@@ -152,7 +152,7 @@ def densify_and_split_long_axis(gaussians, selected_pts_mask, rate=1.5, N=2):
     prune_filter = torch.cat((selected_pts_mask, torch.zeros(total_points - selected_pts_mask.shape[0], device="cuda", dtype=bool) ))
     gaussians.prune_points(prune_filter)
 
-def clone_split_prune(gaussians, clones,splits,prunes,repeat_count = 2 ,long_axis_split=False):
+def clone_split_prune(gaussians, clones=None,splits=None,prunes=None,*,repeat_count = 2 ,long_axis_split=False):
     initial_point_count = gaussians.get_xyz.shape[0]
     # don't split or clone prunes, because they will be removed next time anyway
     # (as opacity never goes up after split/clone)

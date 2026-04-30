@@ -308,6 +308,7 @@ def training(
 
     densifiers.append(OpacityReset(opt))
     densifiers.append(RecoveryAwarePruner(opt))
+    densifiers.append(TimeSpacePruner(opt))
     
 
 

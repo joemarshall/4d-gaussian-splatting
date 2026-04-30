@@ -236,7 +236,7 @@ __global__ void identifyTileRanges(int L, uint64_t* point_list_keys, uint2* rang
 		bool valid_prev_tile = prevtile != (uint32_t) -1 && prevtile < tile_grid.x * tile_grid.y;
 //		assert(prevtile < tile_grid.x * tile_grid.y);
 		if(!valid_prev_tile){
-			printf("Invalid prev tile %d at idx %d\n", prevtile, idx-1);
+			//printf("Invalid prev tile %d at idx %d\n", prevtile, idx-1);
 		}
 		if (currtile != prevtile)
 		{

@@ -23,7 +23,7 @@ class RecoveryAwarePruner(DensifierBase):
     def needs_densification_or_pruning(self, gaussians, iteration):
         reset_interval = self._get_option('opacity_reset_interval', 3000)
 
-        prune_after = getattr(self.options, 'recovery_aware_pruning_iter_offset', 300)
+        prune_after = self._get_option('recovery_aware_pruning_iter_offset', 300)
         densify_from_iter = self._get_option("densify_from_iter", 0)
         densify_until_iter = self._get_option("densify_until_iter", 1e9)
 

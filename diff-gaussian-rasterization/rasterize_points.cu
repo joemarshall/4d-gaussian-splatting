@@ -366,6 +366,8 @@ CalculateGaussianContributionsCUDA(
 		AT_ERROR("per_pixel_error_map must have dimensions (H * W)");
 	  }
 	  per_pixel_error_map_ptr = per_pixel_error_map.contiguous().data_ptr<float>();
+	}else{
+		per_pixel_error_map_ptr = nullptr;
 	}
   
 

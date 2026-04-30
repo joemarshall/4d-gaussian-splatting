@@ -563,10 +563,11 @@ try:
         with torch.no_grad():
             model,pipeline,scene,gaussians = get_model_pipeline_scene_gaussians(args.output_folder)
 
-
-            # prune_mask = (gaussians.get_opacity < 0.1).squeeze()
-            # clone_split_prune(gaussians, None, None, prune_mask)
-            # print("Pruned:",prune_mask.shape[0]," -> ",gaussians.get_xyz.shape[0])
+            prune_mask = (gaussians.get_opacity < 0.9).squeeze()
+            clone_split_prune(gaussians, None, None, prune_mask)
+            print("Pruned:",prune_mask.shape[0]," -> ",gaussians.get_xyz.shape[0])
+            gaussians.reset_opacity(max_val = 1.0, min_val=1.0)
+            
 
             print(f"Loaded model, {len(gaussians.get_xyz)} gaussians")
 
@@ -750,13 +751,17 @@ if (
     not args.save_video_name
     and not args.graph_camera_positions
     and not args.show_images
+    and not args.play_video 
 ):
-    args.play_video = True
+    if args.render_camera:
+        args.play_video = True
+    else:
+        args.show_images = True
 
 if args.show_images:
     for file in files_in_order:
         subprocess.run(
-            [shutil.which("pwsh.exe"), "-Command", "ConvertTo-Sixel", str(file)],
+            [shutil.which("pwsh.exe"), "-Command", "ConvertTo-Sixel", str(file),"-width","150"],
             shell=False,
         )
         print("!!!")

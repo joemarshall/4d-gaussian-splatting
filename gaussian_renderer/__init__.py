@@ -286,7 +286,8 @@ def calculate_gaussian_contribution(viewpoint_camera, pc : GaussianModel, pipe, 
          - this is only used for pruning so no differentiation is provided
     
     """
-
+    if error_map is None:
+        error_map = torch.empty([], device="cuda")
     # Set up rasterization configuration
     rasterizer = _make_rasterizer(viewpoint_camera, pc, pipe, bg_color, metric_map=error_map)
 
