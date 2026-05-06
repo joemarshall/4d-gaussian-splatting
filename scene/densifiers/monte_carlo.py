@@ -1,51 +1,122 @@
-class MontecarloPruner:
-    def __init__(self, opt):
-        super().__init__(opt, "montecarlo")
+import torch
+from .densifier_base import DensifierBase   
+from .split_ops import *
 
-    def training_setup(self, gaussians,reset_accumulated_gradients = True):
-        pass
+from gaussian_renderer import calculate_gaussian_contribution
 
-    def densify_and_prune(self, iteration, scene, gaussians, radii, pipe, bg, *, options):
-        num_cams = 40
-        my_viewpoint_stack = scene.getTrainCameras()            
-        camlist = sampling_cameras(my_viewpoint_stack, num_cams,dimensions=4)
+# prune by time/space score -
+# Spatial-Temporal Variation Score from https://4dgs-1k.github.io/
+class MonteCarloPruner(DensifierBase):
+    def __init__(self,opt):
+        super().__init__(opt, "monte_carlo_pruning")
 
-#        error_offsets = torch.zeros((gaussians.get_xyz.shape[0],), device=gaussians.get_xyz.device)
+    def get_opacity_at_timestamp(self, gaussians,timestamp):
+        """Compute per-Gaussian temporal score (Eq. 5-6 from arXiv 2503.16422).
+
+        The temporal score measures how much each 4D Gaussian contributes 
+        at this timestamp, irrespective of gaussian opacity (which is handled by the
+        spatial score)
+
+        Args:
+            timestamp: float T
+
+        Returns:
+            Tensor of shape (N,) with temporal scores in [0, 1].
+            Returns a tensor of ones when gaussian_dim != 4.
+        """
+        if gaussians.gaussian_dim != 4:
+            return torch.ones(gaussians.get_xyz.shape[0], device="cuda")
+        with torch.no_grad():
+            sigma = gaussians.get_marginal_t(timestamp) * gaussians.get_opacity
+            return sigma
+
+    def densify_and_prune(self, iteration, scene, gaussians, radii,pipe, bg, *, options):
+        # render *all* training views
+        # for each gaussian, calculate time/space score
+        # based on:
+        #
+        #
+        # 1) count of frames including the gaussian (time score)
+        # 2) visibile pixels for the gaussian (space score)
+
+        all_views = scene.getTrainCameras()
+        timestamps = all_views.get_timestamps()
+        cameras = all_views.get_num_different_cameras()
+
+        tensor_device = gaussians.get_xyz.device
 
 
-#        drop_percentage = 10
-        for view in range(len(camlist)):
-            gt_image,viewpoint_cam = camlist[view]
-            viewpoint_cam=viewpoint_cam.cuda()
-            gt_image=gt_image.detach()
 
-            render_pkg = render(viewpoint_cam, gaussians, pipe, bg)
-            render_image = render_pkg["render"]
-            l1_norm = _get_loss_map(render_image, gt_image)
-            print(gaussians._opacities.grad)
+        all_views.set_names_only(True)
+        num_points = gaussians.get_xyz.shape[0]
+        frame_counts = torch.zeros(num_points,dtype=torch.int32,device=tensor_device)
+
+        st_sums = torch.zeros(num_points,device=tensor_device)
+
+        error_changes = torch.zeros(num_points,device=tensor_device)
+
+        # pick a random timestamp
+        # filter 10% of gaussians
+        # render filtered with no grad
+        # then render unfiltered 
+        # and add error diff to gaussians that were filtered
+
+        with torch.no_grad():
+            for t in timestamps:
+                print("Processing timestamp", t)
+                spatial_sum = torch.zeros(num_points,device=tensor_device)
+                found_frame = torch.zeros(num_points,dtype=torch.int32,device=tensor_device)
+                indices = all_views.get_indices_for_timestamp(t)
+                for i in indices:
+                    cam = all_views[i][1].cuda()
+                    error_map = torch.zeros((cam.image_height*cam.image_width),device=tensor_device)
+                    outputs = calculate_gaussian_contribution(cam, gaussians, pipe, bg, error_map = error_map)
+                    contributions = outputs["visual_contribution"]
+                    found_frame[contributions>0]+=1
+                    spatial_sum += contributions
+                spatial_sum = spatial_sum / (spatial_sum.max() + 1e-8)
+                temporal_score = self.compute_temporal_scores(gaussians,t)
+    #            print(torch.min(temporal_score).item(), torch.max(temporal_score).item())
+    #            print(torch.min(spatial_sum).item(), torch.max(spatial_sum).item())
+                st_sums+= spatial_sum* temporal_score.squeeze()
+
+            frame_counts[found_frame>0]+=1
+        # first get rid of invisibles
+        invisibles = frame_counts == 0
+
+        st_sums = st_sums / (len(timestamps))
+        st_sums = st_sums / (st_sums.max() + 1e-8)
+
+        st_sums = torch.log(100*st_sums + 1) / 2
+
+        print("ST sums:", st_sums.shape,st_sums.mean().item(), st_sums.min().item(), st_sums.max().item())
+        print("Num invisibles:",invisibles.sum())
+        bad_points = (st_sums < 0.001) & ~invisibles
+        print("Num < 0.001",bad_points.sum().item())
+
+        clone_split_prune(gaussians,prunes = invisibles|bad_points)
 
 
-
-
-
-    def add_densification_stats_grad(self, *,gaussians, iteration, viewspace_point_grad, update_filter, radii,avg_t_gradient):
-        pass
-
-
-
-    def per_iteration(self, iteration, scene, gaussians, radii, pipe, bg):
+    def add_densification_stats_grad(self,*,gaussians,iteration,viewspace_point_grad,update_filter, radii,avg_t_gradient):
         pass
 
     def get_save_vars(self,gaussians):
-        """Return variables that should be saved or loaded with the scene, as attribute names """
         return []
 
-    def densification_postfix(self, gaussians):
-        pass
+    def needs_densification_or_pruning(self, gaussians, iteration):
+        iterations = self._get_option("iterations",-1)
 
-    def prune_points(self, gaussians, prune_mask):
-        pass
+        if type(iterations)==int:
+            iterations=[iterations]
+        if iteration in iterations or not hasattr(self,"done"):
+            self.done = True
+            return {"densify": False, "prune": True, "final_prune": False}
+        else:
+            return None
 
-    @torch.no_grad()
-    def apply_debug_colour(self, gaussians, scene,pipe,bg, debug_type=""):
-        pass
+
+
+                         
+
+
+

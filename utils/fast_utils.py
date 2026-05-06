@@ -109,7 +109,7 @@ def compute_visible_gaussians(camlist, gaussians, pipe, bg, args):
     for view in range(len(camlist)):
         # calculateGaussianVisibilityContribution(camlist[view][1], gaussians, pipe, bg, fastgs_mult)
 
-        gt_image, viewpoint_cam = camlist[view]
+        gt_image, viewpoint_cam, gt_depth = camlist[view]
         viewpoint_cam = viewpoint_cam.cuda()
         gt_image = gt_image.detach()
 
@@ -179,7 +179,7 @@ def compute_gaussian_score_fastgs(camlist, gaussians, pipe, bg, loss_thresh, DEN
 
 
     for view in range(len(camlist)):
-        gt_image, viewpoint_cam = camlist[view]
+        gt_image, viewpoint_cam, gt_depth = camlist[view]
         viewpoint_cam = viewpoint_cam.cuda()
         gt_image = gt_image.detach()
 
@@ -242,7 +242,7 @@ def calculate_per_gaussian_error_contribution(camlist, gaussians, pipe, bg):
     total_visual = torch.zeros(gaussians.get_xyz.shape[0], device=gaussians.get_xyz.device)
 
     for view in range(len(camlist)):
-        gt_image, viewpoint_cam = camlist[view]
+        gt_image, viewpoint_cam, gt_depth = camlist[view]
         viewpoint_cam = viewpoint_cam.cuda()
         gt_image = gt_image.detach().cuda()
 

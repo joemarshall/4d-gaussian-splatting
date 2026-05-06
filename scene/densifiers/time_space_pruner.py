@@ -100,8 +100,8 @@ class TimeSpacePruner(DensifierBase):
 
         if type(iterations)==int:
             iterations=[iterations]
-        if iteration in iterations or not hasattr(self,"done"):
-            self.done = True
+        if iteration in iterations:# or not hasattr(self,"done"):
+            #self.done = True
             return {"densify": False, "prune": True, "final_prune": False}
         else:
             return None

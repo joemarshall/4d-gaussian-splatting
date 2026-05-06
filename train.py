@@ -1,4 +1,5 @@
 # TODO:
+
 # command for densifier choice by name
 # to try:
 # time/space pruining from 4dgs paper (can do at end - keep a model for it)
@@ -40,7 +41,7 @@ import torch
 import subprocess
 import threading
 from torch import nn
-from utils.loss_utils import  combine_losses, loss_bistable_opacity, loss_ssim, loss_l1
+from utils.loss_utils import  combine_losses, loss_bistable_opacity, loss_ssim, loss_l1, loss_depth
 from gaussian_renderer import render
 import sys
 from scene import Scene, GaussianModel
@@ -109,8 +110,7 @@ def launch_viewer(args, name):
 
 
 
-@torch.compile()
-#@torch.compile
+@torch.compile(dynamic=True)
 def run_batch(batch_data, batch_size, gaussians, pipe, background, opt,tensor_gradient_2d_buffer):
     batch_point_grad = []
     batch_visibility_filter = []
@@ -118,7 +118,7 @@ def run_batch(batch_data, batch_size, gaussians, pipe, background, opt,tensor_gr
 
     loss_items = {}
     for batch_idx in range(batch_size):
-        gt_image, viewpoint_cam = batch_data[batch_idx]
+        gt_image, viewpoint_cam, gt_depth = batch_data[batch_idx]
 #        gt_image = gt_image.cuda()
 #        viewpoint_cam = viewpoint_cam.cuda()
 
@@ -134,10 +134,11 @@ def run_batch(batch_data, batch_size, gaussians, pipe, background, opt,tensor_gr
 
         losses = [("L1",1.0, loss_l1),
                 ("SSIM", opt.lambda_dssim, loss_ssim),
-                ("Opacity", opt.lambda_opa_bistable, loss_bistable_opacity)]
+                ("Opacity", opt.lambda_opa_bistable, loss_bistable_opacity),
+                ("Depth",opt.lambda_depth, loss_depth)]
 
         #with record_function("PROFILE_loss"):    
-        loss_dict = combine_losses(losses,render_pkg, gt_image, gaussians,batch_size)
+        loss_dict = combine_losses(losses,render_pkg, gt_image, gt_depth, gaussians,batch_size)
 
         ###### rigid loss ######
         if opt.lambda_rigid > 0:
@@ -462,7 +463,10 @@ def training(
             # with frame batch sampler the batch size is cameras per-frame)
             batch_size = len(batch_data)
             ts_batch = batch_data[0][1].timestamp
-            batch_data = [ (data[0].cuda(), data[1].cuda()) for data in batch_data]
+            for x in batch_data:
+                if x[2] is None:
+                    print(x)
+            batch_data = [ (data[0].cuda(), data[1].cuda(),data[2].cuda()) for data in batch_data]
 
             #print("Training {} gaussians on batch of size {} at iteration {} (timestamp {})".format(gaussians.get_xyz.shape[0], batch_size, iteration, ts_batch))
 
@@ -579,48 +583,6 @@ def training(
         print("\n[ITER {}] Saving checkpoint before exiting".format(iteration))
         try_save(gaussians, iteration, scene,name="resume")
         sys.exit(0)
-
-
-def _prune_by_spatio_temporal_score(gaussians, scene, pipe, background, opt):
-    """Compute spatio-temporal scores and prune low-scoring 4D Gaussians.
-
-    Spatial score (Eq. 4):  For each training view, render with compute_contrib=True
-        to obtain per-Gaussian pixel contributions (alpha * T summed over all pixels
-        in that view).  These are accumulated across all views then averaged.
-    Temporal score (Eq. 5-6):  Average marginal temporal weight over all unique
-        training timestamps.
-    Combined score (Eq. 7):  spatial_score * temporal_score.  Gaussians with
-        combined score < opt.prune_st_score_threshold are removed.
-    """
-    print("\n[ST-prune] Accumulating spatial contributions across all training views…")
-    train_cameras = scene.getTrainCameras()
-    P = gaussians.get_xyz.shape[0]
-    spatial_accum = torch.zeros(P, device="cuda")
-    num_views = 0
-
-    with torch.no_grad():
-        for gt_image, viewpoint_cam in train_cameras:
-            viewpoint_cam = viewpoint_cam.cuda()
-            render_pkg = render(viewpoint_cam, gaussians, pipe, background, compute_contrib=True)
-            contrib = render_pkg["gauss_contrib"]
-            if contrib.shape[0] == P:
-                spatial_accum += contrib
-            elif contrib.shape[0] > 0:
-                print(
-                    f"[ST-prune] Warning: gauss_contrib size {contrib.shape[0]} != "
-                    f"num_gaussians {P}; skipping this view's contributions."
-                )
-            num_views += 1
-
-    # Average over views so score is independent of dataset size
-    if num_views > 0:
-        spatial_accum /= num_views
-
-    # Unique timestamps for temporal score computation
-    timestamps = sorted(set(float(cam.timestamp) for _, cam in train_cameras))
-    gaussians.prune_by_spatio_temporal_score(
-        spatial_accum, timestamps, opt.prune_st_score_threshold
-    )
 
 
 def _save_prefilter_masks(gaussians, scene, dataset):
@@ -762,7 +724,7 @@ def training_report(
                 ssim_test = 0.0
                 msssim_test = 0.0
                 for idx, batch_data in enumerate(tqdm(config["range"])):
-                    gt_image, viewpoint = config["cameras"][idx]
+                    gt_image, viewpoint, gt_depth = config["cameras"][idx]
                     gt_image = gt_image.cuda()
                     viewpoint = viewpoint.cuda()
 

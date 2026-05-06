@@ -756,6 +756,18 @@ print("Max frame index:", max_frame_idx)
 
 duration_seconds = max_frame_idx / 30
 
+
+# make depth image for each frame for training
+from utils.build_depth import build_depth_for_frames
+
+build_depth_for_frames(args.output_folder)
+
+
+
+
+
+
+
 # write config file with default settings for training
 train_file_data = f"""
 gaussian_dim: 4

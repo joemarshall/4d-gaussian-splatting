@@ -10,24 +10,43 @@ import numpy as np
 from pathlib import Path
 from typing import List, Iterator
 
+import safetensors.torch
+
 # TODO: write permanent cache files into subfolder of image path based on the width
-# and return memorymapped tensor based on it 
+# and return memorymapped tensor based on it
 # or perhaps .to_cuda on that tensor
+
 
 class ImageCache:
 
     @staticmethod
-    def get_image_for_file(path,width):
-        cache_path = f"{path}_{width}.pt"
+    def get_image_for_file(path, width, depth):
+        cache_path = f"{path}_{width}.st"
         if os.path.exists(cache_path):
-            return torch.load(cache_path,map_location="cuda")
+            rval = safetensors.torch.load_file(cache_path,device="cuda")
+            if "depth" in rval and depth is None:
+                print("Cached image contains depth but not expected, ignoring cache")
+                return None,None
+            elif depth is None and "depth" in rval:
+                print("Cached image does not contain depth when expected, ignoring cache")
+                return None,None
+            r_img = rval["tensor"].to(device="cuda", dtype=torch.float32, non_blocking = True)
+            r_depth = None
+            if "depth" in rval and depth is not None:
+                r_depth = rval["depth"].to(device="cuda", dtype=torch.float32, non_blocking = True)
+            return r_img, r_depth
         else:
-            return None
-        
+            return None,None
+
     @staticmethod
-    def set_image_for_file(path,width,tensor):
-        cache_path = f"{path}_{width}.pt"
-        torch.save(tensor, cache_path)
+    def set_image_for_file(path, width, tensor,depth):  
+        print("Caching image for", path)
+        cache_path = f"{path}_{width}.st"
+        all_tensors = {"tensor": tensor.to(device="cpu", dtype=torch.float16).contiguous()}
+        if depth is not None:
+            all_tensors["depth"] = depth.to(device="cpu", dtype=torch.float16).contiguous()
+        safetensors.torch.save_file(all_tensors, cache_path)
+
 
 class CameraDataset(Dataset):
 
@@ -41,15 +60,16 @@ class CameraDataset(Dataset):
             return len(self.timestamps)
 
         def __iter__(self) -> Iterator[List[int]]:
-            timestamps= self.timestamps.copy()
+            timestamps = self.timestamps.copy()
             np.random.shuffle(timestamps)
             for t in timestamps:
                 indices = self.dataset.get_indices_for_timestamp(t)
-                indices = np.random.shuffle(indices)
-                yield indices
-                
+                if indices is not None:
+                    np.random.shuffle(indices)
+                    yield indices
+
     class CameraSampler(Sampler[List[int]]):
-        def __init__(self, dataset,batch_size = 10):
+        def __init__(self, dataset, batch_size=10):
             self.dataset = dataset
             self.timestamps = self.dataset.get_timestamps()
             self.num_cameras = self.dataset.get_num_different_cameras()
@@ -62,26 +82,30 @@ class CameraDataset(Dataset):
         def __iter__(self) -> Iterator[List[int]]:
             # each sample = random sample from timestamps
             # batches are cameras + random frames from those cameras
-            timestamps= self.timestamps.copy()
+            timestamps = self.timestamps.copy()
             np.random.shuffle(timestamps)
             camera_indices = np.arange(self.num_cameras)
             np.random.shuffle(camera_indices)
+            camera_id = camera_indices[0]
+            camera_indices = camera_indices[1:]
             for _ in range(self.length):
-                these_timestamps = timestamps[0:self.batch_size]
-                timestamps = timestamps[self.batch_size:]
-                camera_id = camera_indices[0]
-                camera_indices = camera_indices[1:]
-                if len(camera_indices) == 0:
-                    camera_indices = np.arange(self.num_cameras)
-                    np.random.shuffle(camera_indices)
+                these_timestamps = timestamps[0 : self.batch_size]
+                timestamps = timestamps[self.batch_size :]
                 if len(timestamps) < self.batch_size:
-                    timestamps= self.timestamps.copy()
+                    timestamps = self.timestamps.copy()
                     np.random.shuffle(timestamps)
-                indices = self.dataset.get_indices_for_timestamp(these_timestamps,camera_id)
+                    camera_id = camera_indices[0]
+                    camera_indices = camera_indices[1:]
+                    if len(camera_indices) == 0:
+                        camera_indices = np.arange(self.num_cameras)
+                        np.random.shuffle(camera_indices)
+                indices = self.dataset.get_indices_for_timestamp(
+                    these_timestamps, camera_id
+                )
                 yield indices
 
     class RandomSampler(Sampler[List[int]]):
-        def __init__(self, dataset,batch_size = 10):
+        def __init__(self, dataset, batch_size=10):
             self.dataset = dataset
             self.length = len(self.dataset) // batch_size
             self.batch_size = batch_size
@@ -89,19 +113,19 @@ class CameraDataset(Dataset):
         def __len__(self):
             return self.length
 
-        def __iter__(self) -> Iterator[List[int]]:        
+        def __iter__(self) -> Iterator[List[int]]:
             # each sample = random sample from dataet
             indices = np.arange(len(self.dataset))
             np.random.shuffle(indices)
-            for i in range(0,self.length*self.batch_size,self.batch_size):
-                yield indices[i:i+self.batch_size]
+            for i in range(0, self.length * self.batch_size, self.batch_size):
+                yield indices[i : i + self.batch_size]
 
     class CameraAndFrameSampler(Sampler[List[int]]):
-        def __init__(self, dataset,batch_size = 10):
-            self.sampler1 = CameraDataset.CameraSampler(dataset,batch_size)
+        def __init__(self, dataset, batch_size=10):
+            self.sampler1 = CameraDataset.CameraSampler(dataset, batch_size)
             self.sampler2 = CameraDataset.FrameSampler(dataset)
-            self.length = len(self.sampler1)+len(self.sampler2)
-            self.next_sampler=0
+            self.length = len(self.sampler1) + len(self.sampler2)
+            self.next_sampler = 0
 
         def __len__(self):
             return self.length
@@ -111,11 +135,20 @@ class CameraDataset(Dataset):
             # batches are cameras + random frames from those cameras
             iter1 = iter(self.sampler1)
             iter2 = iter(self.sampler2)
-            if self.next_sampler ==0:
-                yield from iter1
-            else:
-                yield from iter2
-            
+            while True:
+                if self.next_sampler == 0:
+                    it = iter1
+                else:
+                    it = iter2
+                try:
+                    rv = next(it)
+                    yield rv
+                    self.next_sampler = 1 - self.next_sampler
+                except StopIteration:
+                    if it== iter1:
+                        iter1 = iter(self.sampler1)
+                    else:
+                        iter2 = iter(self.sampler2)
 
     def __init__(self, copy_dataset):
         self.viewpoint_stack = copy_dataset.viewpoint_stack.copy()
@@ -126,7 +159,7 @@ class CameraDataset(Dataset):
 
     def __init__(self, viewpoint_stack, white_background):
         self.viewpoint_stack = viewpoint_stack
-        self.bg = np.array([1,1,1]) if white_background else np.array([0, 0, 0])
+        self.bg = np.array([1, 1, 1]) if white_background else np.array([0, 0, 0])
         self.names_only = False
         self.timestamps = None
         self.num_cameras = None
@@ -136,7 +169,7 @@ class CameraDataset(Dataset):
         self.names_only = names_only
 
     def _get_camera_cache_key(self, camera):
-        return (*camera.R.flatten(),*camera.T.flatten())
+        return (*camera.R.flatten(), *camera.T.flatten())
 
     def _calc_cameras_and_timestamps(self):
         timestamp_set = set()
@@ -145,15 +178,14 @@ class CameraDataset(Dataset):
         for x in self.viewpoint_stack:
             viewpoint_set.add(self._get_camera_cache_key(x))
             timestamp_set.add(x.timestamp)
-        self.num_cameras= len(viewpoint_set)
+        self.num_cameras = len(viewpoint_set)
         self.timestamps = sorted(list(timestamp_set))
         self.different_cam_list = list(viewpoint_set)
 
         for x in self.viewpoint_stack:
-            x.camera_pose_id = self.different_cam_list.index(self._get_camera_cache_key(x))
-
-
-
+            x.camera_pose_id = self.different_cam_list.index(
+                self._get_camera_cache_key(x)
+            )
 
     def get_num_different_cameras(self):
         # how many different camera viewpoints are in this
@@ -161,46 +193,48 @@ class CameraDataset(Dataset):
             self._calc_cameras_and_timestamps()
         return self.num_cameras
 
-
     def get_timestamps(self):
         if self.timestamps is None:
             self._calc_cameras_and_timestamps()
         return self.timestamps
 
-    def get_indices_for_timestamp(self,t,camera_id = None):
-        timestamp_list = t if hasattr(t, '__iter__') else [t]
+    def get_indices_for_timestamp(self, t, camera_id=None):
+        timestamp_list = t if hasattr(t, "__iter__") else [t]
         filter = None
         if camera_id is not None:
             filter = self.different_cam_list[camera_id]
         camlist = []
-        for idx,x in enumerate(self.viewpoint_stack):
-            if x.timestamp in  timestamp_list:
+        for idx, x in enumerate(self.viewpoint_stack):
+            if x.timestamp in timestamp_list:
                 if filter is None or self._get_camera_cache_key(x) == filter:
                     camlist.append(idx)
         return camlist
 
-    def get_frame_batch_sampler(self,suggested_batch_size=4):
-        #return CameraDataset.RandomSampler(self,batch_size=suggested_batch_size)
+    def get_frame_batch_sampler(self, suggested_batch_size=4):
+        # return CameraDataset.RandomSampler(self,batch_size=suggested_batch_size)
         return CameraDataset.CameraAndFrameSampler(self)
-    
+
     def metadata(self):
         return self.viewpoint_stack
 
-        
     def __getitem__(self, index):
         viewpoint_cam = self.viewpoint_stack[index]
         if viewpoint_cam.meta_only and not self.names_only:
-            cached = ImageCache.get_image_for_file(viewpoint_cam.image_path, viewpoint_cam.image_width)
-            if cached is not None:
-#                print("Using cached image:", viewpoint_cam.image_path)
-                return cached, viewpoint_cam
-                
+            cached_image,cached_depth = ImageCache.get_image_for_file(
+                viewpoint_cam.image_path, viewpoint_cam.image_width, viewpoint_cam.depth
+            )
+            if cached_image is not None:
+                #                print("Using cached image:", viewpoint_cam.image_path)
+                return cached_image, viewpoint_cam, cached_depth
+
             # load to memory mapped tensor (stored in tempfile)
             with Image.open(viewpoint_cam.image_path) as image_load:
                 im_data = np.array(image_load.convert("RGBA"))
             norm_data = im_data / 255.0
-            arr = norm_data[:,:,:3] * norm_data[:, :, 3:4] + self.bg * (1 - norm_data[:, :, 3:4])
-            image_load = Image.fromarray(np.array(arr*255.0, dtype=np.uint8), "RGB")
+            arr = norm_data[:, :, :3] * norm_data[:, :, 3:4] + self.bg * (
+                1 - norm_data[:, :, 3:4]
+            )
+            image_load = Image.fromarray(np.array(arr * 255.0, dtype=np.uint8), "RGB")
             resized_image_rgb = PILtoTorch(image_load, viewpoint_cam.resolution)
             resized_image_rgb.requires_grad = False
             viewpoint_image = resized_image_rgb[:3, ...].clamp(0.0, 1.0)
@@ -208,16 +242,30 @@ class CameraDataset(Dataset):
                 gt_alpha_mask = resized_image_rgb[3:4, ...]
                 viewpoint_image *= gt_alpha_mask
             else:
-                viewpoint_image *= torch.ones((1, viewpoint_cam.image_height, viewpoint_cam.image_width))
-            ImageCache.set_image_for_file(viewpoint_cam.image_path, viewpoint_cam.image_width, viewpoint_image)
-            
-            return viewpoint_image, viewpoint_cam
+                viewpoint_image *= torch.ones(
+                    (1, viewpoint_cam.image_height, viewpoint_cam.image_width)
+                )
+            depth = None
+            viewpoint_image= viewpoint_image.contiguous()
+            if viewpoint_cam.depth is not None:
+                depth = torch.load(viewpoint_cam.depth, map_location="cpu")
+                if depth.shape[-2:] != viewpoint_image.shape[-2:]:
+                    print("Resizing depth image")
+                    depth = torch.nn.functional.interpolate(
+                        depth.unsqueeze(0),
+                        size=viewpoint_image.shape[-2:],
+                        mode="nearest",
+                    ).squeeze(0)
+            ImageCache.set_image_for_file(
+                viewpoint_cam.image_path, viewpoint_cam.image_width, viewpoint_image,depth
+            )
+            #print("Caching",viewpoint_image, depth)
+            return viewpoint_image, viewpoint_cam, depth
         if self.names_only:
-            return None, viewpoint_cam
-    
+            return None, viewpoint_cam, None
+
     def __len__(self):
         return len(self.viewpoint_stack)
 
     def copy(self):
         return CameraDataset(self)
-    

@@ -957,7 +957,7 @@ def C_rasterize_gaussians(
     )
     # print("C++ rasterizer called with args:")
     # for x in args:
-    #     print(type(x))
+    #      print(type(x),x.device if hasattr(x,"device") else "N/A")
     return _C.rasterize_gaussians(*args)
 
 

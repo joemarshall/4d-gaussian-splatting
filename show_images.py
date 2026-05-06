@@ -60,7 +60,7 @@ parser.add_argument(
 )
 parser.add_argument("--save_video_name", "-f", type=str, help="Render a video")
 parser.add_argument(
-    "--play_video", "-p", action="store_true", help="Play the rendered video"
+    "--play_video", "-v", action="store_true", help="Play the rendered video"
 )
 parser.add_argument(
     "--show_images", "-s", action="store_true", help="Show rendered images in terminal"
@@ -91,6 +91,7 @@ parser.add_argument(
     action="store_true",
     help="Run opcheck for gaussian rasterization operator and exit",
 )
+parser.add_argument("--override_pth","-p",type=str,default=None,help="Override the checkpoint used for rendering with a specific .pth file")
 args = parser.parse_args()
 
 if len(args.render_camera) > 0:
@@ -309,15 +310,18 @@ def render_wrapper(
     return render_result
 
 
-def get_model_pipeline_scene_gaussians(output_folder):
-        checkpoints = Path(output_folder).glob("*.pth")
-        sorted_checkpoints = list(sorted(checkpoints, key=lambda x: x.stat().st_mtime))
-        if len(sorted_checkpoints):
-            latest_pth = sorted_checkpoints[-1]
-            print(f"Rendering from checkpoint: {latest_pth}")
+def get_model_pipeline_scene_gaussians(output_folder,override_pth):
+        if override_pth is not None:
+            latest_pth=override_pth
         else:
-            print("No checkpoints found")
-            sys.exit(-1)
+            checkpoints = Path(output_folder).glob("*.pth")
+            sorted_checkpoints = list(sorted(checkpoints, key=lambda x: x.stat().st_mtime))
+            if len(sorted_checkpoints):
+                latest_pth = sorted_checkpoints[-1]
+                print(f"Rendering from checkpoint: {latest_pth}")
+            else:
+                print("No checkpoints found")
+                sys.exit(-1)
         
 
         render_cmdline = [
@@ -400,7 +404,7 @@ try:
     config_path = Path(args.output_folder).parent / "config.yaml"
 
     if args.opcheck:
-                model,pipeline,scene,gaussians = get_model_pipeline_scene_gaussians(args.output_folder)
+                model,pipeline,scene,gaussians = get_model_pipeline_scene_gaussians(args.output_folder,args.override_pth)
                 from gaussian_renderer.diff_gaussian_rasterization import *
 
                 bg = torch.zeros((3,), device="cuda")
@@ -561,9 +565,13 @@ try:
     if args.render or args.graph_camera_positions:
 
         with torch.no_grad():
-            model,pipeline,scene,gaussians = get_model_pipeline_scene_gaussians(args.output_folder)
+            model,pipeline,scene,gaussians = get_model_pipeline_scene_gaussians(args.output_folder,args.override_pth)
+
 
             prune_mask = (gaussians.get_opacity < 0.9).squeeze()
+            # cov_t = gaussians.get_cov_t()
+            # static_threshold = torch.quantile(cov_t, 0.5)
+#            prune_mask|= (cov_t > static_threshold).squeeze()
             clone_split_prune(gaussians, None, None, prune_mask)
             print("Pruned:",prune_mask.shape[0]," -> ",gaussians.get_xyz.shape[0])
             gaussians.reset_opacity(max_val = 1.0, min_val=1.0)

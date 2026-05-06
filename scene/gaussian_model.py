@@ -247,7 +247,7 @@ class GaussianModel:
             if in_val is None:
                 print("Missing value in restore:", var_name)
             if isinstance(in_val, torch.Tensor):
-                setattr(self, var_name, in_val)
+                setattr(self, var_name, in_val.cuda())
             elif isinstance(
                 getattr(self, var_name), torch.optim.Optimizer
             ) and isinstance(in_val, dict):
@@ -569,9 +569,10 @@ class GaussianModel:
                 )
 
         if self.optimizer_type == "default":
-            self.optimizer = torch.optim.Adam(l + sh_l, lr=0.0, eps=1e-15)
-            self.shoptimizer = None
-        #            self.shoptimizer = torch.optim.Adam(sh_l, lr=0.0, eps=1e-15)
+            self.optimizer = torch.optim.Adam(l, lr=0.0, eps=1e-15)
+            self.shoptimizer = torch.optim.Adam(sh_l, lr=0.0, eps=1e-15)
+#            self.optimizer = torch.optim.Adam(l + sh_l, lr=0.0, eps=1e-15)
+        #    self.shoptimizer = None
         elif self.optimizer_type == "sparse_adam":
             self.optimizer = SparseGaussianAdam(l + sh_l, lr=0.0, eps=1e-15)
             self.shoptimizer = None
@@ -627,7 +628,7 @@ class GaussianModel:
             #     return lr
 
     def reset_opacity(self, max_val=0.1, min_val=0):
-        print("Resetting opacity of all points to max {val} at iteration")
+        print(f"Resetting opacity of all points to max {max_val} at iteration")
 
         opacities_new = self.inverse_opacity_activation(
             torch.clamp(self.get_opacity, min_val, max_val)

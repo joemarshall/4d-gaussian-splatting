@@ -18,4 +18,5 @@ exit /b 1
 :found
 copy /y "output\%~1\model_output\%latest%" "saved_models\%~2.pth" >nul
 echo Copied "%latest%" to "saved_models\%~2.pth"
+copy /y "output\%~1\config.yaml" saved_models\%~2.yaml
 exit /b 0

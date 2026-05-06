@@ -72,6 +72,8 @@ class Camera:
         self.zfar = 100.0
         self.znear = 0.01
 
+        self.depth = depth
+
         self.update_projection()
         self.timestamp = timestamp
         # fix the size of the cache before compile is run
@@ -119,7 +121,7 @@ class Camera:
         cuda_copy = deepcopy(self)
         for k, v in cuda_copy.__dict__.items():
             if isinstance(v, torch.Tensor):
-                cuda_copy.__dict__[k] = v.to(cuda_copy.data_device)
+                cuda_copy.__dict__[k] = v.to(cuda_copy.data_device,non_blocking = True)
         cuda_copy.cache_key = (*self.cache_key,"cuda")
         self.cached_cuda=cuda_copy
         return self.cached_cuda

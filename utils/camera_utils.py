@@ -51,13 +51,16 @@ def loadCam(args, id, cam_info, resolution_scale):
 
         if resized_image_rgb.shape[0] == 4:
             loaded_mask = resized_image_rgb[3:4, ...]
+
+        if cam_info.depth is not None:
+            depth = PILtoTorch(cam_info.depth, resolution) * 255 / 10000
+        else:
+            depth = None
+
     else:
         gt_image = cam_info.image
+        depth = cam_info.depth
     
-    if cam_info.depth is not None:
-        depth = PILtoTorch(cam_info.depth, resolution) * 255 / 10000
-    else:
-        depth = None
 
     return Camera(colmap_id=cam_info.uid, R=cam_info.R, T=cam_info.T, 
                   FoVx=cam_info.FovX, FoVy=cam_info.FovY, 

@@ -33,7 +33,7 @@ def _make_rasterizer(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torc
             metric_map = torch.zeros(
                 int(viewpoint_camera.image_height) * int(viewpoint_camera.image_width),
                 dtype=torch.int32,
-                device="cuda",
+                device=means3d.device,
             )
 
 
