@@ -25,8 +25,8 @@ parent_dir = os.path.join(
 )
 _C = load(
     name="diff_gaussian_rasterization",
-    extra_cuda_cflags=["-I " + os.path.join(parent_dir, "third_party/glm/"), "-g"],
-    extra_cflags=["/FS"],# without this windows builds are flaky because of pdb files being locked
+    extra_cuda_cflags=["-I " + os.path.join(parent_dir, "third_party/glm/"), "-O3"],#,"-g"],
+    extra_cflags=["/FS","/GL","/O2"],# without this windows builds are flaky because of pdb files being locked
     sources=[
         os.path.join(parent_dir, "cuda_rasterizer/rasterizer_impl.cu"),
         os.path.join(parent_dir, "cuda_rasterizer/forward.cu"),

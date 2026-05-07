@@ -244,9 +244,13 @@ __global__ void preprocessCUDA(int P, int D, int D_t, int M,
 	// if (!in_frustum(idx, orig_points, viewmatrix, projmatrix, prefiltered, p_view))
 	// 	return;
 
+	float opacity = opacities[idx];
+	// very low opacity, don't even project
+	if(opacity<0.01)return;
+
+
 	// Transform point by projecting
 	float3 p_orig = { orig_points[3 * idx], orig_points[3 * idx + 1], orig_points[3 * idx + 2] };
-	float opacity = opacities[idx];
 
 	// If 3D covariance matrix is precomputed, use it, otherwise compute
 	// from scaling and rotation parameters.
@@ -279,6 +283,9 @@ __global__ void preprocessCUDA(int P, int D, int D_t, int M,
 		    opacity *= marginal_t;
 		}
 	}
+
+	// very low opacity after time filtering, don't even project
+	if(opacity<0.01)return;
 
 	// Perform near culling, quit if outside.
 	float3 p_view;

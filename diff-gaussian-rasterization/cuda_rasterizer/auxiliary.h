@@ -524,9 +524,9 @@ __device__ inline void computeCov3D_conditional(const glm::vec3 scale, const flo
 	glm::mat4 Sigma = glm::transpose(M) * M;
 	float cov_t = Sigma[3][3];
 	float marginal_t = __expf(-0.5*dt*dt/((prefilter_var > 0.0) ? (prefilter_var + cov_t) : cov_t));
-	mask = marginal_t > 0.05;
-	if (!mask) return;
 	opacity*=marginal_t;;
+	mask = opacity > 0.05;
+	if (!mask) return;
 	glm::mat3 cov11 = glm::mat3(Sigma);
 	glm::vec3 cov12 = glm::vec3(Sigma[0][3],Sigma[1][3],Sigma[2][3]);
 	glm::mat3 cov3D_condition = cov11 - glm::outerProduct(cov12, cov12) / cov_t;

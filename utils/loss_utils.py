@@ -102,14 +102,41 @@ def loss_l1(render_package, gt_image, gt_depth, gaussians):
 def loss_depth(render_package, gt_image, gt_depth, gaussians):
     depth_out = render_package["depth"].squeeze()
     gt_depth_mask = (gt_depth > 0) & (gt_depth < 100)
+
+    max_gt_depths = torch.nn.MaxPool2d(3,stride=1,padding=1)(gt_depth.unsqueeze(0).unsqueeze(0)).squeeze()
+    min_gt_depths = -torch.nn.MaxPool2d(3,stride=1,padding=1)(-gt_depth.unsqueeze(0).unsqueeze(0)).squeeze()
+    diff_gt_depths =torch.abs(max_gt_depths - min_gt_depths)
+
+
+    gt_depth_mask = (min_gt_depths > 0) & (max_gt_depths < 100)
+
+    
+
     
     out_norm = depth_out[gt_depth_mask]
     out_norm = (out_norm - out_norm.min()) / (out_norm.max() - out_norm.min() + 1e-8)
     gt_norm = gt_depth[gt_depth_mask]
     gt_norm = (gt_norm - gt_norm.min()) / (gt_norm.max() - gt_norm.min() + 1e-8)
+
+    depth_variability = diff_gt_depths[gt_depth_mask]
+    diff_gt_depths/= depth_variability.max() + 1e-8
+    diff_gt_depths[~gt_depth_mask] = 0.0
+    diff_gt_depths = 1.0- diff_gt_depths
+
+#     print(diff_gt_depths.shape)
+
+# #    print(depth_variability.max().item(),depth_variability.min().item(),depth_variability.mean().item())
+#     import PIL.Image
+#     PIL.Image.fromarray(diff_gt_depths.cpu().contiguous().numpy()).save("diff_gt_depths.tiff")
+#     import sys
+#     sys.exit(0)
+
+
+
+
     # ignore < 1% errors
 
-    diff = torch.abs(gt_norm - out_norm)
+    diff = torch.abs((gt_norm - out_norm)*diff_gt_depths[gt_depth_mask])
 
     # l1 loss ignoring <1% errors
     diff = diff - 0.01

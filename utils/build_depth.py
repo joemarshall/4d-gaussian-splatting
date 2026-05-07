@@ -11,7 +11,7 @@ from PIL import Image
 # get camera intrinsics from colmap file 
 # and use that for depth-anything to generate depthmaps for image
 # ( the estimate is better than the DA estimate)
-def calculate_depths(output_path: Path):
+def calculate_depths(output_path: Path, ignore_existing: bool = False):
     def frame_and_camid_from_path(video_path):
         match = re.match(r"(?:\D)*(\d+)_(\d+)", video_path)
         if match:
@@ -22,6 +22,15 @@ def calculate_depths(output_path: Path):
         return ""
 
     image_path = output_path / "images"
+    images = image_path.glob("*.png")
+    image_names = [str(image.name) for image in images]
+    if ignore_existing:
+        image_names = [name for name in image_names if not (image_path / name.replace(".png", ".depth")).exists()]
+    
+    if len(image_names) == 0:
+        print("No images to process for depth calculation, skipping.")
+        return
+    
 
     print("Loading depth model")
     device = torch.device("cuda")

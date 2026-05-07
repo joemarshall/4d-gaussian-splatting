@@ -9,34 +9,74 @@ from PIL import Image
 import numpy as np
 from pathlib import Path
 from typing import List, Iterator
+from concurrent.futures import ThreadPoolExecutor
 
 import safetensors.torch
-
-# TODO: write permanent cache files into subfolder of image path based on the width
-# and return memorymapped tensor based on it
-# or perhaps .to_cuda on that tensor
 
 
 class ImageCache:
 
-    @staticmethod
-    def get_image_for_file(path, width, depth):
+    preload_cache = {}
+    executor = ThreadPoolExecutor(max_workers=10)
+
+
+    def loader_task(path,width,has_depth):
         cache_path = f"{path}_{width}.st"
         if os.path.exists(cache_path):
-            rval = safetensors.torch.load_file(cache_path,device="cuda")
-            if "depth" in rval and depth is None:
-                print("Cached image contains depth but not expected, ignoring cache")
-                return None,None
-            elif depth is None and "depth" in rval:
-                print("Cached image does not contain depth when expected, ignoring cache")
-                return None,None
-            r_img = rval["tensor"].to(device="cuda", dtype=torch.float32, non_blocking = True)
+            rval = safetensors.torch.load_file(cache_path,device="cpu")
+            if has_depth and "depth" not in rval:
+                print("Warning: expected depth but not found in cache for", path)
+            elif not has_depth and "depth" in rval:
+                print("Warning: found unexpected depth in cache for", path)
+            r_img = rval["tensor"].to(device="cuda", dtype=torch.float32, non_blocking = (has_depth == False))
             r_depth = None
-            if "depth" in rval and depth is not None:
+            if "depth" in rval:
                 r_depth = rval["depth"].to(device="cuda", dtype=torch.float32, non_blocking = True)
-            return r_img, r_depth
+            return (r_img,r_depth)
         else:
-            return None,None
+            return (None,None)
+
+
+    @staticmethod
+    def preload_image(path,width,has_depth):
+        # load into preload cache in a thread
+        # so that we can return it next call
+        if (path,width) not in ImageCache.preload_cache:
+            #print("Preloading image for", path,width)
+            ImageCache.preload_cache[(path,width)] = {"future": ImageCache.executor.submit(ImageCache.loader_task, path, width, has_depth),"refcount":1}
+        else:
+            ImageCache.preload_cache[(path,width)]["refcount"] += 1
+            #print("Already preloaded", path,width,ImageCache.preload_cache[(path,width)]["refcount"])
+    
+        return ImageCache.preload_cache[(path,width)]["future"]
+
+    @staticmethod
+    def get_image_for_file(path, width, has_depth):
+        cache_path = f"{path}_{width}.st"
+        if (path,width) not in ImageCache.preload_cache:
+            if os.path.exists(cache_path):
+                # load and wait
+                #print("Not preloaded but cache file exists, loading for", path)
+                ImageCache.preload_image(path,width,has_depth).result()
+            else:
+            # doesn't exist, return None
+                return None,None
+        cache_entry = ImageCache.preload_cache[(path,width)]
+        refcount = cache_entry["refcount"]
+        if refcount <= 1:
+            return ImageCache.preload_cache.pop((path,width))["future"].result()    
+        cache_entry["refcount"] -= 1
+        return ImageCache.preload_cache[(path,width)]["future"].result()
+
+        # if rval[0] is not None:
+        #     return rval
+        #     # r_img = rval["tensor"].to(device="cuda", dtype=torch.float32, non_blocking = True)
+        #     # r_depth = None
+        #     # if "depth" in rval and has_depth:
+        #     #     r_depth = rval["depth"].to(device="cuda", dtype=torch.float32, non_blocking = True)
+        #     # return r_img, r_depth
+        # else:
+        #     return None, None
 
     @staticmethod
     def set_image_for_file(path, width, tensor,depth):  
@@ -49,6 +89,41 @@ class ImageCache:
 
 
 class CameraDataset(Dataset):
+
+    class ReadAheadSampler(Sampler[List[int]]):
+        def __init__(self, dataset, child_sampler):
+            self.dataset = dataset
+            self.child_sampler = child_sampler
+
+        def __len__(self):
+            return len(self.child_sampler)
+        
+        def __iter__(self) -> Iterator[List[int]]:
+            # read ahead one batch 
+            child_iter = iter(self.child_sampler)
+            next_batch = None
+            done = False
+            readahead_buffer = []
+            readahead_batches = 1
+            while not done:
+                # count_in_progress = len([x for x in ImageCache.preload_cache.values() if x["future"].running() ])
+                # count_waiting = sum(x["refcount"] for x in ImageCache.preload_cache.values() if x["future"].done() )
+                # print("ReadAheadSampler buffer size:", len(readahead_buffer), "in progress:", count_in_progress,"ready:",count_waiting)
+                if len(readahead_buffer)<= readahead_batches and not done:
+                    try:
+                        next_batch =next(child_iter)
+                        for x in next_batch:
+                            ImageCache.preload_image(self.dataset.viewpoint_stack[x].image_path, self.dataset.viewpoint_stack[x].image_width, self.dataset.viewpoint_stack[x].depth is not None)
+                        readahead_buffer.append(next_batch)
+                    except StopIteration:
+                        print("ReadAheadSampler child sampler exhausted")
+                        done = True
+                if len(readahead_buffer) > readahead_batches:
+                    yield readahead_buffer.pop(0)
+                if done:
+                    while len(readahead_buffer) > 0:
+                        yield readahead_buffer.pop(0)
+
 
     class FrameSampler(Sampler[List[int]]):
         def __init__(self, dataset):
@@ -212,7 +287,7 @@ class CameraDataset(Dataset):
 
     def get_frame_batch_sampler(self, suggested_batch_size=4):
         # return CameraDataset.RandomSampler(self,batch_size=suggested_batch_size)
-        return CameraDataset.CameraAndFrameSampler(self)
+        return CameraDataset.ReadAheadSampler(self,CameraDataset.CameraAndFrameSampler(self))
 
     def metadata(self):
         return self.viewpoint_stack
@@ -221,7 +296,7 @@ class CameraDataset(Dataset):
         viewpoint_cam = self.viewpoint_stack[index]
         if viewpoint_cam.meta_only and not self.names_only:
             cached_image,cached_depth = ImageCache.get_image_for_file(
-                viewpoint_cam.image_path, viewpoint_cam.image_width, viewpoint_cam.depth
+                viewpoint_cam.image_path, viewpoint_cam.image_width, viewpoint_cam.depth is not None
             )
             if cached_image is not None:
                 #                print("Using cached image:", viewpoint_cam.image_path)
@@ -234,26 +309,29 @@ class CameraDataset(Dataset):
             arr = norm_data[:, :, :3] * norm_data[:, :, 3:4] + self.bg * (
                 1 - norm_data[:, :, 3:4]
             )
-            image_load = Image.fromarray(np.array(arr * 255.0, dtype=np.uint8), "RGB")
-            resized_image_rgb = PILtoTorch(image_load, viewpoint_cam.resolution)
-            resized_image_rgb.requires_grad = False
-            viewpoint_image = resized_image_rgb[:3, ...].clamp(0.0, 1.0)
-            if resized_image_rgb.shape[1] == 4:
-                gt_alpha_mask = resized_image_rgb[3:4, ...]
-                viewpoint_image *= gt_alpha_mask
+            if viewpoint_cam.resolution == 1:
+                viewpoint_image = arr
             else:
-                viewpoint_image *= torch.ones(
-                    (1, viewpoint_cam.image_height, viewpoint_cam.image_width)
-                )
+                image_load = Image.fromarray(np.array(arr * 255.0, dtype=np.uint8), "RGB")
+                resized_image_rgb = PILtoTorch(image_load, viewpoint_cam.resolution)
+                resized_image_rgb.requires_grad = False
+                viewpoint_image = resized_image_rgb[:3, ...].clamp(0.0, 1.0)
+                if resized_image_rgb.shape[1] == 4:
+                    gt_alpha_mask = resized_image_rgb[3:4, ...]
+                    viewpoint_image *= gt_alpha_mask
+                else:
+                    viewpoint_image *= torch.ones(
+                        (1, viewpoint_cam.image_height, viewpoint_cam.image_width)
+                    )
             depth = None
             viewpoint_image= viewpoint_image.contiguous()
             if viewpoint_cam.depth is not None:
                 depth = torch.load(viewpoint_cam.depth, map_location="cpu")
                 if depth.shape[-2:] != viewpoint_image.shape[-2:]:
-                    print("Resizing depth image")
+                    print("Resizing depth image from: ",depth.shape,viewpoint_image.shape)
                     depth = torch.nn.functional.interpolate(
                         depth.unsqueeze(0),
-                        size=viewpoint_image.shape[-2:],
+                        size=viewpoint_image.shape,
                         mode="nearest",
                     ).squeeze(0)
             ImageCache.set_image_for_file(

@@ -21,10 +21,14 @@ from utils.graphics_utils import (
     quaternion_slerp,
 )
 from kornia import create_meshgrid
-from copy import deepcopy
+from copy import copy, deepcopy
 
 class Camera:
     ray_cache = {}
+    # cache of projection matrices in cuda
+    # so we don't have to copy per camera
+    # when we have multiple frames from the same camera
+    projection_cache = {}
 
     def __init__(self, colmap_id, R, T, FoVx, FoVy, image, gt_alpha_mask,
                  image_name, uid,
@@ -50,8 +54,9 @@ class Camera:
         self.meta_only = meta_only
         self.trans = trans
         self.scale = scale
+        self.cached_cuda = None
 
-        self.cache_key = tuple(self.R.flatten().tolist() + self.T.flatten().tolist() + [self.FoVx, self.FoVy] + [self.cx, self.cy, self.fl_x, self.fl_y])
+        self.generate_cache_key()
         
         try:
             self.data_device = torch.device(data_device)
@@ -81,6 +86,9 @@ class Camera:
         Camera.ray_cache[self.cache_key] = None
         Camera.ray_cache[(*self.cache_key,"cuda")] = None
 
+    def generate_cache_key(self):
+        self.cache_key = tuple(self.R.flatten().tolist() + self.T.flatten().tolist() + [self.FoVx, self.FoVy] + [self.cx, self.cy, self.fl_x, self.fl_y])
+
     def update_projection(self):
         self.world_view_transform = torch.tensor(getWorld2View2(self.R, self.T, self.trans, self.scale)).transpose(0, 1)
         if self.cx > 0:
@@ -89,8 +97,7 @@ class Camera:
             self.projection_matrix = getProjectionMatrix(znear=self.znear, zfar=self.zfar, fovX=self.FoVx, fovY=self.FoVy).transpose(0,1)
         self.full_proj_transform = (self.world_view_transform.unsqueeze(0).bmm(self.projection_matrix.unsqueeze(0))).squeeze(0)
         self.camera_center = self.world_view_transform.inverse()[3, :3]
-        self.cached_rays = None
-        self.cached_cuda = None
+        self.generate_cache_key()
 
 
     def lerp_transform(self,camera_source,camera_target, lerp_factor):
@@ -118,19 +125,26 @@ class Camera:
     def cuda(self):
         if self.cached_cuda is not None:
             return self.cached_cuda
-        cuda_copy = deepcopy(self)
-        for k, v in cuda_copy.__dict__.items():
-            if isinstance(v, torch.Tensor):
-                cuda_copy.__dict__[k] = v.to(cuda_copy.data_device,non_blocking = True)
-        cuda_copy.cache_key = (*self.cache_key,"cuda")
+        if self.cache_key in Camera.projection_cache:
+             # shallow copy not deep copy so we don't copy tensors
+             cuda_copy = copy(self)
+             for x,y in Camera.projection_cache[self.cache_key].items():
+                 cuda_copy.__dict__[x] = y
+        else:
+            cuda_copy = deepcopy(self)
+            cache_entry = {}
+            for k, v in cuda_copy.__dict__.items():
+                if isinstance(v, torch.Tensor):
+                    cuda_copy.__dict__[k] = v.to(cuda_copy.data_device,non_blocking = True)
+                    cache_entry[k] = cuda_copy.__dict__[k]
+            Camera.projection_cache[self.cache_key] = cache_entry
+
         self.cached_cuda=cuda_copy
         return self.cached_cuda
 
 
     def __getstate__(self):
         state = self.__dict__.copy()
-        state['cached_rays'] = None
-        state['cached_cuda'] = None
         return state
     
 class MiniCam:

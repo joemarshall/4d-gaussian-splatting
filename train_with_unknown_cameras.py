@@ -221,6 +221,7 @@ def remap_colmap_ids_to_filename_camera_ids(images_data, frames_data):
 
 parser = argparse.ArgumentParser()
 parser.add_argument("video_folder", type=Path)
+parser.add_argument("--fix-camera-resolution","-f", action="store_true", help="Whether to fix the video resolution to be the same as the colmap camera resolution. This is useful if colmap fails to reconstruct any cameras due to unexpected video resolution, e.g. 1088p.")
 parser.add_argument("-o", "--output_folder", type=Path)
 parser.add_argument("-nf", "--num_frames", type=int, default=-1)
 parser.add_argument(
@@ -438,17 +439,19 @@ if args.use_existing_scene_poses is not None:
                     "for camera",
                     c,
                 )
-                sys.exit(-1)
-            multiplier = multiplier[0]
+            
+            def fix_multiplier(value, mult):
+                print("Fixing!", value, "with multiplier", mult)
+                return str(float(value) * mult)
 
-            def fix_multiplier(value, multiplier):
-                return str(float(value) * multiplier)
+            for i in range(2,len(cameras_file[c][0]),2):
+                cameras_file[c][0][i]=fix_multiplier(cameras_file[c][0][i], multiplier[0])
+                cameras_file[c][0][i+1]=fix_multiplier(cameras_file[c][0][i+1], multiplier[1])
 
-            cameras_file[c][0][2:7] = [
-                fix_multiplier(val, multiplier) for val in cameras_file[c][0][2:7]
-            ]
+
             print(cameras_file[c])
 
+    
     copied_data_folder = colmap_path / "copied_data"
     copied_data_folder.mkdir(exist_ok=True)
 
@@ -758,14 +761,53 @@ duration_seconds = max_frame_idx / 30
 
 
 # make depth image for each frame for training
-from utils.build_depth import build_depth_for_frames
+from utils.build_depth import calculate_depths
 
-build_depth_for_frames(args.output_folder)
-
-
+calculate_depths(args.output_folder, ignore_existing=True)
 
 
+if args.fix_camera_resolution:
+    cameras_file = ColmapFile(
+        sparse_output / "cameras.txt", 1
+    )  # verify we can read the existing poses
+    for c in cameras_file.keys():
+        print(c, cameras_file[c])
+        resolution = cameras_file[c][0][2:4]
+        resolution = (int(resolution[0]), int(resolution[1]))
+        if resolution != video_resolution:
+            print(
+                "Fixing resolution for camera",
+                c,
+                "from",
+                resolution,
+                "to",
+                video_resolution,
+            )
+            multiplier = (
+                video_resolution[0] / resolution[0],
+                video_resolution[1] / resolution[1],
+            )
+            if multiplier[0] != multiplier[1]:
+                print(
+                    "Warning: non-uniform resolution multiplier",
+                    multiplier,
+                    "for camera",
+                    c,
+                )
+            
+            def fix_multiplier(value, multiplier):
+                return str(float(value) * multiplier)
+            cameras_file[c][0][2] = video_resolution[0]
+            cameras_file[c][0][3] = video_resolution[1]
+            for i in range(4,len(cameras_file[c][0]),2):
+                cameras_file[c][0][i]=fix_multiplier(cameras_file[c][0][i], multiplier[0])
+                cameras_file[c][0][i+1]=fix_multiplier(cameras_file[c][0][i+1], multiplier[1])
 
+            print(cameras_file[c])
+
+
+
+    cameras_file.write(sparse_output / "cameras.txt")
 
 
 # write config file with default settings for training
@@ -824,22 +866,28 @@ OptimizationParams:
   densify_grad_threshold: 0.0002
   densify_grad_t_threshold: 0.0002 / 40
   densify_grad_abs_threshold: 0.0012
-  densify_until_num_points: -1
+  densify_until_num_points: 3000000
   final_prune_from_iter: -1
   sh_increase_interval: 1000
   lambda_opa_mask: 0.0
   lambda_rigid: 0.0
   lambda_motion: 0.0
-  lambda_depth: 0.0
+  lambda_depth: 0.2
   lambda_dssim: 0.2
+  lambda_opa_bistable: 0.2
   prune_st_score_threshold: 0.1
   fastgs_num_sample_cams: 90
-  fastgs_final_num_sample_cams: 90
+  fastgs_final_prune_num_sample_cams: 90
   fastgs_final_prune_from_iter: 20_000
   fastgs_final_prune_min_opacity: 0.05
   fastgs_final_prune_interval: 1000
+  fastgs_densify_repeat_count: 3
   fastgs_loss_thresh: 0.01
+  split_on_long_axis: True
   lff_diffscale: True
+  lff_densify_grad_threshold: 0.0002
+  lff_densify_from_iter: 550
+  time_space_pruning_iterations: 25000
 
 """.replace("\\", "\\\\")
 (args.output_folder / "config.yaml").write_text(train_file_data)

@@ -103,6 +103,7 @@ class GaussianModel:
         self._scaling = torch.empty(0)
         self._rotation = torch.empty(0)
         self._opacity = torch.empty(0)
+        self._visible_range = torch.empty(0)
         self.tmp_radii = None
         self.optimizer = None
         self.shoptimizer = None
@@ -371,6 +372,34 @@ class GaussianModel:
             return actual_covariance[:, 3, 3].unsqueeze(1)
         else:
             return self.get_scaling_t * scaling_modifier
+        
+    def update_t_visible_range(self, mask=None,scaling_modifier=1):
+        if self._visible_range is None or self._visible_range.shape[0] != self.get_xyz.shape[0]:
+            self._visible_range = torch.empty(self.get_xyz.shape[0], device=self.get_xyz.device)
+            mask = None
+        if mask is not None:
+            mask = mask.squeeze()
+            scale = scaling_modifier * self.get_scaling_xyzt[mask]
+            rotation = self._rotation[mask]
+            rotation_r = self._rotation_r[mask]
+        else:
+            scale = scaling_modifier *self.get_scaling_xyzt
+            rotation = self._rotation
+            rotation_r = self._rotation_r
+        #print("SCALE:",scale,"MASK:",mask,"ROT:",rotation,"ROT_R:",rotation_r)
+        L = build_scaling_rotation_4d(
+            scale,
+            rotation,
+            rotation_r,
+        )
+        actual_covariance = L @ L.transpose(1, 2)
+        cov_t =actual_covariance[:, 3, 3]#.unsqueeze(1)
+        sd_t = torch.sqrt(cov_t)
+        # opacity multiplier is 0.05 at this point
+        #visible_range = 1.96 * sd_t
+        # opacity multiplier is 0.01 at this point
+        visible_range = 2.576 * sd_t
+        self._visible_range[mask]= visible_range
 
     def get_marginal_t(self, timestamp, scaling_modifier=1):  # Standard
         sigma = self.get_cov_t(scaling_modifier)
@@ -472,18 +501,18 @@ class GaussianModel:
         assert self.gaussian_dim == 4 and self.rot_4d
         self.spatial_lr_scale = spatial_lr_scale
         init_4d_gaussian = torch.load(path, mmap=True)
-        fused_point_cloud = init_4d_gaussian["xyz"].cuda()
-        features_dc = init_4d_gaussian["features_dc"].cuda()
-        features_rest = init_4d_gaussian["features_rest"].cuda()
-        fused_times = init_4d_gaussian["t"].cuda()
+        fused_point_cloud = init_4d_gaussian["xyz"].cuda().contiguous()
+        features_dc = init_4d_gaussian["features_dc"].cuda().contiguous()
+        features_rest = init_4d_gaussian["features_rest"].cuda().contiguous()
+        fused_times = init_4d_gaussian["t"].cuda().contiguous()
         print("Number of points at initialisation : ", fused_point_cloud.shape[0])
 
-        scales = init_4d_gaussian["scaling"].cuda()
-        rots = init_4d_gaussian["rotation"].cuda()
-        scales_t = init_4d_gaussian["scaling_t"].cuda()
-        rots_r = init_4d_gaussian["rotation_r"].cuda()
+        scales = init_4d_gaussian["scaling"].cuda().contiguous()
+        rots = init_4d_gaussian["rotation"].cuda().contiguous()
+        scales_t = init_4d_gaussian["scaling_t"].cuda().contiguous()
+        rots_r = init_4d_gaussian["rotation_r"].cuda().contiguous()
 
-        opacities = init_4d_gaussian["opacity"].cuda()
+        opacities = init_4d_gaussian["opacity"].cuda().contiguous()
 
         self._xyz = nn.Parameter(fused_point_cloud.requires_grad_(True))
         self._features_dc = nn.Parameter(
@@ -710,6 +739,7 @@ class GaussianModel:
 
     def prune_points(self, mask):
         valid_points_mask = ~mask
+        print("Stride before",self._xyz.stride())
         if self.training:
             optimizable_tensors = self._prune_optimizer(valid_points_mask)
 
@@ -742,6 +772,7 @@ class GaussianModel:
                 if self.rot_4d:
                     self._rotation_r = self._rotation_r[valid_points_mask]
 
+        print("Stride after",self._xyz.stride(),self._xyz.contiguous().stride())
         # print("Tensor shapes after prune:")
         # for attr in dir(self):
         #     var = getattr(self, attr)

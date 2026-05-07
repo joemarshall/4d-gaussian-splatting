@@ -101,7 +101,6 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
     
     Background tensor (bg_color) must be on GPU!
     """
-
     tensor_gradient_2d_buffer.grad=None
     screenspace_points = tensor_gradient_2d_buffer
 
@@ -121,6 +120,7 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
     ts = None
     cov3D_precomp = None
     prefilter_var = -1.0
+    marginal_t = None
     if pipe.compute_cov3D_python:
         if pc.rot_4d:
             cov3D_precomp, delta_mean = pc.get_current_covariance_and_mean_offset(scaling_modifier, viewpoint_camera.timestamp)
@@ -170,6 +170,7 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
     flow_2d = torch.zeros_like(pc.get_xyz[:,:2])
     
     # Prefilter
+    mask = None
     if pipe.compute_cov3D_python and pc.gaussian_dim == 4:
         mask = marginal_t[:,0] > 0.05
         if means2D is not None:
@@ -196,7 +197,6 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
             cov3D_precomp = cov3D_precomp[mask]
         if flow_2d is not None:
             flow_2d = flow_2d[mask]
-    
     # Rasterize visible Gaussians to image, obtain their radii (on screen). 
     if USE_FASTGS:
         dc = shs [:,0:1]
@@ -251,12 +251,17 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
         # mask2 = (0 < xyz_inter[...,0]) & (xyz_inter[...,1] > 0) # & (xyz_inter[...,2] > -19)
         rendered_image = rendered_image + (1 - alpha) * bg_color_from_envmap # * mask2[None]
     
-    if pipe.compute_cov3D_python and pc.gaussian_dim == 4:
+    if mask is not None:
         radii_all = radii.new_zeros(mask.shape)
         radii_all[mask] = radii
     else:
         radii_all = radii
-
+    # with torch.no_grad():
+    #     vis_range = pc._visible_range
+    #     if vis_range is not None and vis_range.shape[0] == means3D.shape[0]:
+    #         time_offset = torch.abs(ts.squeeze() - viewpoint_camera.timestamp)
+    #         visibles_time =  time_offset < vis_range
+#            print(torch.sum(visibles_time), "visible gaussians out of", radii_all.shape[0])
     if USE_FASTGS:
         return {"render": rendered_image,
                 "viewspace_points": screenspace_points,

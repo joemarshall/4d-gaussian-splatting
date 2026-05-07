@@ -294,13 +294,13 @@ def graph_camera_positions_3d(
     plt.show()
 
 
-@torch.compile
+#@torch.compile
 def render_wrapper(
     view, gaussians, pipeline, background, tensor_gradient_2d_buffer, max_distance=4.0
 ):
-    # copy_opacity = gaussians._opacity.clone()
-    # clipped = gaussians._xyz.norm(dim=1)>max_distance
-    # gaussians._opacity[clipped] = -20.0
+    copy_opacity = gaussians._opacity.clone()
+    clipped = gaussians._xyz.norm(dim=1)>max_distance
+    gaussians._opacity[clipped] = -20.0
 
     render_result = render(
         view, gaussians, pipeline, background, tensor_gradient_2d_buffer
