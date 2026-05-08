@@ -298,9 +298,9 @@ def graph_camera_positions_3d(
 def render_wrapper(
     view, gaussians, pipeline, background, tensor_gradient_2d_buffer, max_distance=4.0
 ):
-    copy_opacity = gaussians._opacity.clone()
-    clipped = gaussians._xyz.norm(dim=1)>max_distance
-    gaussians._opacity[clipped] = -20.0
+#    copy_opacity = gaussians._opacity.clone()
+#    clipped = gaussians._xyz.norm(dim=1)>max_distance
+#    gaussians._opacity[clipped] = -20.0
 
     render_result = render(
         view, gaussians, pipeline, background, tensor_gradient_2d_buffer
@@ -568,13 +568,13 @@ try:
             model,pipeline,scene,gaussians = get_model_pipeline_scene_gaussians(args.output_folder,args.override_pth)
 
 
-            prune_mask = (gaussians.get_opacity < 0.9).squeeze()
+            #prune_mask = (gaussians.get_opacity < 0.9).squeeze()
             # cov_t = gaussians.get_cov_t()
             # static_threshold = torch.quantile(cov_t, 0.5)
 #            prune_mask|= (cov_t > static_threshold).squeeze()
-            clone_split_prune(gaussians, None, None, prune_mask)
-            print("Pruned:",prune_mask.shape[0]," -> ",gaussians.get_xyz.shape[0])
-            gaussians.reset_opacity(max_val = 1.0, min_val=1.0)
+            #clone_split_prune(gaussians, None, None, prune_mask)
+            #print("Pruned:",prune_mask.shape[0]," -> ",gaussians.get_xyz.shape[0])
+            #gaussians.reset_opacity(max_val = 1.0, min_val=1.0)
             
 
             print(f"Loaded model, {len(gaussians.get_xyz)} gaussians")

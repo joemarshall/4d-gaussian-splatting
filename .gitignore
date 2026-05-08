@@ -36,3 +36,4 @@ results/
 *.png
 temp*.*
 *.pth
+*.ncu-rep

@@ -86,7 +86,7 @@ class TimeSpacePruner(DensifierBase):
         bad_points = (st_sums < 0.001) & ~invisibles
         print("Num < 0.001",bad_points.sum().item())
 
-        clone_split_prune(gaussians,prunes = invisibles|bad_points)
+        clone_split_prune(gaussians,prunes = invisibles)
 
 
     def add_densification_stats_grad(self,*,gaussians,iteration,viewspace_point_grad,update_filter, radii,avg_t_gradient):

@@ -359,7 +359,7 @@ def training(
         num_pts_ratio=num_pts_ratio,
         time_duration=time_duration,
     )
-    gaussians.training_setup(opt)
+    gaussians.training_setup(opt, batch_size_mult=batch_size)
 
     if checkpoint == "auto_latest":
         all_checkpoints = [
@@ -472,7 +472,7 @@ def training(
         + 0
     )
     tensor_gradient_2d_buffer.retain_grad()
-
+    total_training_points = 0
     iteration = first_iter
     while not stop_iteration and iteration < opt.iterations + 1:
 
@@ -500,11 +500,12 @@ def training(
                 times = []
                 times.append(("start", time.monotonic()))
 
+
             if CUDA_EVENTS:
                 iter_start.record()
-            gaussians.update_learning_rate(iteration)
+            gaussians.update_learning_rate(iteration,total_training_points)
             # Every 1000 its we increase the levels of SH up to a maximum degree
-            if iteration % opt.sh_increase_interval == 0:
+            if iteration> opt.sh_increase_start and (iteration - opt.sh_increase_start) % opt.sh_increase_interval == 0:
                 gaussians.oneupSHdegree()
 
             if SHOW_TIMINGS:
@@ -519,6 +520,9 @@ def training(
             # update batch size based on what the dataloader returns (e.g. for 4d
             # with frame batch sampler the batch size is cameras per-frame)
             batch_size = len(batch_data)
+
+            total_training_points+= batch_size
+
             ts_batch = batch_data[0][1].timestamp
             batch_data = [
                 (data[0].cuda(), data[1].cuda(), data[2].cuda()) for data in batch_data
@@ -538,8 +542,6 @@ def training(
                     + 0
                 )
                 tensor_gradient_2d_buffer.retain_grad()
-
-            # print("Training {} gaussians on batch of size {} at iteration {} (timestamp {})".format(gaussians.get_xyz.shape[0], batch_size, iteration, ts_batch))
 
             args = (
                 batch_data,

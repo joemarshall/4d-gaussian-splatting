@@ -530,35 +530,34 @@ class GaussianModel:
         self._scaling_t = nn.Parameter(scales_t.requires_grad_(True))
         self._rotation_r = nn.Parameter(rots_r.requires_grad_(True))
 
-    def training_setup(self, training_args, reset_accumulated_gradients=True):
+    def training_setup(self, training_args, reset_accumulated_gradients=True,batch_size_mult = 1.0):
         self.percent_dense = training_args.percent_dense
         for densifier in self.densifiers:
             densifier.training_setup(self, reset_accumulated_gradients)
-
         l = [
             {
                 "params": [self._xyz],
-                "lr": training_args.position_lr_init * self.spatial_lr_scale,
+                "lr": batch_size_mult *training_args.position_lr_init * self.spatial_lr_scale,
                 "name": "xyz",
             },
             {
                 "params": [self._features_dc],
-                "lr": training_args.lowfeature_lr,
+                "lr": batch_size_mult * training_args.lowfeature_lr,
                 "name": "f_dc",
             },
             {
                 "params": [self._opacity],
-                "lr": training_args.opacity_lr,
+                "lr": batch_size_mult * training_args.opacity_lr,
                 "name": "opacity",
             },
             {
                 "params": [self._scaling],
-                "lr": training_args.scaling_lr,
+                "lr": batch_size_mult * training_args.scaling_lr,
                 "name": "scaling",
             },
             {
                 "params": [self._rotation],
-                "lr": training_args.rotation_lr,
+                "lr": batch_size_mult * training_args.rotation_lr,
                 "name": "rotation",
             },
         ]
@@ -566,25 +565,25 @@ class GaussianModel:
         sh_l = [
             {
                 "params": [self._features_rest],
-                "lr": training_args.highfeature_lr / 20.0,
+                "lr": batch_size_mult * training_args.highfeature_lr / 20.0,
                 "name": "f_rest",
             }
         ]
 
         if self.gaussian_dim == 4:
             if training_args.position_t_lr_init < 0:
-                training_args.position_t_lr_init = training_args.position_lr_init
+                training_args.position_t_lr_init = batch_size_mult *training_args.position_lr_init
             l.append(
                 {
                     "params": [self._t],
-                    "lr": training_args.position_t_lr_init * self.spatial_lr_scale,
+                    "lr": batch_size_mult * training_args.position_t_lr_init * self.spatial_lr_scale,
                     "name": "t",
                 }
             )
             l.append(
                 {
                     "params": [self._scaling_t],
-                    "lr": training_args.scaling_lr,
+                    "lr": batch_size_mult *training_args.scaling_lr,
                     "name": "scaling_t",
                 }
             )
@@ -592,7 +591,7 @@ class GaussianModel:
                 l.append(
                     {
                         "params": [self._rotation_r],
-                        "lr": training_args.rotation_lr,
+                        "lr": batch_size_mult * training_args.rotation_lr,
                         "name": "rotation_r",
                     }
                 )
@@ -644,11 +643,18 @@ class GaussianModel:
         #     visible = radii > 0
         #     self.optimizer.step(visible,radii.shape[0])
 
-    def update_learning_rate(self, iteration):
+    def update_learning_rate(self, iteration,total_iterations):
         """Learning rate scheduling per step"""
+        # n.b. if we are batched, we use total_iterations not iteration
+        # to calculate learning rates
+        # and multiply learning rate by batch size
+        if total_iterations > 0:
+            batch_size = iteration / total_iterations
+        else:
+           batch_size = 1.0 
         for param_group in self.optimizer.param_groups:
             if param_group["name"] == "xyz":
-                lr = self.xyz_scheduler_args(iteration)
+                lr = batch_size * self.xyz_scheduler_args(total_iterations)
                 param_group["lr"] = lr
                 return lr
             # if param_group["name"] == "t" and self.gaussian_dim == 4:
@@ -739,7 +745,6 @@ class GaussianModel:
 
     def prune_points(self, mask):
         valid_points_mask = ~mask
-        print("Stride before",self._xyz.stride())
         if self.training:
             optimizable_tensors = self._prune_optimizer(valid_points_mask)
 
@@ -772,12 +777,6 @@ class GaussianModel:
                 if self.rot_4d:
                     self._rotation_r = self._rotation_r[valid_points_mask]
 
-        print("Stride after",self._xyz.stride(),self._xyz.contiguous().stride())
-        # print("Tensor shapes after prune:")
-        # for attr in dir(self):
-        #     var = getattr(self, attr)
-        #     if isinstance(var, torch.Tensor):
-        #         print(f"Tensor {attr} has shape {var.shape}")
 
     def cat_one_tensor_to_optimizer(self, tensor, name):
         for group in self.optimizer.param_groups:

@@ -239,11 +239,6 @@ __global__ void preprocessCUDA(int P, int D, int D_t, int M,
 	radii[idx] = 0;
 	tiles_touched[idx] = 0;
 
-	// // Perform near culling, quit if outside.
-	// float3 p_view;
-	// if (!in_frustum(idx, orig_points, viewmatrix, projmatrix, prefiltered, p_view))
-	// 	return;
-
 	float opacity = opacities[idx];
 	// very low opacity, don't even project
 	if(opacity<0.01)return;

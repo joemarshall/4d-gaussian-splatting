@@ -252,8 +252,24 @@ parser.add_argument(
     "another scene which has poses already",
 )
 
+parser.add_argument("--colmap_path","-c",type=str)
 
-class ColmapRunner:
+
+class ColmapRunnerPath:
+    def __init__(self,path):
+        self.path = path
+
+    def run_cmd(self,args):
+        if args[0]=="colmap":
+            args[0] = self.path
+            args = [str(x) if type(x) != str else x for x in args]
+        else:
+            args = [self.path]+[str(x) if type(x) != str else x for x in args]
+        print("Running colmap command:", " ".join(args))
+        result = subprocess.check_output(args, text=True,shell=True)
+        print(f"Command output: {result}")
+
+class ColmapRunnerDocker:
     def __init__(self, root_path):
         if root_path.endswith("/"):
             root_path = root_path[:-1]
@@ -281,6 +297,7 @@ class ColmapRunner:
             "wsl",
             "docker",
             "run",
+            "-it",
             "--runtime=nvidia",
             f"-v",
             f".:/working",
@@ -289,28 +306,32 @@ class ColmapRunner:
         print("Running colmap command:", " ".join(args))
         result = subprocess.check_output(args, text=True)
         print(f"Command output: {result}")
-        args = [
-            "docker",
-            "run",
-            "--runtime=nvidia",
-            "-it",
-            f"-v",
-            f".:/working",
-            "colmap/colmap:latest",
-            "chown",
-            "-R",
-            # f"{os.getuid()}:{os.getgid()}",
-            "/working",
-        ]
-        # result = subprocess.run(args, text=True)
-        print("Chown done")
+        # args = [
+        #     "wsl",
+        #     "docker",
+        #     "run",
+        #     "--runtime=nvidia",
+        #     "-it",
+        #     f"-v",
+        #     f".:/working",
+        #     "colmap/colmap:latest",
+        #     "chown",
+        #     "-R",
+        #     # f"{os.getuid()}:{os.getgid()}",
+        #     "/working",
+        # ]
+        # # result = subprocess.run(args, text=True)
+        # print("Chown done")
 
 
 args = parser.parse_args()
 if args.output_folder is None:
     args.output_folder = Path("output") / (args.video_folder.stem)
 args.output_folder = args.output_folder.resolve()
-colmap = ColmapRunner(os.getcwd())
+if args.colmap_path is not None:
+    colmap = ColmapRunnerPath(args.colmap_path)    
+else:
+    colmap = ColmapRunnerDocker(os.getcwd())
 
 args.output_folder.mkdir(parents=True, exist_ok=True)
 
@@ -358,15 +379,15 @@ for i, video_path in enumerate(sorted(args.video_folder.glob("*.mp4"))):
                 video_resolution = (int(split_line[0]), int(split_line[1]))
                 print(f"Detected video resolution: {video_resolution}")
                 break
-    image_folder = args.output_folder / "images"
+    distorted_image_folder = args.output_folder / "images_distorted"
     if (
-        not image_folder.exists()
+        not distorted_image_folder.exists()
         or not (
-            image_folder / f"cam{camera_id_from_path(video_path,i)}_00000.png"
+            distorted_image_folder / f"cam{camera_id_from_path(video_path,i)}_00000.png"
         ).exists()
     ):
-        print(f"Extracting frames from {video_path} to {image_folder}")
-        image_folder.mkdir(exist_ok=True)
+        print(f"Extracting frames from {video_path} to {distorted_image_folder}")
+        distorted_image_folder.mkdir(exist_ok=True)
         print(f"Getting frames from {video_path}")
         result = subprocess.check_output(
             [
@@ -378,7 +399,7 @@ for i, video_path in enumerate(sorted(args.video_folder.glob("*.mp4"))):
             ]
             + ffmpeg_time_limit
             + [
-                str(image_folder / f"cam{camera_id_from_path(video_path,i)}_%05d.png"),
+                str(distorted_image_folder / f"cam{camera_id_from_path(video_path,i)}_%05d.png"),
             ],
             stderr=subprocess.STDOUT,
             text=True,
@@ -392,17 +413,26 @@ colmap_path = args.output_folder / "colmap"
 colmap_path.mkdir(exist_ok=True)
 
 # 3) copy *_00000.png into colmap_path/images, except for camera 0, saved for testing purposes
-image_folder = args.output_folder / "images"
+distorted_image_folder = args.output_folder / "images_distorted"
 colmap_images_folder = colmap_path / "images"
 colmap_images_folder.mkdir(exist_ok=True)
-for image in image_folder.glob("*_00000.png"):
+for image in distorted_image_folder.glob("*_00000.png"):
     if split_frame_name(image.name)[1] != 0:
         shutil.copy(image, colmap_images_folder)
 
 colmap_database = colmap_path / "database.db"
 
+sparse_output = colmap_path / "sparse"
+sparse_output.mkdir(exist_ok=True)
 
-if args.use_existing_scene_poses is not None:
+dense_output = colmap_path / "dense" / "0"
+dense_output.mkdir(parents=True, exist_ok=True)
+
+sparse_final = args.output_folder / "sparse" / "0"
+
+if (sparse_final / "images.txt").exists():
+    print(f"Colmap output already exists at {sparse_final}, skipping colmap reconstruction.")
+elif args.use_existing_scene_poses is not None:
     print("Using existing scene poses from", args.use_existing_scene_poses)
     existing_scene_sparse = args.use_existing_scene_poses / "colmap" / "text_model"
     images_file = ColmapFile(
@@ -455,11 +485,6 @@ if args.use_existing_scene_poses is not None:
     copied_data_folder = colmap_path / "copied_data"
     copied_data_folder.mkdir(exist_ok=True)
 
-    sparse_output = colmap_path / "sparse"
-    sparse_output.mkdir(exist_ok=True)
-
-    dense_output = colmap_path / "dense" / "0"
-    dense_output.mkdir(parents=True, exist_ok=True)
 
     images_file.write(copied_data_folder / "images.txt")
     points_file.write(copied_data_folder / "points3D.txt")
@@ -578,9 +603,71 @@ else:
         ]
     )    
 
+
+
+# now undistort all the other images based on 
+# the reconstructed cameras
+
+image_folder = args.output_folder / "images"
+if not image_folder.exists():
+    image_folder.mkdir(exist_ok=True)
+
+if len(list(image_folder.glob(f"cam*_*.png"))) < len(list(distorted_image_folder.glob(f"cam*_*.png"))):
+    colmap_src_images = args.output_folder / "colmap" / "images"
+    colmap_dst_images = args.output_folder / "colmap" / "dense" / "0" / "images"
+    colmap_sparse_camera = args.output_folder / "colmap" / "sparse" /"0"
+    num_cameras = 0
+    for image in colmap_src_images.glob("*_00000.png"):
+        num_cameras += 1
+
+    frame_id = -1
+    while True:
+        frame_id += 1
+        images = list(distorted_image_folder.glob(f"cam*_{frame_id:05d}.png"))
+        if len(images) == 0:
+            break
+        print(len(images),"!",frame_id)
+        print(len([x for x in images if (image_folder / x.name).exists()]))
+        if len([x for x in images if (image_folder / x.name).exists()]) == len(images):
+            print(f"Frame {frame_id} already undistorted, skipping.")
+            continue
+        for image in colmap_dst_images.glob("*_00000.png"):
+            image.unlink()
+
+        if len(images) != num_cameras:
+            continue
+        name_map = {}
+        for x in images:
+            cam_zero_name = f"cam{camera_id_from_path(x,i)}_00000.png"
+            name_map[x] = cam_zero_name
+            shutil.copy2(x, colmap_src_images / cam_zero_name)
+        print("Undistorting frame", frame_id, "with images", images)
+        colmap.run_cmd(
+            [
+                "colmap",
+                "image_undistorter",
+                "--image_path",
+                colmap_src_images,
+                "--input_path",
+                colmap_sparse_camera,
+                "--output_path",
+                dense_output,
+            ]
+        )
+
+        for x in images:
+            cam_zero_name = name_map[x]
+            shutil.copy2(colmap_dst_images / cam_zero_name, image_folder / x.name)
+
+
+
+
+
+
+
+
 # copy the output into output_folder/sparse/0
 colmap_dense_sparse = colmap_path / "dense" / "0" / "sparse"
-sparse_output = args.output_folder / "sparse" / "0"
 
 
 # convert the final model to text format so we can read the focal length etc.
@@ -594,7 +681,7 @@ colmap.run_cmd(
         "--output_type",
         "TXT",
         "--output_path",
-        sparse_output,
+        sparse_final,
     ]
 )
 
@@ -610,12 +697,12 @@ if (
     import_scene_path = args.replace_cameras_from_scene
     if import_scene_path is None:
         import_scene_path = args.import_missing_cameras_from_scene
-    our_camera_list = ColmapFile(sparse_output / "images.txt", 2)
+    our_camera_list = ColmapFile(sparse_final / "images.txt", 2)
     import_camera_list = ColmapFile(
         import_scene_path / "colmap" / "text_model" / "images.txt", 2
     )
 
-    our_camera_frames = ColmapFile(sparse_output / "frames.txt", 1)
+    our_camera_frames = ColmapFile(sparse_final / "frames.txt", 1)
     import_camera_frames = ColmapFile(
         import_scene_path / "colmap" / "text_model" / "frames.txt", 1
     )
@@ -745,8 +832,8 @@ if (
 
     remap_colmap_ids_to_filename_camera_ids(new_camera_list, new_camera_frames)
 
-    new_camera_list.write(sparse_output / "images.txt")
-    new_camera_frames.write(sparse_output / "frames.txt")
+    new_camera_list.write(sparse_final / "images.txt")
+    new_camera_frames.write(sparse_final / "frames.txt")
 
 # find max frame number
 all_frames = (args.output_folder / "images").glob("*.png")
@@ -818,7 +905,7 @@ num_pts: {max_frame_idx}_000
 num_pts_ratio: 1.0
 rot_4d: True
 force_sh_3d: False
-batch_size: 4
+batch_size: {num_cameras}
 exhaust_test: True
 
 ModelParams:
@@ -868,6 +955,7 @@ OptimizationParams:
   densify_grad_abs_threshold: 0.0012
   densify_until_num_points: 3000000
   final_prune_from_iter: -1
+  sh_increase_start: 5000
   sh_increase_interval: 1000
   lambda_opa_mask: 0.0
   lambda_rigid: 0.0
