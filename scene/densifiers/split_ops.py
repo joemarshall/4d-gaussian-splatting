@@ -1,7 +1,7 @@
 import torch
 
 
-from utils.general_utils import inverse_sigmoid,build_rotation, build_rotation_4d
+from utils.general_utils import inverse_sigmoid,build_rotation, build_rotation_4d, build_scaling_rotation_4d
 
 def densify_and_split(gaussians, selected_pts_mask, N=2):
     n_init_points = gaussians.get_xyz.shape[0]
@@ -77,7 +77,7 @@ def densify_and_clone(gaussians,selected_pts_mask,N=2):
     )
 
 
-def densify_and_split_long_axis(gaussians, selected_pts_mask, rate=1.5, N=2):
+def densify_and_split_long_axis(gaussians, selected_pts_mask, *,rate=0.9, N=2):
     assert( N==2) # long axis split only implemented for 2x splits for now
 
     # non geometric things
@@ -88,30 +88,42 @@ def densify_and_split_long_axis(gaussians, selected_pts_mask, rate=1.5, N=2):
 
 
     if gaussians.rot_4d:
-        # rotation in x,y,z and t offset on largest axis
+        # rotation in x,y,z and t
+        
         stds = gaussians.get_scaling_xyzt[selected_pts_mask]
-        _max_values, max_indices = torch.max(stds, dim=1, keepdim=True)
+        scale_rot = build_scaling_rotation_4d(stds,gaussians._rotation[selected_pts_mask], gaussians._rotation_r[selected_pts_mask])
+        max_values, max_indices = torch.max(stds, dim=1, keepdim=True)
+#         print("Axis splits:")
+#         print(torch.histogram(max_indices.detach().to(dtype=torch.float32, device="cpu"), bins=4))
+# #        rotated_scales = torch.bmm(rots, stds.unsqueeze(-1)).squeeze(-1)
+#         print(stds.shape,scale_rot.shape)
+#         print("Avg scale-rot values:")
+#         rotation_sums = torch.mean(torch.abs(scale_rot), dim = 0)
+#         print(rotation_sums)
+#         _,tmax_axis = torch.max(scale_rot,dim = 1,keepdim= True)
+#         print(tmax_axis.shape)
+#         axis_sum = torch.zeros((tmax_axis.shape[0],4,4),device=tmax_axis.device)
+#         axis_sum.scatter_(0,tmax_axis,torch.ones_like(tmax_axis,dtype=torch.float32))
+#         print("TMax axis:")
+#         print(torch.mean(axis_sum,dim=0))
+# #        print(torch.histogram(tmax_axis.detach().to(dtype=torch.float32, device="cpu"), bins=4))
 
-
-        mask = torch.zeros_like(stds, dtype=torch.bool).scatter_(1, max_indices, True)
+        mask = torch.zeros_like(stds, dtype=torch.bool, device = stds.device).scatter_(1, max_indices, True)
         samples = stds * mask * 1.5
         offsets = torch.linspace(-1.0,1.0,steps = N,device = mask.device,dtype = stds.dtype)
         
-#        samples = torch.cat([samples, -samples], dim=0)
         # this could probably be done with bmm, but this is clearer and N is small
         samples = torch.cat([offsets[x] * samples for x in range(N)], dim=0)
 
         rots = build_rotation_4d(gaussians._rotation[selected_pts_mask], gaussians._rotation_r[selected_pts_mask]).repeat(N, 1, 1)
-
         new_xyzt = torch.bmm(rots, samples.unsqueeze(-1)).squeeze(-1) + gaussians.get_xyzt[selected_pts_mask].repeat(N, 1)
         new_xyz = new_xyzt[...,0:3]
         new_t = new_xyzt[...,3:4]
-        new_scaling_xyzt = gaussians.scaling_inverse_activation(gaussians.get_scaling_xyzt[selected_pts_mask].repeat(N,1) / (0.8*N))
+        new_scaling_xyzt = gaussians.scaling_inverse_activation(stds.scatter_(1, max_indices, max_values / N).repeat(N,1)*rate)
         
         new_scaling_t = new_scaling_xyzt[...,3:4]
         new_scaling = new_scaling_xyzt[...,0:3]
 
-        new_scaling_t = gaussians.scaling_inverse_activation(gaussians.get_scaling_t[selected_pts_mask].repeat(N,1) / (0.8*N))
         new_rotation_r = gaussians._rotation_r[selected_pts_mask].repeat(N,1)
 
     else:
@@ -178,7 +190,7 @@ def clone_split_prune(gaussians, clones=None,splits=None,prunes=None,*,repeat_co
     # we just need to make the other tensors bigger
     if splits is not None:
         if long_axis_split:
-            densify_and_split_long_axis(gaussians,splits,repeat_count)
+            densify_and_split_long_axis(gaussians,splits,N=repeat_count)
         else:
             splits = torch.cat([splits, torch.zeros((gaussians.get_xyz.shape[0] - splits.shape[0]), device=splits.device, dtype=torch.bool)])
             densify_and_split(gaussians, splits, repeat_count)
@@ -206,6 +218,7 @@ def clone_split_prune(gaussians, clones=None,splits=None,prunes=None,*,repeat_co
          scaling_histogram = ""
 
     mean_dc = torch.mean(gaussians.get_sh_features_dc)
-    print(f"mean_opacity: {mean_opacity}, mean_scaling: {mean_scaling}, mean_cov_t: {mean_cov_t}")
+    min_opacity = torch.min(gaussians.get_opacity).item()
+    print(f"min_opacity: {min_opacity}, mean_opacity: {mean_opacity}, mean_scaling: {mean_scaling}, mean_cov_t: {mean_cov_t}")
     print(f"mean_dc: {mean_dc}")
     print("Time scaling histogram:",scaling_histogram)

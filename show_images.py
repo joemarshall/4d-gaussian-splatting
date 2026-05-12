@@ -332,6 +332,8 @@ def get_model_pipeline_scene_gaussians(output_folder,override_pth):
         ]
 
         render_parser = argparse.ArgumentParser(description="Render params")
+        render_parser.add_argument("--rot_4d", action="store_true")
+
         model = ModelParams(render_parser, sentinel=True)
         pipeline = PipelineParams(render_parser)
         render_args = get_combined_args(render_parser, cmdlne_string=render_cmdline)
@@ -353,7 +355,7 @@ def get_model_pipeline_scene_gaussians(output_folder,override_pth):
         model = model.extract(render_args)
         pipeline = pipeline.extract(render_args)
 
-        gaussians = GaussianModel(model.sh_degree, gaussian_dim=4, rot_4d=True)
+        gaussians = GaussianModel(model.sh_degree, gaussian_dim=4, rot_4d=render_args.rot_4d)
 
         scene = Scene(model, gaussians, shuffle=False)
         return model,pipeline,scene,gaussians
@@ -568,11 +570,13 @@ try:
             model,pipeline,scene,gaussians = get_model_pipeline_scene_gaussians(args.output_folder,args.override_pth)
 
 
+            prune_mask = gaussians._xyz.norm(dim=1)>4.0
+
             #prune_mask = (gaussians.get_opacity < 0.9).squeeze()
             # cov_t = gaussians.get_cov_t()
             # static_threshold = torch.quantile(cov_t, 0.5)
 #            prune_mask|= (cov_t > static_threshold).squeeze()
-            #clone_split_prune(gaussians, None, None, prune_mask)
+            clone_split_prune(gaussians, None, None, prune_mask)
             #print("Pruned:",prune_mask.shape[0]," -> ",gaussians.get_xyz.shape[0])
             #gaussians.reset_opacity(max_val = 1.0, min_val=1.0)
             

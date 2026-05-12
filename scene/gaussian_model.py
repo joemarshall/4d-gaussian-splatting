@@ -372,7 +372,8 @@ class GaussianModel:
             return actual_covariance[:, 3, 3].unsqueeze(1)
         else:
             return self.get_scaling_t * scaling_modifier
-        
+    
+    @torch.no_grad()    
     def update_t_visible_range(self, mask=None,scaling_modifier=1):
         if self._visible_range is None or self._visible_range.shape[0] != self.get_xyz.shape[0]:
             self._visible_range = torch.empty(self.get_xyz.shape[0], device=self.get_xyz.device)
@@ -654,7 +655,7 @@ class GaussianModel:
            batch_size = 1.0 
         for param_group in self.optimizer.param_groups:
             if param_group["name"] == "xyz":
-                lr = batch_size * self.xyz_scheduler_args(total_iterations)
+                lr = batch_size * self.xyz_scheduler_args(iteration)
                 param_group["lr"] = lr
                 return lr
             # if param_group["name"] == "t" and self.gaussian_dim == 4:

@@ -70,7 +70,7 @@ def msssim(rgb, gts):
     # assert (gts.max() <= 1.05 and gts.min() >= -0.05)
     return ms_ssim(rgb, gts).item()
 
-def combine_losses(losses_list,render_package,gt_image,gt_depth,gaussians,divisor = 1.0):
+def combine_losses(losses_list,render_package,gt_image,gt_depth,gaussians,args,*,iterations = 0,max_iterations=30000,divisor = 1.0):
     weight_sum = 0
     loss_sum = 0
     if divisor>0:
@@ -80,28 +80,37 @@ def combine_losses(losses_list,render_package,gt_image,gt_depth,gaussians,diviso
     result_dict = {}
     for name,weight,loss_fn in losses_list:
         if weight >0:
-            result_dict[name] = multiplier *loss_fn(render_package, gt_image, gt_depth, gaussians)
-            loss_sum += weight *result_dict[name]
+            value = loss_fn(render_package, gt_image, gt_depth, gaussians,args,iterations,max_iterations)
+            if value is not None:
+                result_dict[name] = multiplier * value
+                loss_sum += weight *result_dict[name]
         weight_sum+= weight
     if weight_sum > 0:
         loss_sum /= weight_sum
     result_dict["loss"] = loss_sum
     return result_dict
 
-def loss_ssim(render_package, gt_image, gt_depth, gaussians):
+def loss_ssim(render_package, gt_image, gt_depth, gaussians,args, iterations,max_iterations):
     return 1.0 - ssim(render_package["render"], gt_image)
 
-def loss_bistable_opacity(render_package, gt_image, gt_depth, gaussians):
+def loss_bistable_opacity(render_package, gt_image, gt_depth, gaussians,args,iterations,max_iterations):
     if gaussians.get_xyz.shape[0] < 50000:
-        return torch.zeros_like(gaussians.get_opacity).mean()
+        return None
     return torch.xlogy(-gaussians.get_opacity,gaussians.get_opacity).mean()
 
-def loss_l1(render_package, gt_image, gt_depth, gaussians):
+def loss_l1(render_package, gt_image, gt_depth, gaussians,args,iterations,max_iterations):
     return l1_loss(render_package["render"], gt_image)
 
-def loss_depth(render_package, gt_image, gt_depth, gaussians):
+def loss_depth(render_package, gt_image, gt_depth, gaussians,args,iterations,max_iterations):
+    if iterations > max_iterations * 5/6:    
+        return None
+
+
     depth_out = render_package["depth"].squeeze()
     gt_depth_mask = (gt_depth > 0) & (gt_depth < 100)
+
+
+
 
     max_gt_depths = torch.nn.MaxPool2d(3,stride=1,padding=1)(gt_depth.unsqueeze(0).unsqueeze(0)).squeeze()
     min_gt_depths = -torch.nn.MaxPool2d(3,stride=1,padding=1)(-gt_depth.unsqueeze(0).unsqueeze(0)).squeeze()
@@ -123,13 +132,6 @@ def loss_depth(render_package, gt_image, gt_depth, gaussians):
     diff_gt_depths[~gt_depth_mask] = 0.0
     diff_gt_depths = 1.0- diff_gt_depths
 
-#     print(diff_gt_depths.shape)
-
-# #    print(depth_variability.max().item(),depth_variability.min().item(),depth_variability.mean().item())
-#     import PIL.Image
-#     PIL.Image.fromarray(diff_gt_depths.cpu().contiguous().numpy()).save("diff_gt_depths.tiff")
-#     import sys
-#     sys.exit(0)
 
 
 

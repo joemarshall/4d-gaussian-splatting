@@ -118,7 +118,7 @@ def launch_viewer(args, name):
 
 # @torch.compile(dynamic=True)
 def run_batch(
-    batch_data, batch_size, gaussians, pipe, background, opt, tensor_gradient_2d_buffer
+    batch_data, batch_size, gaussians, pipe, background, opt, tensor_gradient_2d_buffer, iteration
 ):
     batch_point_grad = []
     batch_visibility_filter = []
@@ -151,7 +151,7 @@ def run_batch(
 
         # with record_function("PROFILE_loss"):
         loss_dict = combine_losses(
-            losses, render_pkg, gt_image, gt_depth, gaussians, batch_size
+            losses, render_pkg, gt_image, gt_depth, gaussians,opt, divisor = batch_size, iterations = iteration,max_iterations = opt.iterations
         )
 
         ###### rigid loss ######
@@ -256,7 +256,7 @@ def collate_fn(x):
     return x
 
 
-def try_save(gaussians, iteration, scene, name):
+def try_save(gaussians, iteration, total_training_points,scene, name):
     print(
         "\n[ITER {}] Saving checkpoint ({} gaussians) [{}]".format(
             iteration, gaussians.get_xyz.shape[0], name
@@ -265,7 +265,7 @@ def try_save(gaussians, iteration, scene, name):
     try:
         with torch.no_grad():
             torch.save(
-                (gaussians.capture(), iteration),
+                (gaussians.capture(), iteration,total_training_points),
                 scene.model_path + f"/chkpnt_{name}.pth",
             )
             # empty cache after save or bad things happen
@@ -360,6 +360,7 @@ def training(
         time_duration=time_duration,
     )
     gaussians.training_setup(opt, batch_size_mult=batch_size)
+    total_training_points = 0
 
     if checkpoint == "auto_latest":
         all_checkpoints = [
@@ -370,7 +371,7 @@ def training(
         loaded = False
         for checkpoint, mtime in try_checkpoints:
             try:
-                model_params, first_iter = torch.load(checkpoint, weights_only=False)
+                model_params, first_iter,total_training_points = torch.load(checkpoint, weights_only=False)
                 gaussians.restore(model_params, opt)
                 model_params = None
                 print(f"Loaded checkpoint {checkpoint} modified at {mtime}")
@@ -379,7 +380,7 @@ def training(
                 print(f"Error loading checkpoint {checkpoint}: {e}")
                 continue
     elif checkpoint is not None:
-        model_params, first_iter = torch.load(checkpoint, weights_only=False)
+        model_params, first_iter, total_training_points = torch.load(checkpoint, weights_only=False)
         gaussians.restore(model_params, opt)
         model_params = None
 
@@ -472,7 +473,6 @@ def training(
         + 0
     )
     tensor_gradient_2d_buffer.retain_grad()
-    total_training_points = 0
     iteration = first_iter
     while not stop_iteration and iteration < opt.iterations + 1:
 
@@ -521,7 +521,7 @@ def training(
             # with frame batch sampler the batch size is cameras per-frame)
             batch_size = len(batch_data)
 
-            total_training_points+= batch_size
+            total_training_points += batch_size
 
             ts_batch = batch_data[0][1].timestamp
             batch_data = [
@@ -551,6 +551,7 @@ def training(
                 background,
                 opt,
                 tensor_gradient_2d_buffer,
+                iteration
             )
 
             if RUN_PROFILER:
@@ -627,13 +628,13 @@ def training(
                 #     loss_dict,
                 # )
                 if iteration in saving_iterations:
-                    try_save(gaussians, iteration, scene, f"iter_{iteration}")
+                    try_save(gaussians, iteration, total_training_points, scene, f"iter_{iteration}")
                 # elif iteration in testing_iterations:
                 #     if test_psnr >= best_psnr:
                 #         best_psnr = test_psnr
-                #         try_save(gaussians, iteration, scene,"best")
+                #         try_save(gaussians, iteration, total_training_points, scene,"best")
                 #     else:
-                #         try_save(gaussians, iteration, scene,"not-best")
+                #         try_save(gaussians, iteration, total_training_points, scene,"not-best")
 
                 # Optimizer step - n.b. densifier calls may reset gradients so do this first
                 if iteration < opt.iterations:
@@ -642,12 +643,12 @@ def training(
                         env_map_optimizer.step()
                         env_map_optimizer.zero_grad(set_to_none=True)
 
-                # update T based on visibility filter
-                if SHOW_TIMINGS:
-                    times.append(("optimizer step", time.monotonic()))
-                gaussians.update_t_visible_range(mask=visibility_filter)
-                if SHOW_TIMINGS:
-                    times.append(("update_t_visible_range", time.monotonic()))
+                # # update T based on visibility filter
+                # if SHOW_TIMINGS:
+                #     times.append(("optimizer step", time.monotonic()))
+                # #gaussians.update_t_visible_range(mask=visibility_filter)
+                # if SHOW_TIMINGS:
+                #     times.append(("update_t_visible_range", time.monotonic()))
 
                 if TRACK_MEMORY:
                     torch.cuda.memory._dump_snapshot(f"temp.pickle")
@@ -698,10 +699,9 @@ def training(
         if SHOW_TIMINGS:
             times.append(("generate_prefilter_masks", time.monotonic()))
 
-    if stop_iteration:
-        print("\n[ITER {}] Saving checkpoint before exiting".format(iteration))
-        try_save(gaussians, iteration, scene, name="resume")
-        sys.exit(0)
+    print("\n[ITER {}] Saving checkpoint before exiting".format(iteration))
+    try_save(gaussians, iteration, total_training_points, scene, name="resume")
+    sys.exit(0)
 
 
 def _save_prefilter_masks(gaussians, scene, dataset):
