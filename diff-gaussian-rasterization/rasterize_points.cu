@@ -242,7 +242,7 @@ std::tuple<torch::Tensor, torch::Tensor,torch::Tensor, torch::Tensor, torch::Ten
   torch::Tensor dL_drotations = torch::zeros({P, 4}, means3D.options());
   torch::Tensor dL_drotations_r = torch::zeros({P, 4}, means3D.options());
   
-  if(P != 0 && 0)
+  if(P != 0)
   {  
 	  CudaRasterizer::Rasterizer::backward(P, degree, degree_t, M, R,
 	  background.contiguous().data<float>(),
