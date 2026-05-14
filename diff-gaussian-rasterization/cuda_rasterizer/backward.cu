@@ -14,17 +14,18 @@
 #include <cooperative_groups.h>
 #include <cooperative_groups/reduce.h>
 namespace cg = cooperative_groups;
-
+#include <stdio.h>
 // Backward pass for conversion of spherical harmonics to RGB for
 // each Gaussian.
-__device__ void computeColorFromSH(int idx, int deg, int max_coeffs, const glm::vec3* means, glm::vec3 campos, const float* shs, const bool* clamped, const glm::vec3* dL_dcolor, glm::vec3* dL_dmeans, glm::vec3* dL_dshs)
+__device__ void computeColorFromSH(int idx, int deg, int max_coeffs, const glm::vec3* means, glm::vec3 campos, const float* shs_dc, const float* shs_ac, const bool* clamped, const glm::vec3* dL_dcolor, glm::vec3* dL_dmeans, glm::vec3* dL_dshs_dc,glm::vec3* dL_dshs_ac)
 {
 	// Compute intermediate values, as it is done during forward
 	glm::vec3 pos = means[idx];
 	glm::vec3 dir_orig = pos - campos;
 	glm::vec3 dir = dir_orig / glm::length(dir_orig);
 
-	glm::vec3* sh = ((glm::vec3*)shs) + idx * max_coeffs;
+	glm::vec3* sh_dc = ((glm::vec3*)shs_dc) + idx;
+	glm::vec3* sh_ac = ((glm::vec3*)shs_ac) + idx * max_coeffs;
 
 	// Use PyTorch rule for clamping: if clamping was applied,
 	// gradient becomes 0.
@@ -41,23 +42,24 @@ __device__ void computeColorFromSH(int idx, int deg, int max_coeffs, const glm::
 	float z = dir.z;
 
 	// Target location for this Gaussian to write SH gradients to
-	glm::vec3* dL_dsh = dL_dshs + idx * max_coeffs;
+	glm::vec3* dL_dsh_dc = dL_dshs_dc + idx;
+	glm::vec3* dL_dsh_ac = dL_dshs_ac + idx * max_coeffs;
 
 	// No tricks here, just high school-level calculus.
 	float dRGBdsh0 = SH_C0;
-	dL_dsh[0] = dRGBdsh0 * dL_dRGB;
+	dL_dsh_dc[0] = dRGBdsh0 * dL_dRGB;
 	if (deg > 0)
 	{
 		float dRGBdsh1 = -SH_C1 * y;
 		float dRGBdsh2 = SH_C1 * z;
 		float dRGBdsh3 = -SH_C1 * x;
-		dL_dsh[1] = dRGBdsh1 * dL_dRGB;
-		dL_dsh[2] = dRGBdsh2 * dL_dRGB;
-		dL_dsh[3] = dRGBdsh3 * dL_dRGB;
+		dL_dsh_ac[0] = dRGBdsh1 * dL_dRGB;
+		dL_dsh_ac[1] = dRGBdsh2 * dL_dRGB;
+		dL_dsh_ac[2] = dRGBdsh3 * dL_dRGB;
 
-		dRGBdx = -SH_C1 * sh[3];
-		dRGBdy = -SH_C1 * sh[1];
-		dRGBdz = SH_C1 * sh[2];
+		dRGBdx = -SH_C1 * sh_ac[2];
+		dRGBdy = -SH_C1 * sh_ac[0];
+		dRGBdz = SH_C1 * sh_ac[1];
 
 		if (deg > 1)
 		{
@@ -69,15 +71,15 @@ __device__ void computeColorFromSH(int idx, int deg, int max_coeffs, const glm::
 			float dRGBdsh6 = SH_C2[2] * (2.f * zz - xx - yy);
 			float dRGBdsh7 = SH_C2[3] * xz;
 			float dRGBdsh8 = SH_C2[4] * (xx - yy);
-			dL_dsh[4] = dRGBdsh4 * dL_dRGB;
-			dL_dsh[5] = dRGBdsh5 * dL_dRGB;
-			dL_dsh[6] = dRGBdsh6 * dL_dRGB;
-			dL_dsh[7] = dRGBdsh7 * dL_dRGB;
-			dL_dsh[8] = dRGBdsh8 * dL_dRGB;
+			dL_dsh_ac[3] = dRGBdsh4 * dL_dRGB;
+			dL_dsh_ac[4] = dRGBdsh5 * dL_dRGB;
+			dL_dsh_ac[5] = dRGBdsh6 * dL_dRGB;
+			dL_dsh_ac[6] = dRGBdsh7 * dL_dRGB;
+			dL_dsh_ac[7] = dRGBdsh8 * dL_dRGB;
 
-			dRGBdx += SH_C2[0] * y * sh[4] + SH_C2[2] * 2.f * -x * sh[6] + SH_C2[3] * z * sh[7] + SH_C2[4] * 2.f * x * sh[8];
-			dRGBdy += SH_C2[0] * x * sh[4] + SH_C2[1] * z * sh[5] + SH_C2[2] * 2.f * -y * sh[6] + SH_C2[4] * 2.f * -y * sh[8];
-			dRGBdz += SH_C2[1] * y * sh[5] + SH_C2[2] * 2.f * 2.f * z * sh[6] + SH_C2[3] * x * sh[7];
+			dRGBdx += SH_C2[0] * y * sh_ac[3] + SH_C2[2] * 2.f * -x * sh_ac[5] + SH_C2[3] * z * sh_ac[6] + SH_C2[4] * 2.f * x * sh_ac[7];
+			dRGBdy += SH_C2[0] * x * sh_ac[3] + SH_C2[1] * z * sh_ac[4] + SH_C2[2] * 2.f * -y * sh_ac[5] + SH_C2[4] * 2.f * -y * sh_ac[7];
+			dRGBdz += SH_C2[1] * y * sh_ac[4] + SH_C2[2] * 2.f * 2.f * z * sh_ac[5] + SH_C2[3] * x * sh_ac[6];
 
 			if (deg > 2)
 			{
@@ -88,38 +90,38 @@ __device__ void computeColorFromSH(int idx, int deg, int max_coeffs, const glm::
 				float dRGBdsh13 = SH_C3[4] * x * (4.f * zz - xx - yy);
 				float dRGBdsh14 = SH_C3[5] * z * (xx - yy);
 				float dRGBdsh15 = SH_C3[6] * x * (xx - 3.f * yy);
-				dL_dsh[9] = dRGBdsh9 * dL_dRGB;
-				dL_dsh[10] = dRGBdsh10 * dL_dRGB;
-				dL_dsh[11] = dRGBdsh11 * dL_dRGB;
-				dL_dsh[12] = dRGBdsh12 * dL_dRGB;
-				dL_dsh[13] = dRGBdsh13 * dL_dRGB;
-				dL_dsh[14] = dRGBdsh14 * dL_dRGB;
-				dL_dsh[15] = dRGBdsh15 * dL_dRGB;
+				dL_dsh_ac[8] = dRGBdsh9 * dL_dRGB;
+				dL_dsh_ac[9] = dRGBdsh10 * dL_dRGB;
+				dL_dsh_ac[10] = dRGBdsh11 * dL_dRGB;
+				dL_dsh_ac[11] = dRGBdsh12 * dL_dRGB;
+				dL_dsh_ac[12] = dRGBdsh13 * dL_dRGB;
+				dL_dsh_ac[13] = dRGBdsh14 * dL_dRGB;
+				dL_dsh_ac[14] = dRGBdsh15 * dL_dRGB;
 
 				dRGBdx += (
-					SH_C3[0] * sh[9] * 3.f * 2.f * xy +
-					SH_C3[1] * sh[10] * yz +
-					SH_C3[2] * sh[11] * -2.f * xy +
-					SH_C3[3] * sh[12] * -3.f * 2.f * xz +
-					SH_C3[4] * sh[13] * (-3.f * xx + 4.f * zz - yy) +
-					SH_C3[5] * sh[14] * 2.f * xz +
-					SH_C3[6] * sh[15] * 3.f * (xx - yy));
+					SH_C3[0] * sh_ac[8] * 3.f * 2.f * xy +
+					SH_C3[1] * sh_ac[9] * yz +
+					SH_C3[2] * sh_ac[10] * -2.f * xy +
+					SH_C3[3] * sh_ac[11] * -3.f * 2.f * xz +
+					SH_C3[4] * sh_ac[12] * (-3.f * xx + 4.f * zz - yy) +
+					SH_C3[5] * sh_ac[13] * 2.f * xz +
+					SH_C3[6] * sh_ac[14] * 3.f * (xx - yy));
 
 				dRGBdy += (
-					SH_C3[0] * sh[9] * 3.f * (xx - yy) +
-					SH_C3[1] * sh[10] * xz +
-					SH_C3[2] * sh[11] * (-3.f * yy + 4.f * zz - xx) +
-					SH_C3[3] * sh[12] * -3.f * 2.f * yz +
-					SH_C3[4] * sh[13] * -2.f * xy +
-					SH_C3[5] * sh[14] * -2.f * yz +
-					SH_C3[6] * sh[15] * -3.f * 2.f * xy);
+					SH_C3[0] * sh_ac[8] * 3.f * (xx - yy) +
+					SH_C3[1] * sh_ac[9] * xz +
+					SH_C3[2] * sh_ac[10] * (-3.f * yy + 4.f * zz - xx) +
+					SH_C3[3] * sh_ac[11] * -3.f * 2.f * yz +
+					SH_C3[4] * sh_ac[12] * -2.f * xy +
+					SH_C3[5] * sh_ac[13] * -2.f * yz +
+					SH_C3[6] * sh_ac[14] * -3.f * 2.f * xy);
 
 				dRGBdz += (
-					SH_C3[1] * sh[10] * xy +
-					SH_C3[2] * sh[11] * 4.f * 2.f * yz +
-					SH_C3[3] * sh[12] * 3.f * (2.f * zz - xx - yy) +
-					SH_C3[4] * sh[13] * 4.f * 2.f * xz +
-					SH_C3[5] * sh[14] * (xx - yy));
+					SH_C3[1] * sh_ac[9] * xy +
+					SH_C3[2] * sh_ac[10] * 4.f * 2.f * yz +
+					SH_C3[3] * sh_ac[11] * 3.f * (2.f * zz - xx - yy) +
+					SH_C3[4] * sh_ac[12] * 4.f * 2.f * xz +
+					SH_C3[5] * sh_ac[13] * (xx - yy));
 			}
 		}
 	}
@@ -142,16 +144,19 @@ __device__ void computeColorFromSH(int idx, int deg, int max_coeffs, const glm::
 // Backward pass for conversion of spherical harmonics to RGB for
 // each Gaussian.
 __device__ void computeColorFromSH_4D(int idx, int deg, int deg_t, int max_coeffs, const glm::vec3* means, glm::vec3 campos,
-            const float* shs, const bool* clamped, const float* ts, const float timestamp, const float time_duration,
-            const glm::vec3* dL_dcolor, glm::vec3* dL_dmeans, glm::vec3* dL_dshs, float* dL_dts)
+            const float* shs_dc, const float* shs_ac, const bool* clamped, const float* ts, const float timestamp, const float time_duration,
+            const glm::vec3* dL_dcolor, glm::vec3* dL_dmeans, glm::vec3* dL_dshs_dc, glm::vec3* dL_dshs_ac, float* dL_dts)
 {
+	printf("%d,%d\n",max_coeffs,idx);
 	// Compute intermediate values, as it is done during forward
 	const float dir_t = ts[idx] - timestamp;
 	glm::vec3 pos = means[idx];
 	glm::vec3 dir_orig = pos - campos;
 	glm::vec3 dir = dir_orig / glm::length(dir_orig);
 
-	glm::vec3* sh = ((glm::vec3*)shs) + idx * max_coeffs;
+	glm::vec3* sh_dc = ((glm::vec3*)shs_dc) + idx;
+
+	glm::vec3* sh_ac = ((glm::vec3*)shs_ac) + idx * max_coeffs;
 
 	// Use PyTorch rule for clamping: if clamping was applied,
 	// gradient becomes 0.
@@ -166,13 +171,14 @@ __device__ void computeColorFromSH_4D(int idx, int deg, int deg_t, int max_coeff
 	glm::vec3 dRGBdt(0, 0, 0);
 
 	// Target location for this Gaussian to write SH gradients to
-	glm::vec3* dL_dsh = dL_dshs + idx * max_coeffs;
+	dL_dshs_dc = dL_dshs_dc + idx ;
+	dL_dshs_ac = dL_dshs_ac + idx * max_coeffs;
 
 	// No tricks here, just high school-level calculus.
 	float l0m0 = SH_C0;
 
 	float dRGBdsh0 = l0m0;
-	dL_dsh[0] = dRGBdsh0 * dL_dRGB;
+	dL_dshs_dc[0] = dRGBdsh0 * dL_dRGB;
 
 	if (deg > 0){
 	    float x = dir.x;
@@ -187,13 +193,13 @@ __device__ void computeColorFromSH_4D(int idx, int deg, int deg_t, int max_coeff
 		float dl1m0_dz = SH_C1;
 		float dl1p1_dx = -1 * SH_C1;
 
-		dL_dsh[1] = l0m0 * dL_dRGB;
-		dL_dsh[2] = l1m0 * dL_dRGB;
-		dL_dsh[3] = l1p1 * dL_dRGB;
+		dL_dshs_ac[0] = l0m0 * dL_dRGB;
+		dL_dshs_ac[1] = l1m0 * dL_dRGB;
+		dL_dshs_ac[2] = l1p1 * dL_dRGB;
 
-		dRGBdx = dl1p1_dx * sh[3];
-		dRGBdy = dl1m1_dy * sh[1];
-		dRGBdz = dl1m0_dz * sh[2];
+		dRGBdx = dl1p1_dx * sh_ac[2];
+		dRGBdy = dl1m1_dy * sh_ac[0];
+		dRGBdz = dl1m0_dz * sh_ac[1];
 
 		if (deg > 1){
 			float xx = x * x, yy = y * y, zz = z * z;
@@ -217,20 +223,20 @@ __device__ void computeColorFromSH_4D(int idx, int deg, int deg_t, int max_coeff
             float dl2p2_dx = 2 * SH_C2[4] * x;
             float dl2p2_dy = -2 * SH_C2[4] * y;
 
-			dL_dsh[4] = l2m2 * dL_dRGB;
-			dL_dsh[5] = l2m1 * dL_dRGB;
-			dL_dsh[6] = l2m0 * dL_dRGB;
-			dL_dsh[7] = l2p1 * dL_dRGB;
-			dL_dsh[8] = l2p2 * dL_dRGB;
+			dL_dshs_ac[3] = l2m2 * dL_dRGB;
+			dL_dshs_ac[4] = l2m1 * dL_dRGB;
+			dL_dshs_ac[5] = l2m0 * dL_dRGB;
+			dL_dshs_ac[6] = l2p1 * dL_dRGB;
+			dL_dshs_ac[7] = l2p2 * dL_dRGB;
 
 			dRGBdx += (
-				dl2m2_dx * sh[4] + dl2m0_dx * sh[6] + dl2p1_dx * sh[7] + dl2p2_dx * sh[8]
+				dl2m2_dx * sh_ac[3] + dl2m0_dx * sh_ac[5] + dl2p1_dx * sh_ac[6] + dl2p2_dx * sh_ac[7]
 			);
 			dRGBdy += (
-				dl2m2_dy * sh[4] + dl2m1_dy * sh[5] + dl2m0_dy * sh[6] + dl2p2_dy * sh[8]
+				dl2m2_dy * sh_ac[3] + dl2m1_dy * sh_ac[4] + dl2m0_dy * sh_ac[5] + dl2p2_dy * sh_ac[7]
 			);
 			dRGBdz += (
-				dl2m1_dz * sh[5] + dl2m0_dz * sh[6] + dl2p1_dz * sh[7]
+				dl2m1_dz * sh_ac[4] + dl2m0_dz * sh_ac[5] + dl2p1_dz * sh_ac[6]
 			);
 
 			if (deg > 2){
@@ -262,202 +268,202 @@ __device__ void computeColorFromSH_4D(int idx, int deg, int deg_t, int max_coeff
                 float dl3p3_dx = SH_C3[6] * (3 * xx - 3 * yy);
                 float dl3p3_dy = -SH_C3[6] * x * 6 * y;
 
-				dL_dsh[9] = l3m3 * dL_dRGB;
-				dL_dsh[10] = l3m2 * dL_dRGB;
-				dL_dsh[11] = l3m1 * dL_dRGB;
-				dL_dsh[12] = l3m0 * dL_dRGB;
-				dL_dsh[13] = l3p1 * dL_dRGB;
-				dL_dsh[14] = l3p2 * dL_dRGB;
-				dL_dsh[15] = l3p3 * dL_dRGB;
+				dL_dshs_ac[8] = l3m3 * dL_dRGB;
+				dL_dshs_ac[9] = l3m2 * dL_dRGB;
+				dL_dshs_ac[10] = l3m1 * dL_dRGB;
+				dL_dshs_ac[11] = l3m0 * dL_dRGB;
+				dL_dshs_ac[12] = l3p1 * dL_dRGB;
+				dL_dshs_ac[13] = l3p2 * dL_dRGB;
+				dL_dshs_ac[14] = l3p3 * dL_dRGB;
 
 				dRGBdx += (
-					dl3m3_dx * sh[9] +
-					dl3m2_dx * sh[10] +
-					dl3m1_dx * sh[11] +
-					dl3m0_dx * sh[12] +
-					dl3p1_dx * sh[13] +
-					dl3p2_dx * sh[14] +
-					dl3p3_dx * sh[15]
+					dl3m3_dx * sh_ac[8] +
+					dl3m2_dx * sh_ac[9] +
+					dl3m1_dx * sh_ac[10] +
+					dl3m0_dx * sh_ac[11] +
+					dl3p1_dx * sh_ac[12] +
+					dl3p2_dx * sh_ac[13] +
+					dl3p3_dx * sh_ac[14]
                 );
 
 				dRGBdy += (
-                    dl3m3_dy * sh[9] +
-					dl3m2_dy * sh[10] +
-					dl3m1_dy * sh[11] +
-					dl3m0_dy * sh[12] +
-					dl3p1_dy * sh[13] +
-					dl3p2_dy * sh[14] +
-					dl3p3_dy * sh[15]
+                    dl3m3_dy * sh_ac[8] +
+					dl3m2_dy * sh_ac[9] +
+					dl3m1_dy * sh_ac[10] +
+					dl3m0_dy * sh_ac[11] +
+					dl3p1_dy * sh_ac[12] +
+					dl3p2_dy * sh_ac[13] +
+					dl3p3_dy * sh_ac[14]
                 );
 
 				dRGBdz += (
-					dl3m2_dz * sh[10] +
-					dl3m1_dz * sh[11] +
-					dl3m0_dz * sh[12] +
-					dl3p1_dz * sh[13] +
-					dl3p2_dz * sh[14]
+					dl3m2_dz * sh_ac[9] +
+					dl3m1_dz * sh_ac[10] +
+					dl3m0_dz * sh_ac[11] +
+					dl3p1_dz * sh_ac[12] +
+					dl3p2_dz * sh_ac[13]
                 );
 
 				if (deg_t > 0){
 					float t1 = cos(2 * MY_PI * dir_t / time_duration);
 					float dt1_dt = sin(2 * MY_PI * dir_t / time_duration) * 2 * MY_PI / time_duration;
 
-					dL_dsh[16] = t1 * l0m0 * dL_dRGB;
-					dL_dsh[17] = t1 * l1m1 * dL_dRGB;
-					dL_dsh[18] = t1 * l1m0 * dL_dRGB;
-					dL_dsh[19] = t1 * l1p1 * dL_dRGB;
-					dL_dsh[20] = t1 * l2m2 * dL_dRGB;
-					dL_dsh[21] = t1 * l2m1 * dL_dRGB;
-					dL_dsh[22] = t1 * l2m0 * dL_dRGB;
-					dL_dsh[23] = t1 * l2p1 * dL_dRGB;
-					dL_dsh[24] = t1 * l2p2 * dL_dRGB;
-					dL_dsh[25] = t1 * l3m3 * dL_dRGB;
-					dL_dsh[26] = t1 * l3m2 * dL_dRGB;
-					dL_dsh[27] = t1 * l3m1 * dL_dRGB;
-					dL_dsh[28] = t1 * l3m0 * dL_dRGB;
-					dL_dsh[29] = t1 * l3p1 * dL_dRGB;
-					dL_dsh[30] = t1 * l3p2 * dL_dRGB;
-					dL_dsh[31] = t1 * l3p3 * dL_dRGB;
+					dL_dshs_ac[15] = t1 * l0m0 * dL_dRGB;
+					dL_dshs_ac[16] = t1 * l1m1 * dL_dRGB;
+					dL_dshs_ac[17] = t1 * l1m0 * dL_dRGB;
+					dL_dshs_ac[18] = t1 * l1p1 * dL_dRGB;
+					dL_dshs_ac[19] = t1 * l2m2 * dL_dRGB;
+					dL_dshs_ac[20] = t1 * l2m1 * dL_dRGB;
+					dL_dshs_ac[21] = t1 * l2m0 * dL_dRGB;
+					dL_dshs_ac[22] = t1 * l2p1 * dL_dRGB;
+					dL_dshs_ac[23] = t1 * l2p2 * dL_dRGB;
+					dL_dshs_ac[24] = t1 * l3m3 * dL_dRGB;
+					dL_dshs_ac[25] = t1 * l3m2 * dL_dRGB;
+					dL_dshs_ac[26] = t1 * l3m1 * dL_dRGB;
+					dL_dshs_ac[27] = t1 * l3m0 * dL_dRGB;
+					dL_dshs_ac[28] = t1 * l3p1 * dL_dRGB;
+					dL_dshs_ac[29] = t1 * l3p2 * dL_dRGB;
+					dL_dshs_ac[30] = t1 * l3p3 * dL_dRGB;
 
 					dRGBdt = dt1_dt * (
-						l0m0 * sh[16] +
-						l1m1 * sh[17] +
-						l1m0 * sh[18] +
-						l1p1 * sh[19] + 
-						l2m2 * sh[20] +
-						l2m1 * sh[21] +
-						l2m0 * sh[22] +
-						l2p1 * sh[23] +
-						l2p2 * sh[24] + 
-						l3m3 * sh[25] +
-						l3m2 * sh[26] +
-						l3m1 * sh[27] +
-						l3m0 * sh[28] +
-						l3p1 * sh[29] +
-						l3p2 * sh[30] +
-						l3p3 * sh[31]);
+						l0m0 * sh_ac[15] +
+						l1m1 * sh_ac[16] +
+						l1m0 * sh_ac[17] +
+						l1p1 * sh_ac[18] + 
+						l2m2 * sh_ac[19] +
+						l2m1 * sh_ac[20] +
+						l2m0 * sh_ac[21] +
+						l2p1 * sh_ac[22] +
+						l2p2 * sh_ac[23] + 
+						l3m3 * sh_ac[24] +
+						l3m2 * sh_ac[25] +
+						l3m1 * sh_ac[26] +
+						l3m0 * sh_ac[27] +
+						l3p1 * sh_ac[28] +
+						l3p2 * sh_ac[29] +
+						l3p3 * sh_ac[30]);
 
 					dRGBdx += t1 * (
-						dl1p1_dx * sh[19] + 
-						dl2m2_dx * sh[20] + 
-						dl2m0_dx * sh[22] + 
-						dl2p1_dx * sh[23] + 
-						dl2p2_dx * sh[24] + 
-						dl3m3_dx * sh[25] +
-						dl3m2_dx * sh[26] +
-						dl3m1_dx * sh[27] +
-						dl3m0_dx * sh[28] +
-						dl3p1_dx * sh[29] +
-						dl3p2_dx * sh[30] +
-						dl3p3_dx * sh[31]
+						dl1p1_dx * sh_ac[18] + 
+						dl2m2_dx * sh_ac[19] + 
+						dl2m0_dx * sh_ac[21] + 
+						dl2p1_dx * sh_ac[22] + 
+						dl2p2_dx * sh_ac[23] + 
+						dl3m3_dx * sh_ac[24] +
+						dl3m2_dx * sh_ac[25] +
+						dl3m1_dx * sh_ac[26] +
+						dl3m0_dx * sh_ac[27] +
+						dl3p1_dx * sh_ac[28] +
+						dl3p2_dx * sh_ac[29] +
+						dl3p3_dx * sh_ac[30]
 					);
 
 					dRGBdy += t1 * (
-						dl1m1_dy * sh[17] +
-						dl2m2_dy * sh[20] + 
-						dl2m1_dy * sh[21] + 
-						dl2m0_dy * sh[22] + 
-						dl2p2_dy * sh[24] + 
-						dl3m3_dy * sh[25] +
-						dl3m2_dy * sh[26] +
-						dl3m1_dy * sh[27] +
-						dl3m0_dy * sh[28] +
-						dl3p1_dy * sh[29] +
-						dl3p2_dy * sh[30] +
-						dl3p3_dy * sh[31]
+						dl1m1_dy * sh_ac[16] +
+						dl2m2_dy * sh_ac[19] + 
+						dl2m1_dy * sh_ac[20] + 
+						dl2m0_dy * sh_ac[21] + 
+						dl2p2_dy * sh_ac[23] + 
+						dl3m3_dy * sh_ac[24] +
+						dl3m2_dy * sh_ac[25] +
+						dl3m1_dy * sh_ac[26] +
+						dl3m0_dy * sh_ac[27] +
+						dl3p1_dy * sh_ac[28] +
+						dl3p2_dy * sh_ac[29] +
+						dl3p3_dy * sh_ac[30]
 					);
 
 					dRGBdz += t1 * (
-						dl1m0_dz * sh[18] +
-						dl2m1_dz * sh[21] + 
-						dl2m0_dz * sh[22] + 
-						dl2p1_dz * sh[23] +
-						dl3m2_dz * sh[26] +
-						dl3m1_dz * sh[27] +
-						dl3m0_dz * sh[28] +
-						dl3p1_dz * sh[29] +
-						dl3p2_dz * sh[30]
+						dl1m0_dz * sh_ac[17] +
+						dl2m1_dz * sh_ac[20] + 
+						dl2m0_dz * sh_ac[21] + 
+						dl2p1_dz * sh_ac[22] +
+						dl3m2_dz * sh_ac[25] +
+						dl3m1_dz * sh_ac[26] +
+						dl3m0_dz * sh_ac[27] +
+						dl3p1_dz * sh_ac[28] +
+						dl3p2_dz * sh_ac[29]
 					);
 
 					if (deg_t > 1){
 						float t2 = cos(2 * MY_PI * dir_t * 2 / time_duration);
 						float dt2_dt = sin(2 * MY_PI * dir_t * 2 / time_duration) * 2 * MY_PI * 2 / time_duration;
 
-						dL_dsh[32] = t2 * l0m0 * dL_dRGB;
-						dL_dsh[33] = t2 * l1m1 * dL_dRGB;
-						dL_dsh[34] = t2 * l1m0 * dL_dRGB;
-						dL_dsh[35] = t2 * l1p1 * dL_dRGB;
-						dL_dsh[36] = t2 * l2m2 * dL_dRGB;
-						dL_dsh[37] = t2 * l2m1 * dL_dRGB;
-						dL_dsh[38] = t2 * l2m0 * dL_dRGB;
-						dL_dsh[39] = t2 * l2p1 * dL_dRGB;
-						dL_dsh[40] = t2 * l2p2 * dL_dRGB;
-						dL_dsh[41] = t2 * l3m3 * dL_dRGB;
-						dL_dsh[42] = t2 * l3m2 * dL_dRGB;
-						dL_dsh[43] = t2 * l3m1 * dL_dRGB;
-						dL_dsh[44] = t2 * l3m0 * dL_dRGB;
-						dL_dsh[45] = t2 * l3p1 * dL_dRGB;
-						dL_dsh[46] = t2 * l3p2 * dL_dRGB;
-						dL_dsh[47] = t2 * l3p3 * dL_dRGB;
+						dL_dshs_ac[31] = t2 * l0m0 * dL_dRGB;
+						dL_dshs_ac[32] = t2 * l1m1 * dL_dRGB;
+						dL_dshs_ac[33] = t2 * l1m0 * dL_dRGB;
+						dL_dshs_ac[34] = t2 * l1p1 * dL_dRGB;
+						dL_dshs_ac[35] = t2 * l2m2 * dL_dRGB;
+						dL_dshs_ac[36] = t2 * l2m1 * dL_dRGB;
+						dL_dshs_ac[37] = t2 * l2m0 * dL_dRGB;
+						dL_dshs_ac[38] = t2 * l2p1 * dL_dRGB;
+						dL_dshs_ac[39] = t2 * l2p2 * dL_dRGB;
+						dL_dshs_ac[40] = t2 * l3m3 * dL_dRGB;
+						dL_dshs_ac[41] = t2 * l3m2 * dL_dRGB;
+						dL_dshs_ac[42] = t2 * l3m1 * dL_dRGB;
+						dL_dshs_ac[43] = t2 * l3m0 * dL_dRGB;
+						dL_dshs_ac[44] = t2 * l3p1 * dL_dRGB;
+						dL_dshs_ac[45] = t2 * l3p2 * dL_dRGB;
+						dL_dshs_ac[46] = t2 * l3p3 * dL_dRGB;
 
 						dRGBdt = dt2_dt * (
-							l0m0 * sh[32] +
-							l1m1 * sh[33] +
-							l1m0 * sh[34] +
-							l1p1 * sh[35] + 
-							l2m2 * sh[36] +
-							l2m1 * sh[37] +
-							l2m0 * sh[38] +
-							l2p1 * sh[39] +
-							l2p2 * sh[40] + 
-							l3m3 * sh[41] +
-							l3m2 * sh[42] +
-							l3m1 * sh[43] +
-							l3m0 * sh[44] +
-							l3p1 * sh[45] +
-							l3p2 * sh[46] +
-							l3p3 * sh[47]);
+							l0m0 * sh_ac[31] +
+							l1m1 * sh_ac[32] +
+							l1m0 * sh_ac[33] +
+							l1p1 * sh_ac[34] + 
+							l2m2 * sh_ac[35] +
+							l2m1 * sh_ac[36] +
+							l2m0 * sh_ac[37] +
+							l2p1 * sh_ac[38] +
+							l2p2 * sh_ac[39] + 
+							l3m3 * sh_ac[40] +
+							l3m2 * sh_ac[41] +
+							l3m1 * sh_ac[42] +
+							l3m0 * sh_ac[43] +
+							l3p1 * sh_ac[44] +
+							l3p2 * sh_ac[45] +
+							l3p3 * sh_ac[46]);
 
 						dRGBdx += t2 * (
-							dl1p1_dx * sh[35] + 
-							dl2m2_dx * sh[36] + 
-							dl2m0_dx * sh[38] + 
-							dl2p1_dx * sh[39] + 
-							dl2p2_dx * sh[40] + 
-							dl3m3_dx * sh[41] +
-							dl3m2_dx * sh[42] +
-							dl3m1_dx * sh[43] +
-							dl3m0_dx * sh[44] +
-							dl3p1_dx * sh[45] +
-							dl3p2_dx * sh[46] +
-							dl3p3_dx * sh[47]
+							dl1p1_dx * sh_ac[34] + 
+							dl2m2_dx * sh_ac[35] + 
+							dl2m0_dx * sh_ac[37] + 
+							dl2p1_dx * sh_ac[38] + 
+							dl2p2_dx * sh_ac[39] + 
+							dl3m3_dx * sh_ac[40] +
+							dl3m2_dx * sh_ac[41] +
+							dl3m1_dx * sh_ac[42] +
+							dl3m0_dx * sh_ac[43] +
+							dl3p1_dx * sh_ac[44] +
+							dl3p2_dx * sh_ac[45] +
+							dl3p3_dx * sh_ac[46]
 						);
 
 						dRGBdy += t2 * (
-							dl1m1_dy * sh[33] +
-							dl2m2_dy * sh[36] + 
-							dl2m1_dy * sh[37] + 
-							dl2m0_dy * sh[38] + 
-							dl2p2_dy * sh[40] + 
-							dl3m3_dy * sh[41] +
-							dl3m2_dy * sh[42] +
-							dl3m1_dy * sh[43] +
-							dl3m0_dy * sh[44] +
-							dl3p1_dy * sh[45] +
-							dl3p2_dy * sh[46] +
-							dl3p3_dy * sh[47]
+							dl1m1_dy * sh_ac[32] +
+							dl2m2_dy * sh_ac[35] + 
+							dl2m1_dy * sh_ac[36] + 
+							dl2m0_dy * sh_ac[37] + 
+							dl2p2_dy * sh_ac[39] + 
+							dl3m3_dy * sh_ac[40] +
+							dl3m2_dy * sh_ac[41] +
+							dl3m1_dy * sh_ac[42] +
+							dl3m0_dy * sh_ac[43] +
+							dl3p1_dy * sh_ac[44] +
+							dl3p2_dy * sh_ac[45] +
+							dl3p3_dy * sh_ac[46]
 						);
 
 						dRGBdz += t2 * (
-							dl1m0_dz * sh[34] +
-							dl2m1_dz * sh[37] + 
-							dl2m0_dz * sh[38] + 
-							dl2p1_dz * sh[39] +
-							dl3m2_dz * sh[42] +
-							dl3m1_dz * sh[43] +
-							dl3m0_dz * sh[44] +
-							dl3p1_dz * sh[45] +
-							dl3p2_dz * sh[46]
+							dl1m0_dz * sh_ac[33] +
+							dl2m1_dz * sh_ac[36] + 
+							dl2m0_dz * sh_ac[37] + 
+							dl2p1_dz * sh_ac[38] +
+							dl3m2_dz * sh_ac[41] +
+							dl3m1_dz * sh_ac[42] +
+							dl3m0_dz * sh_ac[43] +
+							dl3p1_dz * sh_ac[44] +
+							dl3p2_dz * sh_ac[45]
 						);
 					}
 				}
@@ -841,7 +847,8 @@ __global__ void preprocessCUDA(
 	int P, int D, int D_t, int M,
 	const float3* means,
 	const int* radii,
-	const float* shs,
+	const float* shs_dc,
+	const float* shs_ac,
 	const float* ts,
 	const float* opacities,
 	const bool* clamped,
@@ -861,7 +868,8 @@ __global__ void preprocessCUDA(
 	glm::vec3* dL_dmeans,
 	float* dL_dcolor,
 	float* dL_dcov3D,
-	float* dL_dsh,
+	float* dL_dsh_dc,
+	float* dL_dsh_ac,
 	float* dL_dts,
 	glm::vec3* dL_dscale,
 	float* dL_dscale_t,
@@ -892,15 +900,15 @@ __global__ void preprocessCUDA(
 	// That's the second part of the mean gradient. Previous computation
 	// of cov2D and following SH conversion also affects it.
 	dL_dmeans[idx] += dL_dmean;
-
+	printf("shs_dc: %p, shs_ac: %p\n", shs_dc, shs_ac);
 	// Compute gradient updates due to computing colors from SHs
-	if (shs){
+	if (shs_dc && shs_ac){
 		if (gaussian_dim == 3 || force_sh_3d){
-			computeColorFromSH(idx, D, M, (glm::vec3*)means, *campos, shs, clamped, (glm::vec3*)dL_dcolor, (glm::vec3*)dL_dmeans, (glm::vec3*)dL_dsh);
+			computeColorFromSH(idx, D, M, (glm::vec3*)means, *campos, shs_dc,shs_ac, clamped, (glm::vec3*)dL_dcolor, (glm::vec3*)dL_dmeans, (glm::vec3*)dL_dsh_dc, (glm::vec3*)dL_dsh_ac);
 		}else{
 		    computeColorFromSH_4D(idx, D, D_t, M, (glm::vec3*)means, *campos,
-		            shs, clamped, ts, timestamp, time_duration,
-		            (glm::vec3*)dL_dcolor, (glm::vec3*)dL_dmeans, (glm::vec3*)dL_dsh, dL_dts);
+		             shs_dc, shs_ac, clamped, ts, timestamp, time_duration,
+		             (glm::vec3*)dL_dcolor, (glm::vec3*)dL_dmeans, (glm::vec3*)dL_dsh_dc, (glm::vec3*)dL_dsh_ac, dL_dts);
 		}
 
 	}
@@ -1140,7 +1148,8 @@ void BACKWARD::preprocess(
 	int P, int D, int D_t, int M,
 	const float3* means3D,
 	const int* radii,
-	const float* shs,
+	const float* shs_dc,
+	const float* shs_ac,
 	const float* ts,
 	const float* opacities,
 	const bool* clamped,
@@ -1165,7 +1174,8 @@ void BACKWARD::preprocess(
 	glm::vec3* dL_dmean3D,
 	float* dL_dcolor,
 	float* dL_dcov3D,
-	float* dL_dsh,
+	float* dL_dsh_dc,
+	float* dL_dsh_ac,
 	float* dL_dts,
 	glm::vec3* dL_dscale,
 	float* dL_dscale_t,
@@ -1199,7 +1209,8 @@ void BACKWARD::preprocess(
 		P, D, D_t, M,
 		(float3*)means3D,
 		radii,
-		shs,
+		shs_dc,
+		shs_ac,
 		ts,
 		opacities,
 		clamped,
@@ -1219,7 +1230,8 @@ void BACKWARD::preprocess(
 		(glm::vec3*)dL_dmean3D,
 		dL_dcolor,
 		dL_dcov3D,
-		dL_dsh,
+		dL_dsh_dc,
+		dL_dsh_ac,
 		dL_dts,
 		dL_dscale,
 		dL_dscale_t,

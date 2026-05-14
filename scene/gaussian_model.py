@@ -97,6 +97,7 @@ class GaussianModel:
         self.optimizer_type = optimizer_type
         self.active_sh_degree = 0
         self.max_sh_degree = sh_degree
+
         self._xyz = torch.empty(0)
         self._features_dc = torch.empty(0)
         self._features_rest = torch.empty(0)
@@ -277,6 +278,10 @@ class GaussianModel:
         else:
             self.training = False
         print("Model restored with {} points.".format(self._xyz.shape))
+
+        if type(self.spatial_lr_scale)!=float:
+            self.spatial_lr_scale = float(self.spatial_lr_scale)
+
         total_params = 0
         for v in model_args:
             if isinstance(v, torch.Tensor):
@@ -431,7 +436,9 @@ class GaussianModel:
             self.active_sh_degree_t += 1
 
     def create_from_pcd(self, pcd: BasicPointCloud, spatial_lr_scale: float):
+        spatial_lr_scale = float(spatial_lr_scale)
         self.spatial_lr_scale = spatial_lr_scale
+
         fused_point_cloud = torch.tensor(np.asarray(pcd.points)).float().cuda()
         fused_color = RGB2SH(torch.tensor(np.asarray(pcd.colors)).float().cuda())
         features = (
@@ -499,8 +506,8 @@ class GaussianModel:
                 self._rotation_r = nn.Parameter(rots_r.requires_grad_(True))
 
     def create_from_pth(self, path, spatial_lr_scale):
+        spatial_lr_scale = float(spatial_lr_scale)
         assert self.gaussian_dim == 4 and self.rot_4d
-        self.spatial_lr_scale = spatial_lr_scale
         init_4d_gaussian = torch.load(path, mmap=True)
         fused_point_cloud = init_4d_gaussian["xyz"].cuda().contiguous()
         features_dc = init_4d_gaussian["features_dc"].cuda().contiguous()

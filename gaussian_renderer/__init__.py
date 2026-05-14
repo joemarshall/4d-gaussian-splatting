@@ -143,7 +143,8 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
 
     # If precomputed colors are provided, use them. Otherwise, if it is desired to precompute colors
     # from SHs in Python, do it. If not, then SH -> RGB conversion will be done by rasterizer.
-    shs = None
+    shs_dc = None
+    shs_ac = None
     colors_precomp = None
     if override_color is None:
         if pipe.convert_SHs_python:
@@ -161,7 +162,8 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
                 sh2rgb = eval_shfs_4d(pc.active_sh_degree, pc.active_sh_degree_t, shs_view, dir_pp_normalized, dir_t, pc.time_duration[1] - pc.time_duration[0])
             colors_precomp = torch.clamp_min(sh2rgb + 0.5, 0.0)
         else:
-            shs = pc.get_features
+            sh_dc = pc.get_sh_features_dc
+            sh_ac = pc.get_sh_features_rest
             if pc.gaussian_dim == 4 and ts is None:
                 ts = pc.get_t
     else:
@@ -179,8 +181,10 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
             means3D = means3D[mask]
         if ts is not None:
             ts = ts[mask]
-        if shs is not None:
-            shs = shs[mask]
+        if sh_dc is not None:
+            sh_dc = sh_dc[mask]
+        if sh_ac is not None:
+            sh_ac = sh_ac[mask]
         if colors_precomp is not None:
             colors_precomp = colors_precomp[mask]
         if opacity is not None:
@@ -199,16 +203,17 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
             flow_2d = flow_2d[mask]
     # Rasterize visible Gaussians to image, obtain their radii (on screen). 
     if USE_FASTGS:
-        dc = shs [:,0:1]
-        sh = shs[:,1:]
+        dc = sh_dc
+        sh = sh_ac
         print("Rasterizing with FastGS!")
-        print("DC",dc.shape)
-        print("SH",sh.shape)
+        print("DC",sh_dc.shape)
+        print("SH",sh_ac.shape)
         rendered_image, depth, radii, metric_count, out_means3D = rasterizer(
             means3D = means3D,
             means2D = means2D,
             dc = dc,
-            shs = sh,
+            sh_dc = sh_dc,
+            sh_ac = sh_ac,
             colors_precomp = colors_precomp,
 #            flow_2d = flow_2d,
             opacities = opacity,
@@ -224,7 +229,8 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
         rendered_image, radii, depth, alpha, flow, covs_com,metric_count = rasterizer(
             means3D = means3D,
             means2D = means2D,
-            shs = shs,
+            shs_dc = sh_dc,
+            shs_ac = sh_ac,
             colors_precomp = colors_precomp,
             flow_2d = flow_2d,
             opacities = opacity,

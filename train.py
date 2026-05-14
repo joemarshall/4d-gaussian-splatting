@@ -142,6 +142,7 @@ def run_batch(
             render_pkg["depth"],
         )
 
+
         losses = [
             ("L1", 1.0, loss_l1),
             ("SSIM", opt.lambda_dssim, loss_ssim),
@@ -430,6 +431,8 @@ def training(
     # loading time doesn't seem to dominate at least on my PC
     # so there's little point in worker threads
     # once the stupid PIL code is cached
+    ### Actually, it is REALLY not a good idea to use multiple workers with
+    # large numbers of gaussians (at least on Windows)
     num_workers = 0
 
     if gaussians.gaussian_dim == 4:
@@ -437,7 +440,7 @@ def training(
             training_dataset,
             batch_sampler=training_dataset.get_frame_batch_sampler(),
             #        num_workers=2,
-            num_workers=0,
+            num_workers=num_workers,
             collate_fn=collate_fn,  # don't make a lambda as isn't pickleable for num_workers>0
         )
     else:
@@ -583,6 +586,11 @@ def training(
             ) = results
             if SHOW_TIMINGS:
                 times.append(("render", time.monotonic()))
+            visible_points = visibility_filter.sum().item()
+            all_points = len(visibility_filter)
+
+            #print(f"\n{visible_points/all_points:.2%} fraction of points in batch[{batch_size}]: {visible_points}/ n = {all_points}, iteration {iteration}")
+
             if CUDA_EVENTS:
                 iter_end.record()
             else:

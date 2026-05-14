@@ -77,8 +77,10 @@ def densify_and_clone(gaussians,selected_pts_mask,N=2):
     )
 
 
-def densify_and_split_long_axis(gaussians, selected_pts_mask, *,rate=0.9, N=2):
-    assert( N==2) # long axis split only implemented for 2x splits for now
+# T is scaled so that we don't split on T unless we really need to
+# as un-needed t-splits just add gaussians. We
+# do this by scaling T before the axis checking
+def densify_and_split_long_axis(gaussians, selected_pts_mask, *,rate=0.9, N=2, scaling_t = 0.01):
 
     # non geometric things
     new_rotation = gaussians._rotation[selected_pts_mask].repeat(N, 1)
@@ -89,10 +91,12 @@ def densify_and_split_long_axis(gaussians, selected_pts_mask, *,rate=0.9, N=2):
 
     if gaussians.rot_4d:
         # rotation in x,y,z and t
-        
         stds = gaussians.get_scaling_xyzt[selected_pts_mask]
+        t_scale_vector = torch.ones((4), device=stds.device)
+        t_scale_vector[-1] = scaling_t
         scale_rot = build_scaling_rotation_4d(stds,gaussians._rotation[selected_pts_mask], gaussians._rotation_r[selected_pts_mask])
-        max_values, max_indices = torch.max(stds, dim=1, keepdim=True)
+        max_values, max_indices = torch.max(stds*t_scale_vector, dim=1, keepdim=True)
+        max_values[max_indices == 3] /= scaling_t
 #         print("Axis splits:")
 #         print(torch.histogram(max_indices.detach().to(dtype=torch.float32, device="cpu"), bins=4))
 # #        rotated_scales = torch.bmm(rots, stds.unsqueeze(-1)).squeeze(-1)

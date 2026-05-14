@@ -17,7 +17,7 @@ namespace cg = cooperative_groups;
 
 // Forward method for converting the input spherical harmonics
 // coefficients of each Gaussian to a simple RGB color.
-__device__ glm::vec3 computeColorFromSH(int idx, int deg, int max_coeffs, const glm::vec3* means, glm::vec3 campos, const float* shs, bool* clamped)
+__device__ glm::vec3 computeColorFromSH(int idx, int deg, int max_coeffs, const glm::vec3* means, glm::vec3 campos, const float* shs_dc, const float* shs_ac, bool* clamped)
 {
 	// The implementation is loosely based on code for 
 	// "Differentiable Point-Based Radiance Fields for 
@@ -26,37 +26,38 @@ __device__ glm::vec3 computeColorFromSH(int idx, int deg, int max_coeffs, const 
 	glm::vec3 dir = pos - campos;
 	dir = dir / glm::length(dir);
 
-	glm::vec3* sh = ((glm::vec3*)shs) + idx * max_coeffs;
-	glm::vec3 result = SH_C0 * sh[0];
+	glm::vec3* sh_dc = (glm::vec3*)shs_dc + idx;
+	glm::vec3* sh_ac = ((glm::vec3*)shs_ac) + idx * max_coeffs;
+	glm::vec3 result = SH_C0 * sh_dc[0];
 
 	if (deg > 0)
 	{
 		float x = dir.x;
 		float y = dir.y;
 		float z = dir.z;
-		result = result - SH_C1 * y * sh[1] + SH_C1 * z * sh[2] - SH_C1 * x * sh[3];
+		result = result - SH_C1 * y * sh_ac[0] + SH_C1 * z * sh_ac[1] - SH_C1 * x * sh_ac[2];
 
 		if (deg > 1)
 		{
 			float xx = x * x, yy = y * y, zz = z * z;
 			float xy = x * y, yz = y * z, xz = x * z;
 			result = result +
-				SH_C2[0] * xy * sh[4] +
-				SH_C2[1] * yz * sh[5] +
-				SH_C2[2] * (2.0f * zz - xx - yy) * sh[6] +
-				SH_C2[3] * xz * sh[7] +
-				SH_C2[4] * (xx - yy) * sh[8];
+				SH_C2[0] * xy * sh_ac[3] +
+				SH_C2[1] * yz * sh_ac[4] +
+				SH_C2[2] * (2.0f * zz - xx - yy) * sh_ac[5] +
+				SH_C2[3] * xz * sh_ac[6] +
+				SH_C2[4] * (xx - yy) * sh_ac[7];
 
 			if (deg > 2)
 			{
 				result = result +
-					SH_C3[0] * y * (3.0f * xx - yy) * sh[9] +
-					SH_C3[1] * xy * z * sh[10] +
-					SH_C3[2] * y * (4.0f * zz - xx - yy) * sh[11] +
-					SH_C3[3] * z * (2.0f * zz - 3.0f * xx - 3.0f * yy) * sh[12] +
-					SH_C3[4] * x * (4.0f * zz - xx - yy) * sh[13] +
-					SH_C3[5] * z * (xx - yy) * sh[14] +
-					SH_C3[6] * x * (xx - 3.0f * yy) * sh[15];
+					SH_C3[0] * y * (3.0f * xx - yy) * sh_ac[8] +
+					SH_C3[1] * xy * z * sh_ac[9] +
+					SH_C3[2] * y * (4.0f * zz - xx - yy) * sh_ac[10] +
+					SH_C3[3] * z * (2.0f * zz - 3.0f * xx - 3.0f * yy) * sh_ac[11] +
+					SH_C3[4] * x * (4.0f * zz - xx - yy) * sh_ac[12] +
+					SH_C3[5] * z * (xx - yy) * sh_ac[13] +
+					SH_C3[6] * x * (xx - 3.0f * yy) * sh_ac[14];
 			}
 		}
 	}
@@ -71,7 +72,7 @@ __device__ glm::vec3 computeColorFromSH(int idx, int deg, int max_coeffs, const 
 }
 
 __device__ glm::vec3 computeColorFromSH_4D(int idx, int deg, int deg_t, int max_coeffs, const glm::vec3* means,
-		 glm::vec3 campos, const float* shs, bool* clamped, const float* ts, const float timestamp, const float time_duration)
+		 glm::vec3 campos, const float* shs_dc, const float* shs_ac, bool* clamped, const float* ts, const float timestamp, const float time_duration)
 {
 	// The implementation is loosely based on code for
 	// "Differentiable Point-Based Radiance Fields for
@@ -82,10 +83,11 @@ __device__ glm::vec3 computeColorFromSH_4D(int idx, int deg, int deg_t, int max_
 
 	const float dir_t = ts[idx]-timestamp;
 
-	glm::vec3* sh = ((glm::vec3*)shs) + idx * max_coeffs;
+	glm::vec3* sh_dc = (glm::vec3*)shs_dc + idx;
+	glm::vec3* sh_ac = ((glm::vec3*)shs_ac) + idx * max_coeffs;
 
 	float l0m0=SH_C0;
-	glm::vec3 result = l0m0 * sh[0];
+	glm::vec3 result = l0m0 * sh_dc[0];
 
 	if (deg > 0)
 	{
@@ -98,9 +100,9 @@ __device__ glm::vec3 computeColorFromSH_4D(int idx, int deg, int deg_t, int max_
 		float l1p1 = -1 * SH_C1 * x;
 
 		result += 
-			l1m1 * sh[1] +
-			l1m0 * sh[2] +
-			l1p1 * sh[3];
+			l1m1 * sh_ac[0] +
+			l1m0 * sh_ac[1] +
+			l1p1 * sh_ac[2];
 
 		if (deg > 1)
 		{
@@ -114,11 +116,11 @@ __device__ glm::vec3 computeColorFromSH_4D(int idx, int deg, int deg_t, int max_
             float l2p2 = SH_C2[4] * (xx - yy);
 
 			result +=
-                l2m2 * sh[4] +
-                l2m1 * sh[5] +
-                l2m0 * sh[6] +
-                l2p1 * sh[7] +
-                l2p2 * sh[8];
+                l2m2 * sh_ac[3] +
+                l2m1 * sh_ac[4] +
+                l2m0 * sh_ac[5] +
+                l2p1 * sh_ac[6] +
+                l2p2 * sh_ac[7];
 
 			if (deg > 2)
 			{
@@ -131,53 +133,53 @@ __device__ glm::vec3 computeColorFromSH_4D(int idx, int deg, int deg_t, int max_
                 float l3p3 = SH_C3[6] * x * (xx - 3 * yy);
 
 				result +=
-					l3m3 * sh[9] +
-					l3m2 * sh[10] +
-					l3m1 * sh[11] +
-					l3m0 * sh[12] +
-					l3p1 * sh[13] +
-					l3p2 * sh[14] +
-					l3p3 * sh[15];
+					l3m3 * sh_ac[8] +
+					l3m2 * sh_ac[9] +
+					l3m1 * sh_ac[10] +
+					l3m0 * sh_ac[11] +
+					l3p1 * sh_ac[12] +
+					l3p2 * sh_ac[13] +
+					l3p3 * sh_ac[14];
 
 				if (deg_t > 0){
 					float t1 = cos(2 * MY_PI * dir_t / time_duration);
 
-					result += t1 * (l0m0 * sh[16] +
-						l1m1 * sh[17] +
-						l1m0 * sh[18] +
-						l1p1 * sh[19] + 
-						l2m2 * sh[20] +
-						l2m1 * sh[21] +
-						l2m0 * sh[22] +
-						l2p1 * sh[23] +
-						l2p2 * sh[24] + 
-						l3m3 * sh[25] +
-						l3m2 * sh[26] +
-						l3m1 * sh[27] +
-						l3m0 * sh[28] +
-						l3p1 * sh[29] +
-						l3p2 * sh[30] +
-						l3p3 * sh[31]);
+					result += t1 * (l0m0 * sh_ac[15] +
+						l1m1 * sh_ac[16] +
+						l1m0 * sh_ac[17] +
+						l1p1 * sh_ac[18] + 
+						l2m2 * sh_ac[19] +
+						l2m1 * sh_ac[20] +
+						l2m0 * sh_ac[21] +
+						l2p1 * sh_ac[22] +
+						l2p2 * sh_ac[23] + 
+						l3m3 * sh_ac[24] +
+						l3m2 * sh_ac[25] +
+						l3m1 * sh_ac[26] +
+						l3m0 * sh_ac[27] +
+						l3p1 * sh_ac[28] +
+						l3p2 * sh_ac[29] +
+						l3p3 * sh_ac[30]);
 
 					if (deg_t > 1){
 						float t2 = cos(2 * MY_PI * dir_t * 2 / time_duration);
 
-						result += t2 * (l0m0 * sh[32] +
-							l1m1 * sh[33] +
-							l1m0 * sh[34] +
-							l1p1 * sh[35] + 
-							l2m2 * sh[36] +
-							l2m1 * sh[37] +
-							l2m0 * sh[38] +
-							l2p1 * sh[39] +
-							l2p2 * sh[40] + 
-							l3m3 * sh[41] +
-							l3m2 * sh[42] +
-							l3m1 * sh[43] +
-							l3m0 * sh[44] +
-							l3p1 * sh[45] +
-							l3p2 * sh[46] +
-							l3p3 * sh[47]);
+						result += t2 * (l0m0 * sh_ac[31] +
+							l1m1 * sh_ac[32] +
+							l1m0 * sh_ac[33] +
+							l1p1 * sh_ac[34] + 
+							l2m2 * sh_ac[35] +
+							l2m1 * sh_ac[36] +
+							l2m0 * sh_ac[37] +
+							l2p1 * sh_ac[38] +
+							l2p2 * sh_ac[39] + 
+							l3m3 * sh_ac[40] +
+							l3m2 * sh_ac[41] +
+							l3m1 * sh_ac[42] +
+							l3m0 * sh_ac[43] +
+							l3p1 * sh_ac[44] +
+							l3p2 * sh_ac[45] +
+							l3p3 * sh_ac[46]);
 					}
 
 				}
@@ -206,7 +208,8 @@ __global__ void preprocessCUDA(int P, int D, int D_t, int M,
 	const glm::vec4* rotations,
 	const glm::vec4* rotations_r,
 	const float* opacities,
-	const float* shs,
+	const float* shs_dc,
+	const float* shs_ac,
 	bool* clamped,
 	const float* cov3D_precomp,
 	const float prefilter_var,
@@ -335,9 +338,9 @@ __global__ void preprocessCUDA(int P, int D, int D_t, int M,
 	{
 		glm::vec3 result;
 		if (gaussian_dim == 3 || force_sh_3d){
-			result = computeColorFromSH(idx, D, M, (glm::vec3*)orig_points, *cam_pos, shs, clamped);
+			result = computeColorFromSH(idx, D, M, (glm::vec3*)orig_points, *cam_pos, shs_dc,shs_ac, clamped);
 		}else{
-			result = computeColorFromSH_4D(idx, D, D_t, M, (glm::vec3*)orig_points, *cam_pos, shs, clamped, ts, timestamp, time_duration);
+			result = computeColorFromSH_4D(idx, D, D_t, M, (glm::vec3*)orig_points, *cam_pos, shs_dc,shs_ac, clamped, ts, timestamp, time_duration);
 		}
 		rgb[idx * C + 0] = result.x;
 		rgb[idx * C + 1] = result.y;
@@ -544,7 +547,8 @@ void FORWARD::preprocess(int P, int D, int D_t, int M,
 	const glm::vec4* rotations,
 	const glm::vec4* rotations_r,
 	const float* opacities,
-	const float* shs,
+	const float* shs_dc,
+	const float* shs_ac,
 	bool* clamped,
 	const float* cov3D_precomp,
 	const float prefilter_var,
@@ -579,7 +583,8 @@ void FORWARD::preprocess(int P, int D, int D_t, int M,
 		rotations,
 		rotations_r,
 		opacities,
-		shs,
+		shs_dc,
+		shs_ac,
 		clamped,
 		cov3D_precomp,
 		prefilter_var,

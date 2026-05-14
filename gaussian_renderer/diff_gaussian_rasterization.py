@@ -50,7 +50,8 @@ def cpu_deep_copy_tuple(input_tuple):
 def rasterize_gaussians(
     means3D,
     means2D,
-    sh,
+    sh_dc,
+    sh_ac,
     colors_precomp,
     flow_2d,
     opacities,
@@ -66,7 +67,8 @@ def rasterize_gaussians(
     all_results = _forward_op(
         means3D,
         means2D,
-        sh,
+        sh_dc,
+        sh_ac,
         colors_precomp,
         flow_2d,
         opacities,
@@ -108,7 +110,8 @@ def rasterize_gaussians(
 def _forward_op(
     means3D: torch.Tensor,
     means2D: torch.Tensor,
-    sh: torch.Tensor,
+    sh_dc: torch.Tensor,
+    sh_ac: torch.Tensor,
     colors_precomp: torch.Tensor,
     flow_2d: torch.Tensor,
     opacities: torch.Tensor,
@@ -179,7 +182,8 @@ def _forward_op(
         tanfovy,
         image_height,
         image_width,
-        sh,
+        sh_dc,
+        sh_ac,
         sh_degree,
         sh_degree_t,
         campos,
@@ -276,7 +280,8 @@ def _forward_op(
 def _(
     means3D: torch.Tensor,
     means2D: torch.Tensor,
-    sh: torch.Tensor,
+    sh_dc: torch.Tensor,
+    sh_ac: torch.Tensor,
     colors_precomp: torch.Tensor,
     flow_2d: torch.Tensor,
     opacities: torch.Tensor,
@@ -372,7 +377,8 @@ def _setup_ctx(ctx, inputs, output):
     (
         means3D,
         means2D,
-        sh,
+        sh_dc,
+        sh_ac,
         colors_precomp,
         flow_2d,
         opacities,
@@ -429,7 +435,8 @@ def _setup_ctx(ctx, inputs, output):
         rotations,
         cov3D_precomp,
         radii,
-        sh,
+        sh_dc,
+        sh_ac,
         flow_2d,
         opacities,
         ts,
@@ -487,7 +494,8 @@ def _backward_op(
         rotations,
         cov3D_precomp,
         radii,
-        sh,
+        sh_dc,
+        sh_ac,
         flow_2d,
         opacities,
         ts,
@@ -543,7 +551,8 @@ def _backward_op(
         grad_depth,
         grad_alpha,
         grad_flow,
-        sh,
+        sh_dc,
+        sh_ac,
         sh_degree,
         sh_degree_t,
         campos,
@@ -570,7 +579,8 @@ def _backward_op(
                 grad_opacities,
                 grad_means3D,
                 grad_cov3D_precomp,
-                grad_sh,
+                grad_sh_dc,
+                grad_sh_ac,
                 grad_flows,
                 grad_ts,
                 grad_scales,
@@ -591,7 +601,8 @@ def _backward_op(
             grad_opacities,
             grad_means3D,
             grad_cov3D_precomp,
-            grad_sh,
+            grad_sh_dc,
+            grad_sh_ac,
             grad_flows,
             grad_ts,
             grad_scales,
@@ -603,7 +614,8 @@ def _backward_op(
     grads = (
         grad_means3D,
         grad_means2D,
-        grad_sh,
+        grad_sh_dc,
+        grad_sh_ac,
         grad_colors_precomp,
         grad_flows,
         grad_opacities,
@@ -640,20 +652,21 @@ def _backward_op(
     #     print(type(x),x.shape if isinstance(x, torch.Tensor) else None, x.dtype if isinstance(x, torch.Tensor) else None)
 
 
-    grad_names = [
-        "grad_means3D",
-        "grad_means2D",
-        "grad_sh",
-        "grad_colors_precomp",
-        "grad_flows",
-        "grad_opacities",
-        "grad_ts",
-        "grad_scales",
-        "grad_scales_t",
-        "grad_rotations",
-        "grad_rotations_r",
-        "grad_cov3D_precomp",
-    ]
+    # grad_names = [
+    #     "grad_means3D",
+    #     "grad_means2D",
+    #     "grad_sh_dc",
+    #     "grad_sh_ac",
+    #     "grad_colors_precomp",
+    #     "grad_flows",
+    #     "grad_opacities",
+    #     "grad_ts",
+    #     "grad_scales",
+    #     "grad_scales_t",
+    #     "grad_rotations",
+    #     "grad_rotations_r",
+    #     "grad_cov3D_precomp",
+    # ]
 
     # print("\n---------------------------------")
     # print("\nBackward pass gradients (old):")
@@ -798,7 +811,8 @@ class GaussianRasterizer(nn.Module):
         means3D,
         means2D,
         opacities,
-        shs=None,
+        shs_dc=None,
+        shs_ac=None,
         colors_precomp=None,
         flow_2d=None,
         ts=None,
@@ -812,8 +826,8 @@ class GaussianRasterizer(nn.Module):
 
         raster_settings = self.raster_settings
 
-        if (shs is None and colors_precomp is None) or (
-            shs is not None and colors_precomp is not None
+        if (shs_dc is None and colors_precomp is None) or (
+            shs_dc is not None and colors_precomp is not None
         ):
             raise Exception(
                 "Please provide excatly one of either SHs or precomputed colors!"
@@ -835,8 +849,10 @@ class GaussianRasterizer(nn.Module):
                 "Please provide exactly rotations_r and scales_t and ts if rot_4d and cov3D_precomp is None!"
             )
 
-        if shs is None:
-            shs = torch.Tensor([])
+        if shs_dc is None:
+            shs_dc = torch.Tensor([])
+        if shs_ac is None:
+            shs_ac = torch.Tensor([])
         if colors_precomp is None:
             colors_precomp = torch.Tensor([])
         if flow_2d is None:
@@ -859,7 +875,8 @@ class GaussianRasterizer(nn.Module):
         return rasterize_gaussians(
             means3D,
             means2D,
-            shs,
+            shs_dc,
+            shs_ac,
             colors_precomp,
             flow_2d,
             opacities,
@@ -896,7 +913,8 @@ def C_rasterize_gaussians(
     tan_fovy: float,
     image_height: int,
     image_width: int,
-    sh: torch.Tensor,
+    sh_dc: torch.Tensor,
+    sh_ac: torch.Tensor,
     degree: int,
     degree_t: int,
     campos: torch.Tensor,
@@ -942,7 +960,8 @@ def C_rasterize_gaussians(
         tan_fovy,
         image_height,
         image_width,
-        sh,
+        sh_dc,
+        sh_ac,
         degree,
         degree_t,
         campos,
@@ -957,7 +976,7 @@ def C_rasterize_gaussians(
     )
     # print("C++ rasterizer called with args:")
     # for x in args:
-    #      print(type(x),x.device if hasattr(x,"device") else "N/A")
+    #      print(type(x),x.device if hasattr(x,"device") else "N/A",x.shape if hasattr(x,"shape") else "")
     return _C.rasterize_gaussians(*args)
 
 
@@ -982,7 +1001,8 @@ def C_rasterize_gaussians_FAKE(
     tan_fovy: float,
     image_height: int,
     image_width: int,
-    sh: torch.Tensor,
+    sh_dc: torch.Tensor,
+    sh_ac: torch.Tensor,
     degree: int,
     degree_t: int,
     campos: torch.Tensor,
@@ -1099,7 +1119,8 @@ def C_rasterize_gaussians_backward(
     dL_dout_depth: torch.Tensor,
     dL_dout_mask: torch.Tensor,
     dL_dout_flow: torch.Tensor,
-    sh: torch.Tensor,
+    sh_dc: torch.Tensor,
+    sh_ac: torch.Tensor,
     degree: int,
     degree_t: int,
     campos: torch.Tensor,
@@ -1126,8 +1147,9 @@ def C_rasterize_gaussians_backward(
     torch.Tensor,
     torch.Tensor,
     torch.Tensor,
+    torch.Tensor,
 ]:
-    retval =  _C.rasterize_gaussians_backward(
+    args = (
         background,
         means3D,
         out_means3D,
@@ -1151,7 +1173,8 @@ def C_rasterize_gaussians_backward(
         dL_dout_depth,
         dL_dout_mask,
         dL_dout_flow,
-        sh,
+        sh_dc,
+        sh_ac,
         degree,
         degree_t,
         campos,
@@ -1167,13 +1190,21 @@ def C_rasterize_gaussians_backward(
         debug,
     )
 
+    # print("Calling C++ backward rasterizer with args:")
+    # for x in args:
+    #      print(type(x),x.device if hasattr(x,"device") else "N/A",x.shape if hasattr(x,"shape") else "")
+
+
+    retval =  _C.rasterize_gaussians_backward(*args)
+
     (
         dL_dmeans2D,
         dL_dcolors,
         dL_dopacity,
         dL_dmeans3D,
         dL_dcov3D,
-        dL_dsh,
+        dL_dsh_dc,
+        dL_dsh_ac,
         dL_dflows,
         dL_dts,
         dL_dscales,
@@ -1190,7 +1221,8 @@ def C_rasterize_gaussians_backward(
     #     dL_dopacity.shape,
     #     dL_dmeans3D.shape,
     #     dL_dcov3D.shape,
-    #     dL_dsh.shape,
+    #     dL_dsh_dc.shape,
+    #     dL_dsh_ac.shape,
     #     dL_dflows.shape,
     #     dL_dts.shape,
     #     dL_dscales.shape,
@@ -1198,7 +1230,6 @@ def C_rasterize_gaussians_backward(
     #     dL_drotations.shape,
     #     dL_drotations_r.shape,
     #  ))
-
 
     return retval
 
@@ -1230,7 +1261,8 @@ def C_rasterize_gaussians_backward_FAKE(
     dL_dout_depth: torch.Tensor,
     dL_dout_mask: torch.Tensor,
     dL_dout_flow: torch.Tensor,
-    sh: torch.Tensor,
+    sh_dc: torch.Tensor,
+    sh_ac: torch.Tensor,
     degree: int,
     degree_t: int,
     campos: torch.Tensor,
@@ -1257,10 +1289,11 @@ def C_rasterize_gaussians_backward_FAKE(
     torch.Tensor,
     torch.Tensor,
     torch.Tensor,
+    torch.Tensor,
 ]:
 
     P = means3D.shape[0]
-    M = sh.shape[1]
+    M = sh_ac.shape[1]
     dL_dmeans3D = means3D.new_empty((P, 3))
     dL_dmeans2D = means3D.new_empty((P, 3))
     dL_dcolors = means3D.new_empty((P, 3))
@@ -1268,7 +1301,8 @@ def C_rasterize_gaussians_backward_FAKE(
     dL_dopacity = means3D.new_empty((P, 1))
     dL_dts = means3D.new_empty((P, 1))
     dL_dcov3D = means3D.new_empty((P, 6))
-    dL_dsh = means3D.new_empty((P, M, 3))
+    dL_dsh_dc = means3D.new_empty((P, 1, 3))
+    dL_dsh_ac = means3D.new_empty((P, M, 3))
     dL_dscales = means3D.new_empty((P, 3))
     dL_dscales_t = means3D.new_empty((P, 1))
     dL_drotations = means3D.new_empty((P, 4))
@@ -1282,7 +1316,8 @@ def C_rasterize_gaussians_backward_FAKE(
     #     dL_dopacity.shape,
     #     dL_dmeans3D.shape,
     #     dL_dcov3D.shape,
-    #     dL_dsh.shape,
+    #     dL_dsh_dc.shape,
+    #     dL_dsh_ac.shape,
     #     dL_dflows.shape,
     #     dL_dts.shape,
     #     dL_dscales.shape,
@@ -1298,7 +1333,8 @@ def C_rasterize_gaussians_backward_FAKE(
         dL_dopacity,
         dL_dmeans3D,
         dL_dcov3D,
-        dL_dsh,
+        dL_dsh_dc,
+        dL_dsh_ac,
         dL_dflows,
         dL_dts,
         dL_dscales,

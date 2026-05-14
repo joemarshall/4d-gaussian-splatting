@@ -36,7 +36,8 @@ RasterizeGaussiansCUDA(
 	const float tan_fovy,
 	const int image_height,
 	const int image_width,
-	const torch::Tensor &sh,
+	const torch::Tensor &sh_dc,
+	const torch::Tensor &sh_ac,
 	const int degree,
 	const int degree_t,
 	const torch::Tensor &campos,
@@ -49,7 +50,7 @@ RasterizeGaussiansCUDA(
 	const bool debug,
 	const torch::Tensor &metric_map);
 
-std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
+std::tuple<torch::Tensor, torch::Tensor,torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor>
 RasterizeGaussiansBackwardCUDA(
 	const torch::Tensor &background,
 	const torch::Tensor &means3D,
@@ -74,7 +75,8 @@ RasterizeGaussiansBackwardCUDA(
 	const torch::Tensor &dL_dout_depth,
 	const torch::Tensor &dL_dout_mask,
 	const torch::Tensor &dL_dout_flow,
-	const torch::Tensor &sh,
+	const torch::Tensor &sh_dc,
+	const torch::Tensor &sh_ac,
 	const int degree,
 	const int degree_t,
 	const torch::Tensor &campos,
