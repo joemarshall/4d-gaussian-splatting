@@ -247,13 +247,15 @@ class GaussianModel:
 
         def restore_fn(self, var_name, in_val):
             if in_val is None:
-                print("Missing value in restore:", var_name)
+                print("Missing value in restore:", var_name)            
             if isinstance(in_val, torch.Tensor):
                 setattr(self, var_name, in_val.cuda())
             elif isinstance(
                 getattr(self, var_name), torch.optim.Optimizer
             ) and isinstance(in_val, dict):
                 return (var_name, in_val)
+            elif hasattr(self,var_name):
+                setattr(self, var_name, in_val)
             return None
 
         restore_return_values = self._make_save_or_restore_calls(restore_fn, model_args)
@@ -442,7 +444,7 @@ class GaussianModel:
         fused_point_cloud = torch.tensor(np.asarray(pcd.points)).float().cuda()
         fused_color = RGB2SH(torch.tensor(np.asarray(pcd.colors)).float().cuda())
         features = (
-            torch.zeros((fused_color.shape[0], 3, self.get_max_sh_channels))
+            torch.zeros((fused_color.shape[0], self.get_max_sh_channels,3 ))
             .float()
             .cuda()
         )
@@ -489,21 +491,21 @@ class GaussianModel:
 
         self._xyz = nn.Parameter(fused_point_cloud.requires_grad_(True))
         self._features_dc = nn.Parameter(
-            features[:, :, 0:1].transpose(1, 2).contiguous().requires_grad_(True)
+            features[:, 0:1, 0:3].contiguous().requires_grad_(True)
         )
         self._features_rest = nn.Parameter(
-            features[:, :, 1:].transpose(1, 2).contiguous().requires_grad_(True)
+            features[:, 1:, 0:3].contiguous().requires_grad_(True)
         )
-        self._scaling = nn.Parameter(scales.requires_grad_(True))
-        self._rotation = nn.Parameter(rots.requires_grad_(True))
-        self._opacity = nn.Parameter(opacities.requires_grad_(True))
+        self._scaling = nn.Parameter(scales.contiguous().requires_grad_(True))
+        self._rotation = nn.Parameter(rots.contiguous().requires_grad_(True))
+        self._opacity = nn.Parameter(opacities.contiguous().requires_grad_(True))
         self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device="cuda")
 
         if self.gaussian_dim == 4:
-            self._t = nn.Parameter(fused_times.requires_grad_(True))
-            self._scaling_t = nn.Parameter(scales_t.requires_grad_(True))
+            self._t = nn.Parameter(fused_times.contiguous().requires_grad_(True))
+            self._scaling_t = nn.Parameter(scales_t.contiguous().requires_grad_(True))
             if self.rot_4d:
-                self._rotation_r = nn.Parameter(rots_r.requires_grad_(True))
+                self._rotation_r = nn.Parameter(rots_r.contiguous().requires_grad_(True))
 
     def create_from_pth(self, path, spatial_lr_scale):
         spatial_lr_scale = float(spatial_lr_scale)
