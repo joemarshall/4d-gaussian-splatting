@@ -42,20 +42,20 @@ __device__ void computeColorFromSH(int idx, int deg, int max_coeffs, const glm::
 	float z = dir.z;
 
 	// Target location for this Gaussian to write SH gradients to
-	glm::vec3* dL_dsh_dc = dL_dshs_dc + idx;
-	glm::vec3* dL_dsh_ac = dL_dshs_ac + idx * max_coeffs;
+	glm::vec3* d_dc = dL_dshs_dc + idx;
+	glm::vec3* d_ac = dL_dshs_ac + idx * max_coeffs;
 
 	// No tricks here, just high school-level calculus.
 	float dRGBdsh0 = SH_C0;
-	dL_dsh_dc[0] = dRGBdsh0 * dL_dRGB;
+	d_dc[0] = dRGBdsh0 * dL_dRGB;
 	if (deg > 0)
 	{
 		float dRGBdsh1 = -SH_C1 * y;
 		float dRGBdsh2 = SH_C1 * z;
 		float dRGBdsh3 = -SH_C1 * x;
-		dL_dsh_ac[0] = dRGBdsh1 * dL_dRGB;
-		dL_dsh_ac[1] = dRGBdsh2 * dL_dRGB;
-		dL_dsh_ac[2] = dRGBdsh3 * dL_dRGB;
+		d_ac[0] = dRGBdsh1 * dL_dRGB;
+		d_ac[1] = dRGBdsh2 * dL_dRGB;
+		d_ac[2] = dRGBdsh3 * dL_dRGB;
 
 		dRGBdx = -SH_C1 * sh_ac[2];
 		dRGBdy = -SH_C1 * sh_ac[0];
@@ -71,11 +71,11 @@ __device__ void computeColorFromSH(int idx, int deg, int max_coeffs, const glm::
 			float dRGBdsh6 = SH_C2[2] * (2.f * zz - xx - yy);
 			float dRGBdsh7 = SH_C2[3] * xz;
 			float dRGBdsh8 = SH_C2[4] * (xx - yy);
-			dL_dsh_ac[3] = dRGBdsh4 * dL_dRGB;
-			dL_dsh_ac[4] = dRGBdsh5 * dL_dRGB;
-			dL_dsh_ac[5] = dRGBdsh6 * dL_dRGB;
-			dL_dsh_ac[6] = dRGBdsh7 * dL_dRGB;
-			dL_dsh_ac[7] = dRGBdsh8 * dL_dRGB;
+			d_ac[3] = dRGBdsh4 * dL_dRGB;
+			d_ac[4] = dRGBdsh5 * dL_dRGB;
+			d_ac[5] = dRGBdsh6 * dL_dRGB;
+			d_ac[6] = dRGBdsh7 * dL_dRGB;
+			d_ac[7] = dRGBdsh8 * dL_dRGB;
 
 			dRGBdx += SH_C2[0] * y * sh_ac[3] + SH_C2[2] * 2.f * -x * sh_ac[5] + SH_C2[3] * z * sh_ac[6] + SH_C2[4] * 2.f * x * sh_ac[7];
 			dRGBdy += SH_C2[0] * x * sh_ac[3] + SH_C2[1] * z * sh_ac[4] + SH_C2[2] * 2.f * -y * sh_ac[5] + SH_C2[4] * 2.f * -y * sh_ac[7];
@@ -90,13 +90,13 @@ __device__ void computeColorFromSH(int idx, int deg, int max_coeffs, const glm::
 				float dRGBdsh13 = SH_C3[4] * x * (4.f * zz - xx - yy);
 				float dRGBdsh14 = SH_C3[5] * z * (xx - yy);
 				float dRGBdsh15 = SH_C3[6] * x * (xx - 3.f * yy);
-				dL_dsh_ac[8] = dRGBdsh9 * dL_dRGB;
-				dL_dsh_ac[9] = dRGBdsh10 * dL_dRGB;
-				dL_dsh_ac[10] = dRGBdsh11 * dL_dRGB;
-				dL_dsh_ac[11] = dRGBdsh12 * dL_dRGB;
-				dL_dsh_ac[12] = dRGBdsh13 * dL_dRGB;
-				dL_dsh_ac[13] = dRGBdsh14 * dL_dRGB;
-				dL_dsh_ac[14] = dRGBdsh15 * dL_dRGB;
+				d_ac[8] = dRGBdsh9 * dL_dRGB;
+				d_ac[9] = dRGBdsh10 * dL_dRGB;
+				d_ac[10] = dRGBdsh11 * dL_dRGB;
+				d_ac[11] = dRGBdsh12 * dL_dRGB;
+				d_ac[12] = dRGBdsh13 * dL_dRGB;
+				d_ac[13] = dRGBdsh14 * dL_dRGB;
+				d_ac[14] = dRGBdsh15 * dL_dRGB;
 
 				dRGBdx += (
 					SH_C3[0] * sh_ac[8] * 3.f * 2.f * xy +
@@ -147,7 +147,6 @@ __device__ void computeColorFromSH_4D(int idx, int deg, int deg_t, int max_coeff
             const float* shs_dc, const float* shs_ac, const bool* clamped, const float* ts, const float timestamp, const float time_duration,
             const glm::vec3* dL_dcolor, glm::vec3* dL_dmeans, glm::vec3* dL_dshs_dc, glm::vec3* dL_dshs_ac, float* dL_dts)
 {
-	printf("%d,%d\n",max_coeffs,idx);
 	// Compute intermediate values, as it is done during forward
 	const float dir_t = ts[idx] - timestamp;
 	glm::vec3 pos = means[idx];
@@ -869,7 +868,7 @@ __global__ void preprocessCUDA(
 	float* dL_dcolor,
 	float* dL_dcov3D,
 	float* dL_dsh_dc,
-	float* dL_dsh_ac,
+	float* d_ac,
 	float* dL_dts,
 	glm::vec3* dL_dscale,
 	float* dL_dscale_t,
@@ -900,15 +899,14 @@ __global__ void preprocessCUDA(
 	// That's the second part of the mean gradient. Previous computation
 	// of cov2D and following SH conversion also affects it.
 	dL_dmeans[idx] += dL_dmean;
-	printf("shs_dc: %p, shs_ac: %p\n", shs_dc, shs_ac);
 	// Compute gradient updates due to computing colors from SHs
 	if (shs_dc && shs_ac){
 		if (gaussian_dim == 3 || force_sh_3d){
-			computeColorFromSH(idx, D, M, (glm::vec3*)means, *campos, shs_dc,shs_ac, clamped, (glm::vec3*)dL_dcolor, (glm::vec3*)dL_dmeans, (glm::vec3*)dL_dsh_dc, (glm::vec3*)dL_dsh_ac);
+			computeColorFromSH(idx, D, M, (glm::vec3*)means, *campos, shs_dc,shs_ac, clamped, (glm::vec3*)dL_dcolor, (glm::vec3*)dL_dmeans, (glm::vec3*)dL_dsh_dc, (glm::vec3*)d_ac);
 		}else{
 		    computeColorFromSH_4D(idx, D, D_t, M, (glm::vec3*)means, *campos,
 		             shs_dc, shs_ac, clamped, ts, timestamp, time_duration,
-		             (glm::vec3*)dL_dcolor, (glm::vec3*)dL_dmeans, (glm::vec3*)dL_dsh_dc, (glm::vec3*)dL_dsh_ac, dL_dts);
+		             (glm::vec3*)dL_dcolor, (glm::vec3*)dL_dmeans, (glm::vec3*)dL_dsh_dc, (glm::vec3*)d_ac, dL_dts);
 		}
 
 	}
@@ -1175,7 +1173,7 @@ void BACKWARD::preprocess(
 	float* dL_dcolor,
 	float* dL_dcov3D,
 	float* dL_dsh_dc,
-	float* dL_dsh_ac,
+	float* d_ac,
 	float* dL_dts,
 	glm::vec3* dL_dscale,
 	float* dL_dscale_t,
@@ -1231,7 +1229,7 @@ void BACKWARD::preprocess(
 		dL_dcolor,
 		dL_dcov3D,
 		dL_dsh_dc,
-		dL_dsh_ac,
+		d_ac,
 		dL_dts,
 		dL_dscale,
 		dL_dscale_t,

@@ -611,7 +611,7 @@ def _backward_op(
             grad_rotations_r,
         ) = C_rasterize_gaussians_backward(*args)
 
-    grads = (
+    grads = (        
         grad_means3D,
         grad_means2D,
         grad_sh_dc,
@@ -652,31 +652,33 @@ def _backward_op(
     #     print(type(x),x.shape if isinstance(x, torch.Tensor) else None, x.dtype if isinstance(x, torch.Tensor) else None)
 
 
-    # grad_names = [
-    #     "grad_means3D",
-    #     "grad_means2D",
-    #     "grad_sh_dc",
-    #     "grad_sh_ac",
-    #     "grad_colors_precomp",
-    #     "grad_flows",
-    #     "grad_opacities",
-    #     "grad_ts",
-    #     "grad_scales",
-    #     "grad_scales_t",
-    #     "grad_rotations",
-    #     "grad_rotations_r",
-    #     "grad_cov3D_precomp",
-    # ]
+    grad_names = [
+        "grad_means3D",
+        "grad_means2D",
+        "grad_sh_dc",
+        "grad_sh_ac",
+        "grad_colors_precomp",
+        "grad_flows",
+        "grad_opacities",
+        "grad_ts",
+        "grad_scales",
+        "grad_scales_t",
+        "grad_rotations",
+        "grad_rotations_r",
+        "grad_cov3D_precomp",
+    ]
 
-    # print("\n---------------------------------")
-    # print("\nBackward pass gradients (old):")
-    # print("\n---------------------------------")
-    # for x in sorted(zip(grad_names, grads)):
-    #     mean_val = torch.mean(x[1]) if type(x[1]) is torch.Tensor else None
-    #     max_val = torch.max(x[1]) if type(x[1]) is torch.Tensor else None
-    #     min_val = torch.min(x[1]) if type(x[1]) is torch.Tensor else None
-    #     print(f"{x[0]}: {min_val}, {mean_val}, {max_val}")
-    # print("\n---------------------------------")
+    # if sh_degree > 0:
+    #     print("\n---------------------------------")
+    #     print(f"\nBackward pass gradients (sh_degree:{sh_degree}):")
+    #     print("\n---------------------------------")
+    #     for x in zip(grad_names, grads):
+    #         if type(x[1]) is torch.Tensor:
+    #             mean_val = torch.mean(x[1])
+    #             max_val = torch.max(x[1])
+    #             min_val = torch.min(x[1])
+    #             print(f"{x[0]}: {x[1].shape} {min_val}, {mean_val}, {max_val}")
+    #     print("\n---------------------------------")
 
     return grads
 

@@ -360,7 +360,7 @@ def training(
         num_pts_ratio=num_pts_ratio,
         time_duration=time_duration,
     )
-    gaussians.training_setup(opt, batch_size_mult=batch_size)
+    gaussians.training_setup(opt, batch_size_mult=1.0)
     total_training_points = 0
 
     if checkpoint == "auto_latest":

@@ -751,7 +751,6 @@ void CudaRasterizer::Rasterizer::backward(
 				   dL_dopacity,
 				   dL_dcolor, dL_dflows),
 			   debug)
-	printf("SHS_dc and shs_ac are %p %p %p %p\n", shs_dc, shs_ac);
 	// Take care of the rest of preprocessing. Was the precomputed covariance
 	// given to us or a scales/rot pair? If precomputed, pass that. If not,
 	// use the one we computed ourselves.
