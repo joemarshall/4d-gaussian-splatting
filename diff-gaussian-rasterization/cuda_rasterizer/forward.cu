@@ -190,10 +190,12 @@ __device__ glm::vec3 computeColorFromSH_4D(int idx, int deg, int deg_t, int max_
 
 	// RGB colors are clamped to positive values. If values are
 	// clamped, we need to keep track of this for the backward pass.
-	clamped[3 * idx + 0] = (result.x < 0);
-	clamped[3 * idx + 1] = (result.y < 0);
-	clamped[3 * idx + 2] = (result.z < 0);
-	return glm::max(result, 0.0f);
+	// JM: added clamping at 1.0 as well as 0.0
+	// to avoid overflow of sh coefficients
+	clamped[3 * idx + 0] = (result.x < 0 || result.x > 1.0);
+	clamped[3 * idx + 1] = (result.y < 0 || result.y > 1.0);
+	clamped[3 * idx + 2] = (result.z < 0 || result.z > 1.0);
+	return glm::max(glm::min(result,1.0f), 0.0f);
 }
 
 // Perform initial steps for each Gaussian prior to rasterization.
