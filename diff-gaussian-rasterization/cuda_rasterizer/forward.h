@@ -33,7 +33,7 @@ namespace FORWARD
 		const float* opacities,
 		const float* shs_dc,
 		const float* shs_ac,
-		bool* clamped,
+		int8_t *clamped,
 		const float* cov3D_precomp,
 		const float prefilter_var,
 		const float* colors_precomp,

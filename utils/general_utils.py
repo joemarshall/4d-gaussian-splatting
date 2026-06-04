@@ -133,7 +133,7 @@ def build_rotation_4d(l, r):
     return A
 
 def build_scaling_rotation_4d(s, l, r):
-    L = torch.zeros((s.shape[0], 4, 4), dtype=torch.float, device="cuda")
+    L = torch.zeros((s.shape[0], 4, 4), dtype=torch.float, device=s.device)
     R = build_rotation_4d(l, r)
 
     L[:,0,0] = s[:,0]

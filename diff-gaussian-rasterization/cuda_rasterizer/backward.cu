@@ -17,7 +17,7 @@ namespace cg = cooperative_groups;
 #include <stdio.h>
 // Backward pass for conversion of spherical harmonics to RGB for
 // each Gaussian.
-__device__ void computeColorFromSH(int idx, int deg, int max_coeffs, const glm::vec3* means, glm::vec3 campos, const float* shs_dc, const float* shs_ac, const bool* clamped, const glm::vec3* dL_dcolor, glm::vec3* dL_dmeans, glm::vec3* dL_dshs_dc,glm::vec3* dL_dshs_ac)
+__device__ void computeColorFromSH(int idx, int deg, int max_coeffs, const glm::vec3* means, glm::vec3 campos, const float* shs_dc, const float* shs_ac, const int8_t *clamped, const glm::vec3* dL_dcolor, glm::vec3* dL_dmeans, glm::vec3* dL_dshs_dc,glm::vec3* dL_dshs_ac)
 {
 	// Compute intermediate values, as it is done during forward
 	glm::vec3 pos = means[idx];
@@ -29,10 +29,14 @@ __device__ void computeColorFromSH(int idx, int deg, int max_coeffs, const glm::
 
 	// Use PyTorch rule for clamping: if clamping was applied,
 	// gradient becomes 0.
+	// JM: actually, allow positive gradients if clamped at zero and negative if clamped at 1
 	glm::vec3 dL_dRGB = dL_dcolor[idx];
-	dL_dRGB.x *= clamped[3 * idx + 0] ? 0 : 1;
-	dL_dRGB.y *= clamped[3 * idx + 1] ? 0 : 1;
-	dL_dRGB.z *= clamped[3 * idx + 2] ? 0 : 1;
+	dL_dRGB.x = (clamped[3 * idx + 0]==-1) ? 0 : (clamped[3 * idx + 0]==1) ? glm::min(0.0f, dL_dRGB.x) : dL_dRGB.x;
+	dL_dRGB.y = (clamped[3 * idx + 1]==-1) ? 0 : (clamped[3 * idx + 1]==1) ? glm::min(0.0f, dL_dRGB.y) : dL_dRGB.y;
+	dL_dRGB.z = (clamped[3 * idx + 2]==-1) ? 0 : (clamped[3 * idx + 2]==1) ? glm::min(0.0f, dL_dRGB.z) : dL_dRGB.z;
+	// dL_dRGB.x = (clamped[3 * idx + 0]==-1) ? glm::max(0.0f, dL_dRGB.x) : (clamped[3 * idx + 0]==1) ? glm::min(0.0f, dL_dRGB.x) : dL_dRGB.x;
+	// dL_dRGB.y = (clamped[3 * idx + 1]==-1) ? glm::max(0.0f, dL_dRGB.y) : (clamped[3 * idx + 1]==1) ? glm::min(0.0f, dL_dRGB.y) : dL_dRGB.y;
+	// dL_dRGB.z = (clamped[3 * idx + 2]==-1) ? glm::max(0.0f, dL_dRGB.z) : (clamped[3 * idx + 2]==1) ? glm::min(0.0f, dL_dRGB.z) : dL_dRGB.z;
 
 	glm::vec3 dRGBdx(0, 0, 0);
 	glm::vec3 dRGBdy(0, 0, 0);
@@ -144,7 +148,7 @@ __device__ void computeColorFromSH(int idx, int deg, int max_coeffs, const glm::
 // Backward pass for conversion of spherical harmonics to RGB for
 // each Gaussian.
 __device__ void computeColorFromSH_4D(int idx, int deg, int deg_t, int max_coeffs, const glm::vec3* means, glm::vec3 campos,
-            const float* shs_dc, const float* shs_ac, const bool* clamped, const float* ts, const float timestamp, const float time_duration,
+            const float* shs_dc, const float* shs_ac, const int8_t *clamped, const float* ts, const float timestamp, const float time_duration,
             const glm::vec3* dL_dcolor, glm::vec3* dL_dmeans, glm::vec3* dL_dshs_dc, glm::vec3* dL_dshs_ac, float* dL_dts)
 {
 	// Compute intermediate values, as it is done during forward
@@ -850,7 +854,7 @@ __global__ void preprocessCUDA(
 	const float* shs_ac,
 	const float* ts,
 	const float* opacities,
-	const bool* clamped,
+	const int8_t *clamped,
 	const uint32_t* tiles_touched,
 	const glm::vec3* scales,
 	const float* scales_t,
@@ -1150,7 +1154,7 @@ void BACKWARD::preprocess(
 	const float* shs_ac,
 	const float* ts,
 	const float* opacities,
-	const bool* clamped,
+	const int8_t *clamped,
 	const uint32_t* tiles_touched,
 	const glm::vec3* scales,
 	const float* scales_t,

@@ -51,7 +51,7 @@ namespace BACKWARD
 		const float* shs_ac,
 		const float* ts,
 		const float* opacities,
-		const bool* clamped,
+		const int8_t *clamped,
 		const uint32_t* tiles_touched,
 		const glm::vec3* scales,
 		const float* scales_t,

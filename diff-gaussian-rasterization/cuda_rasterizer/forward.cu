@@ -17,7 +17,7 @@ namespace cg = cooperative_groups;
 
 // Forward method for converting the input spherical harmonics
 // coefficients of each Gaussian to a simple RGB color.
-__device__ glm::vec3 computeColorFromSH(int idx, int deg, int max_coeffs, const glm::vec3* means, glm::vec3 campos, const float* shs_dc, const float* shs_ac, bool* clamped)
+__device__ glm::vec3 computeColorFromSH(int idx, int deg, int max_coeffs, const glm::vec3* means, glm::vec3 campos, const float* shs_dc, const float* shs_ac, int8_t *clamped)
 {
 	// The implementation is loosely based on code for 
 	// "Differentiable Point-Based Radiance Fields for 
@@ -72,7 +72,7 @@ __device__ glm::vec3 computeColorFromSH(int idx, int deg, int max_coeffs, const 
 }
 
 __device__ glm::vec3 computeColorFromSH_4D(int idx, int deg, int deg_t, int max_coeffs, const glm::vec3* means,
-		 glm::vec3 campos, const float* shs_dc, const float* shs_ac, bool* clamped, const float* ts, const float timestamp, const float time_duration)
+		 glm::vec3 campos, const float* shs_dc, const float* shs_ac, int8_t *clamped, const float* ts, const float timestamp, const float time_duration)
 {
 	// The implementation is loosely based on code for
 	// "Differentiable Point-Based Radiance Fields for
@@ -190,12 +190,19 @@ __device__ glm::vec3 computeColorFromSH_4D(int idx, int deg, int deg_t, int max_
 
 	// RGB colors are clamped to positive values. If values are
 	// clamped, we need to keep track of this for the backward pass.
-	// JM: added clamping at 1.0 as well as 0.0
+	// JM: added clamping at 5.0 as well as 0.0
 	// to avoid overflow of sh coefficients
-	clamped[3 * idx + 0] = (result.x < 0 || result.x > 1.0);
-	clamped[3 * idx + 1] = (result.y < 0 || result.y > 1.0);
-	clamped[3 * idx + 2] = (result.z < 0 || result.z > 1.0);
-	return glm::max(glm::min(result,1.0f), 0.0f);
+	// clamped[3 * idx + 0] = false;
+	// clamped[3 * idx + 1] = false;
+	// clamped[3 * idx + 2] = false;
+	clamped[3 * idx + 0] = (result.x < 0? -1 : 0);
+	clamped[3 * idx + 1] = (result.y < 0? -1 : 0);
+	clamped[3 * idx + 2] = (result.z < 0? -1 : 0);
+	return glm::max(result, 0.0f);
+	// clamped[3 * idx + 0] = (result.x < 0? -1 : (result.x > 5.0 ? 1 : 0));
+	// clamped[3 * idx + 1] = (result.y < 0? -1 : (result.y > 5.0 ? 1 : 0));
+	// clamped[3 * idx + 2] = (result.z < 0? -1 : (result.z > 5.0 ? 1 : 0));
+	// return glm::max(glm::min(result,5.0f), 0.0f);
 }
 
 // Perform initial steps for each Gaussian prior to rasterization.
@@ -212,7 +219,7 @@ __global__ void preprocessCUDA(int P, int D, int D_t, int M,
 	const float* opacities,
 	const float* shs_dc,
 	const float* shs_ac,
-	bool* clamped,
+	int8_t *clamped,
 	const float* cov3D_precomp,
 	const float prefilter_var,
 	const float* colors_precomp,
@@ -551,7 +558,7 @@ void FORWARD::preprocess(int P, int D, int D_t, int M,
 	const float* opacities,
 	const float* shs_dc,
 	const float* shs_ac,
-	bool* clamped,
+	int8_t *clamped,
 	const float* cov3D_precomp,
 	const float prefilter_var,
 	const float* colors_precomp,

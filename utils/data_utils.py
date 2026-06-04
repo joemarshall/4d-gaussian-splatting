@@ -195,6 +195,75 @@ class CameraDataset(Dataset):
             for i in range(0, self.length * self.batch_size, self.batch_size):
                 yield indices[i : i + self.batch_size]
 
+    class TimeCoherentCameraAndFrameSampler(Sampler[List[int]]):
+        """
+        This sampler returns batches of indices that are close together in time, i.e. are within the
+        same timestep range for multiple batches. This means training only has to reload timesteps 
+        infrequently.
+
+        It does this by selecting a timestamp range, then sampling:
+        step 1) either random cameras in that timestamp range
+        step 2) all cameras for a frame in that timestamp range
+
+        until it has done all frames (and the same number of camera samples)
+
+
+        """
+        def __init__(self,dataset, time_range=0.5):
+            self.dataset = dataset
+            self.time_range = time_range
+            self.timestamps = self.dataset.get_timestamps()
+            self.num_cameras = self.dataset.get_num_different_cameras()
+            self.length = (len(self.timestamps) * self.num_cameras)*2
+            self.sample_frame = True
+
+        def __len__(self):
+            return self.length
+
+        def __iter__(self) -> Iterator[List[int]]:
+            timestamps = sorted(self.timestamps)
+            timestamp_ranges = []
+            range_start = timestamps[0]
+            this_range = []
+            for x in timestamps:
+                this_range.append(x)
+                if x - range_start > self.time_range:
+                    timestamp_ranges.append(this_range)
+                    range_start = x
+            if len(this_range) > 0:
+                timestamp_ranges.append(this_range)
+            # now timestamp_ranges contains a set of timestamp ranges which are
+            # all within a single time_range
+            np.random.shuffle(timestamp_ranges)
+            for r in timestamp_ranges:
+                cameras = np.arange(self.num_cameras)
+                np.random.shuffle(cameras)
+                cam_times = np.array(r)
+                frame_times = np.array(r)            
+                np.random.shuffle(frame_times)
+
+                while len(frame_times) > 0:
+                    indices = self.dataset.get_indices_for_timestamp(frame_times[0])
+                    if indices is not None:
+                        np.random.shuffle(indices)
+                        yield indices
+                    frame_times = frame_times[1:]
+
+                    camera = cameras[0]
+                    cameras = cameras[1:]
+                    if len(cameras) == 0:
+                        cameras = np.arange(self.num_cameras)
+                        np.random.shuffle(cameras)
+                    
+                    camera_times = np.random.choice(cam_times , size=self.num_cameras,replace = False)
+
+                    indices = self.dataset.get_indices_for_timestamp(camera_times, camera)
+                    if indices is not None:
+                        np.random.shuffle(indices)
+                        yield indices
+
+
+
     class CameraAndFrameSampler(Sampler[List[int]]):
         def __init__(self, dataset, batch_size=10):
             self.sampler1 = CameraDataset.CameraSampler(dataset, batch_size)
@@ -286,8 +355,10 @@ class CameraDataset(Dataset):
         return camlist
 
     def get_frame_batch_sampler(self, suggested_batch_size=4):
+        return CameraDataset.ReadAheadSampler(self,CameraDataset.TimeCoherentCameraAndFrameSampler(self))
+
         # return CameraDataset.RandomSampler(self,batch_size=suggested_batch_size)
-        return CameraDataset.ReadAheadSampler(self,CameraDataset.CameraAndFrameSampler(self))
+        #        return CameraDataset.ReadAheadSampler(self,CameraDataset.CameraAndFrameSampler(self))
 
     def metadata(self):
         return self.viewpoint_stack
