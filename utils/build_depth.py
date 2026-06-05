@@ -1,12 +1,13 @@
 from pathlib import Path
 import re
-from matplotlib.pylab import rint
 import torch
 from depth_anything_3.api import DepthAnything3
 import numpy as np
 from tqdm import tqdm
 
 from PIL import Image
+
+from scene.dataset_readers import readColmapSceneInfo
 
 # get camera intrinsics from colmap file 
 # and use that for depth-anything to generate depthmaps for image
@@ -181,6 +182,38 @@ def quat_to_rot(qw, qx, qy, qz):
         ]
     )
     return R
+
+def estimate_motion_maps(output_path):
+    scene_info = readColmapSceneInfo(output_path,output_path/"images",False,dataloader=True)
+    # estimate fg vs bg 
+    # bg = lowest depth in each camera
+    # fg = otherwise
+    # for each fg point, mark equivalent points in other frames as fg
+    dataset = CameraDataset(scene_info.train_cameras,False)
+
+    timestamps = dataset.get_timestamps()
+    num_cameras = dataset.get_num_different_cameras()
+
+    depth_minimums = []
+
+    for k in range(num_cameras):        
+        frame_indices = dataset.get_indices_for_timestamp(timestamps,camera_id=k)
+        depth_minimum=None
+        for idx in indices:
+            viewpoint_image, viewpoint_cam, depth = dataset[idx]
+            if depth_minimum is None:
+                depth_minimum = depth.copy()
+            else:
+                depth_minimum = torch.min(depth_minimum,depth)
+    import matplotlib
+                    
+
+
+        
+
+
+
+    
 
 
 if __name__ == "__main__":
