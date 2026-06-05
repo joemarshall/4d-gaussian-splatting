@@ -21,6 +21,8 @@ from utils.graphics_utils import (
     quaternion_slerp,
 )
 
+USE_AUTO_RECONSTRUCTION = False
+
 
 def parse_colmap_text(file_path: Path):
     in_lines = file_path.read_text().splitlines()
@@ -221,7 +223,12 @@ def remap_colmap_ids_to_filename_camera_ids(images_data, frames_data):
 
 parser = argparse.ArgumentParser()
 parser.add_argument("video_folder", type=Path)
-parser.add_argument("--fix-camera-resolution","-f", action="store_true", help="Whether to fix the video resolution to be the same as the colmap camera resolution. This is useful if colmap fails to reconstruct any cameras due to unexpected video resolution, e.g. 1088p.")
+parser.add_argument(
+    "--fix-camera-resolution",
+    "-f",
+    action="store_true",
+    help="Whether to fix the video resolution to be the same as the colmap camera resolution. This is useful if colmap fails to reconstruct any cameras due to unexpected video resolution, e.g. 1088p.",
+)
 parser.add_argument("-o", "--output_folder", type=Path)
 parser.add_argument("-nf", "--num_frames", type=int, default=-1)
 parser.add_argument(
@@ -252,22 +259,24 @@ parser.add_argument(
     "another scene which has poses already",
 )
 
-parser.add_argument("--colmap_path","-c",type=str)
+parser.add_argument("--colmap_path", "-c", type=str)
 
 
 class ColmapRunnerPath:
-    def __init__(self,path):
+    def __init__(self, path):
         self.path = path
 
-    def run_cmd(self,args):
-        if args[0]=="colmap":
+    def run_cmd(self, args):
+        if args[0] == "colmap":
             args[0] = self.path
             args = [str(x) if type(x) != str else x for x in args]
         else:
-            args = [self.path]+[str(x) if type(x) != str else x for x in args]
+            args = [self.path] + [str(x) if type(x) != str else x for x in args]
         print("Running colmap command:", " ".join(args))
-        result = subprocess.check_output(args, text=True,shell=True)
+        result = subprocess.check_output(args, text=True)
+        #        result = subprocess.check_output(args, text=True,shell=True)
         print(f"Command output: {result}")
+
 
 class ColmapRunnerDocker:
     def __init__(self, root_path):
@@ -329,7 +338,7 @@ if args.output_folder is None:
     args.output_folder = Path("output") / (args.video_folder.stem)
 args.output_folder = args.output_folder.resolve()
 if args.colmap_path is not None:
-    colmap = ColmapRunnerPath(args.colmap_path)    
+    colmap = ColmapRunnerPath(args.colmap_path)
 else:
     colmap = ColmapRunnerDocker(os.getcwd())
 
@@ -399,7 +408,10 @@ for i, video_path in enumerate(sorted(args.video_folder.glob("*.mp4"))):
             ]
             + ffmpeg_time_limit
             + [
-                str(distorted_image_folder / f"cam{camera_id_from_path(video_path,i)}_%05d.png"),
+                str(
+                    distorted_image_folder
+                    / f"cam{camera_id_from_path(video_path,i)}_%05d.png"
+                ),
             ],
             stderr=subprocess.STDOUT,
             text=True,
@@ -431,7 +443,9 @@ dense_output.mkdir(parents=True, exist_ok=True)
 sparse_final = args.output_folder / "sparse" / "0"
 
 if (sparse_final / "images.txt").exists():
-    print(f"Colmap output already exists at {sparse_final}, skipping colmap reconstruction.")
+    print(
+        f"Colmap output already exists at {sparse_final}, skipping colmap reconstruction."
+    )
 elif args.use_existing_scene_poses is not None:
     print("Using existing scene poses from", args.use_existing_scene_poses)
     existing_scene_sparse = args.use_existing_scene_poses / "colmap" / "text_model"
@@ -469,22 +483,23 @@ elif args.use_existing_scene_poses is not None:
                     "for camera",
                     c,
                 )
-            
+
             def fix_multiplier(value, mult):
                 print("Fixing!", value, "with multiplier", mult)
                 return str(float(value) * mult)
 
-            for i in range(2,len(cameras_file[c][0]),2):
-                cameras_file[c][0][i]=fix_multiplier(cameras_file[c][0][i], multiplier[0])
-                cameras_file[c][0][i+1]=fix_multiplier(cameras_file[c][0][i+1], multiplier[1])
-
+            for i in range(2, len(cameras_file[c][0]), 2):
+                cameras_file[c][0][i] = fix_multiplier(
+                    cameras_file[c][0][i], multiplier[0]
+                )
+                cameras_file[c][0][i + 1] = fix_multiplier(
+                    cameras_file[c][0][i + 1], multiplier[1]
+                )
 
             print(cameras_file[c])
 
-    
     copied_data_folder = colmap_path / "copied_data"
     copied_data_folder.mkdir(exist_ok=True)
-
 
     images_file.write(copied_data_folder / "images.txt")
     points_file.write(copied_data_folder / "points3D.txt")
@@ -567,20 +582,84 @@ elif args.use_existing_scene_poses is not None:
     )
     # now we should have everything ready to go
 else:
+    if USE_AUTO_RECONSTRUCTION:
+        # use colmap auto reconstruction
+        colmap.run_cmd(
+            [
+                "colmap",
+                "automatic_reconstructor",
+                "--workspace_path",
+                colmap_path,
+                "--image_path",
+                colmap_images_folder,
+                "--single_camera",
+                "1",
+            ]
+        )
+    else:
+        colmap.run_cmd(
+            [
+                "colmap",
+                "feature_extractor",
+                "--database_path",
+                colmap_database,
+                "--image_path",
+                colmap_images_folder,
+                "--ImageReader.camera_model",
+                "SIMPLE_RADIAL",
+                "--ImageReader.single_camera",
+                "1",
+            ]
+        )
 
-    # use colmap auto reconstruction
-    colmap.run_cmd(
-        [
-            "colmap",
-            "automatic_reconstructor",
-            "--workspace_path",
-            colmap_path,
-            "--image_path",
-            colmap_images_folder,
-            "--single_camera",
-            "1",
-        ]
-    )
+        colmap.run_cmd(
+            ["colmap", "exhaustive_matcher", "--database_path", colmap_database]
+        )
+        (colmap_path/"dense").mkdir(exist_ok=True)
+
+        colmap.run_cmd(
+            [
+                "colmap",
+                "mapper",
+                "--database_path",
+                colmap_database,
+                "--image_path",
+                colmap_images_folder,
+                "--output_path",
+                colmap_path / "sparse",
+            ]
+        )
+
+        (colmap_path/"dense").mkdir(exist_ok=True)
+
+        if (colmap_path/"dense"/"images").exists() == False:
+            colmap.run_cmd(
+                [
+                    "colmap",
+                    "image_undistorter",
+                    "--image_path",
+                    colmap_images_folder,
+                    "--output_path",
+                    colmap_path / "dense",
+                    "--input_path",
+                    colmap_path / "sparse" / "0",
+                    "--output_type",
+                    "COLMAP",
+                ]
+            )
+        #    --max_image_size 2000
+        colmap.run_cmd(
+            [
+                "colmap",
+                "patch_match_stereo",
+                "--workspace_path",
+                colmap_path / "dense",
+                "--workspace_format",
+                "COLMAP",
+                "--PatchMatchStereo.geom_consistency",
+                "true",
+            ]
+        )
 
     # bundle adjustment
     colmap_dense_sparse = colmap_path / "dense" / "0" / "sparse"
@@ -601,21 +680,22 @@ else:
             "--BundleAdjustment.max_num_iterations",
             "10000",
         ]
-    )    
+    )
 
 
-
-# now undistort all the other images based on 
+# now undistort all the other images based on
 # the reconstructed cameras
 
 image_folder = args.output_folder / "images"
 if not image_folder.exists():
     image_folder.mkdir(exist_ok=True)
 
-if len(list(image_folder.glob(f"cam*_*.png"))) < len(list(distorted_image_folder.glob(f"cam*_*.png"))):
+if len(list(image_folder.glob(f"cam*_*.png"))) < len(
+    list(distorted_image_folder.glob(f"cam*_*.png"))
+):
     colmap_src_images = args.output_folder / "colmap" / "images"
     colmap_dst_images = args.output_folder / "colmap" / "dense" / "0" / "images"
-    colmap_sparse_camera = args.output_folder / "colmap" / "sparse" /"0"
+    colmap_sparse_camera = args.output_folder / "colmap" / "sparse" / "0"
     num_cameras = 0
     for image in colmap_src_images.glob("*_00000.png"):
         num_cameras += 1
@@ -626,7 +706,7 @@ if len(list(image_folder.glob(f"cam*_*.png"))) < len(list(distorted_image_folder
         images = list(distorted_image_folder.glob(f"cam*_{frame_id:05d}.png"))
         if len(images) == 0:
             break
-        print(len(images),"!",frame_id)
+        print(len(images), "!", frame_id)
         print(len([x for x in images if (image_folder / x.name).exists()]))
         if len([x for x in images if (image_folder / x.name).exists()]) == len(images):
             print(f"Frame {frame_id} already undistorted, skipping.")
@@ -660,17 +740,12 @@ if len(list(image_folder.glob(f"cam*_*.png"))) < len(list(distorted_image_folder
             shutil.copy2(colmap_dst_images / cam_zero_name, image_folder / x.name)
 
 
-
-
-
-
-
-
 # copy the output into output_folder/sparse/0
 colmap_dense_sparse = colmap_path / "dense" / "0" / "sparse"
 
 
 # convert the final model to text format so we can read the focal length etc.
+sparse_final.mkdir(exist_ok=True,parents=True)
 (colmap_path / "text_model").mkdir(exist_ok=True)
 colmap.run_cmd(
     [
@@ -881,18 +956,21 @@ if args.fix_camera_resolution:
                     "for camera",
                     c,
                 )
-            
+
             def fix_multiplier(value, multiplier):
                 return str(float(value) * multiplier)
+
             cameras_file[c][0][2] = video_resolution[0]
             cameras_file[c][0][3] = video_resolution[1]
-            for i in range(4,len(cameras_file[c][0]),2):
-                cameras_file[c][0][i]=fix_multiplier(cameras_file[c][0][i], multiplier[0])
-                cameras_file[c][0][i+1]=fix_multiplier(cameras_file[c][0][i+1], multiplier[1])
+            for i in range(4, len(cameras_file[c][0]), 2):
+                cameras_file[c][0][i] = fix_multiplier(
+                    cameras_file[c][0][i], multiplier[0]
+                )
+                cameras_file[c][0][i + 1] = fix_multiplier(
+                    cameras_file[c][0][i + 1], multiplier[1]
+                )
 
             print(cameras_file[c])
-
-
 
     cameras_file.write(sparse_output / "cameras.txt")
 
