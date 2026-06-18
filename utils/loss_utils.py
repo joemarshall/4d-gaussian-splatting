@@ -136,6 +136,7 @@ def loss_depth(render_package, gt_image, gt_depth, gaussians,args,iterations,max
 
 
 
+
     # ignore < 1% errors
 
     diff = torch.abs((gt_norm - out_norm)*diff_gt_depths[gt_depth_mask])

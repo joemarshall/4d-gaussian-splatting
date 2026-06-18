@@ -45,6 +45,7 @@ class CameraInfo(NamedTuple):
     fl_y: float = -1.0
     cx: float = -1.0
     cy: float = -1.0
+    camera_pose_id: int = -1
 
 class SceneInfo(NamedTuple):
     point_cloud: BasicPointCloud
@@ -131,7 +132,7 @@ def readColmapCameras(cam_extrinsics, cam_intrinsics, images_folder,dataloader):
                 depth=None 
             cam_info = CameraInfo(uid=idx, R=R, T=T, FovY=FovY, FovX=FovX, image=this_image, depth=depth,
                         image_path=this_image_path, image_name=this_image_name, width=width, height=height, timestamp=timestamp,
-                        fl_x=focal_length_x, fl_y=focal_length_y, cx=cx, cy=cy)
+                        fl_x=focal_length_x, fl_y=focal_length_y, cx=cx, cy=cy,camera_pose_id=idx)
             cam_infos.append(cam_info)
             frame+=1
     sys.stdout.write('\n')
@@ -151,6 +152,53 @@ def fetchPly(path):
     else:
         timestamp = None
     return BasicPointCloud(points=positions, colors=colors, normals=normals, time=timestamp)
+
+def makePointCloudFromImages(scene, points_per_image=1000):
+    # get the training dataset from the scene
+    # then for all images choose points
+    # spread across the image and save to ply with the calculated point (from the depth and the camera rays)
+    # and timestamp set to the image timestamp
+    # and return this as a BasicPointCloud for use with gaussian initialization
+    dataset = scene.getTrainCameras()
+    num_points_total = len(dataset) * points_per_image
+    all_points = torch.zeros((num_points_total, 3))
+    all_colors = torch.zeros((num_points_total, 3))
+    all_normals = np.zeros((num_points_total, 3))
+    all_times = torch.zeros((num_points_total, 1))
+    for i,(image,cam,depth) in enumerate(dataset):
+        print("Making points from image:", cam.image_path,i)
+        # read the depth and image
+        # sample points across the image
+        # for each point, calculate the 3D position using the camera intrinsics and extrinsics
+        # save to ply with color from the image and timestamp from the camera
+        rays_o,rays_d = cam.cuda().get_rays()
+
+        valid_depth = depth>0
+        point_sample_weight = valid_depth.float()
+        # distance >4 from centre gets zero weight
+        point_dists = torch.norm(rays_d*depth.unsqueeze(-1),dim=-1)
+        #point_sample_weight[point_dists>4.0] = 0.0
+
+        point_idxs = torch.multinomial(point_sample_weight.flatten(),points_per_image,replacement=True)
+
+        point_xs = point_idxs % cam.image_width
+        point_ys = point_idxs // cam.image_width
+
+        projected_points = rays_d[point_ys,point_xs,:] * depth[point_ys,point_xs].unsqueeze(-1)
+        projected_points += rays_o[0,0]
+        all_points[i*points_per_image:(i+1)*points_per_image] = projected_points
+        all_times[i*points_per_image:(i+1)*points_per_image] = cam.timestamp
+        all_colors[i*points_per_image:(i+1)*points_per_image] = image[:,point_ys,point_xs].transpose(0,1)
+    import open3d as o3d
+    import open3d.core as o3c
+    pcd = o3d.t.geometry.PointCloud(o3c.Tensor(all_points.cpu().numpy(),o3c.float32))
+    pcd.point.colors = o3c.Tensor(all_colors.cpu().numpy(),o3c.float32)
+    o3d.visualization.draw_geometries([pcd.to_legacy()],
+                                  zoom=0.3412,
+                                  front=[0.4257, -0.2125, -0.8795],
+                                  lookat=[0, 0, 0],
+                                  up=[0, 1, 0])
+    return BasicPointCloud(points=all_points.cpu().numpy(), colors=all_colors.cpu().numpy(), normals=all_normals, time=all_times.cpu().numpy())
 
 def storePly(path, xyz, rgb):
     # Define the dtype for the structured array

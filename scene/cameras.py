@@ -34,8 +34,9 @@ class Camera:
                  image_name, uid,
                  trans=np.array([0.0, 0.0, 0.0]), scale=1.0, data_device = "cuda", timestamp = 0.0,
                  cx=-1, cy=-1, fl_x=-1, fl_y=-1, depth=None, resolution=None, image_path=None, meta_only=False,
+                 camera_pose_id=-1
                  ):
-
+        self.camera_pose_id = camera_pose_id
         self.uid = uid
         self.colmap_id = colmap_id
         self.R = R
@@ -121,6 +122,7 @@ class Camera:
         directions = pts_world[...,:3] - self.camera_center[None,None,:]
         Camera.ray_cache[self.cache_key] = (self.camera_center[None,None], directions / torch.norm(directions, dim=-1, keepdim=True))
         return Camera.ray_cache[self.cache_key]
+    
     
     def cuda(self):
         if self.cached_cuda is not None:

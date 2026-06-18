@@ -37,3 +37,4 @@ results/
 temp*.*
 *.pth
 *.ncu-rep
+saved_models/
