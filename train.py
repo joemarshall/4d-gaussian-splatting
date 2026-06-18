@@ -360,9 +360,7 @@ def training(
         num_pts_ratio=num_pts_ratio,
         time_duration=time_duration,
     )
-    gaussians.training_setup(opt, batch_size_mult=1.0)
-    total_training_points = 0
-
+    loaded_checkpoint = False
     if checkpoint == "auto_latest":
         all_checkpoints = [
             (x, x.stat().st_mtime)
@@ -376,6 +374,7 @@ def training(
                 gaussians.restore(model_params, opt)
                 model_params = None
                 print(f"Loaded checkpoint {checkpoint} modified at {mtime}")
+                loaded_checkpoint = True
                 break
             except RuntimeError as e:
                 print(f"Error loading checkpoint {checkpoint}: {e}")
@@ -384,6 +383,14 @@ def training(
         model_params, first_iter, total_training_points = torch.load(checkpoint, weights_only=False)
         gaussians.restore(model_params, opt)
         model_params = None
+        loaded_checkpoint = True
+    if not loaded_checkpoint:
+        print("No checkpoint loaded, starting from scratch")
+        scene.init_gaussians_from_scene()
+        
+    gaussians.training_setup(opt, batch_size_mult=1.0)
+    total_training_points = 0
+
 
     bg_color = [1, 1, 1] if dataset.white_background else [0, 0, 0]
     background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
@@ -651,7 +658,7 @@ def training(
                         env_map_optimizer.step()
                         env_map_optimizer.zero_grad(set_to_none=True)
 
-                # # update T based on visibility filter
+                # # update visibility filter based on T
                 # if SHOW_TIMINGS:
                 #     times.append(("optimizer step", time.monotonic()))
                 # #gaussians.update_t_visible_range(mask=visibility_filter)

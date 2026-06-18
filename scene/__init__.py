@@ -14,7 +14,7 @@ import torch
 import random
 import json
 from utils.system_utils import searchForMaxIteration
-from scene.dataset_readers import sceneLoadTypeCallbacks
+from scene.dataset_readers import makePointCloudFromImages, sceneLoadTypeCallbacks
 from scene.gaussian_model import GaussianModel
 from arguments import ModelParams
 from utils.camera_utils import cameraList_from_camInfos, camera_to_JSON
@@ -77,16 +77,10 @@ class Scene:
             print("Loading Test Cameras")
             self.test_cameras[resolution_scale] = cameraList_from_camInfos(scene_info.test_cameras, resolution_scale, args)
             
-        if args.loaded_pth:
-            self.gaussians.restore(model_args=torch.load(args.loaded_pth,weights_only=False)[0], training_args=None)
-        else:
-            if self.loaded_iter:
-                self.gaussians.load_ply(os.path.join(self.model_path,
-                                                            "point_cloud",
-                                                            "iteration_" + str(self.loaded_iter),
-                                                            "point_cloud.ply"))
-            else:
-                self.gaussians.create_from_pcd(scene_info.point_cloud, self.cameras_extent)
+    def init_gaussians_from_scene(self):
+        img_point_cloud = makePointCloudFromImages(self)
+        self.gaussians.create_from_pcd(img_point_cloud, self.cameras_extent)
+#                self.gaussians.create_from_pcd(scene_info.point_cloud, self.cameras_extent)
 
     def save(self, iteration):
         torch.save((self.gaussians.capture(), iteration), self.model_path + "/chkpnt" + str(iteration) + ".pth")
