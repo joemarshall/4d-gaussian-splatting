@@ -313,7 +313,7 @@ class CameraDataset(Dataset):
         self.names_only = names_only
 
     def _get_camera_cache_key(self, camera):
-        return (*camera.R.flatten(), *camera.T.flatten())
+        return camera.camera_pose_id
 
     def _calc_cameras_and_timestamps(self):
         timestamp_set = set()
@@ -326,10 +326,6 @@ class CameraDataset(Dataset):
         self.timestamps = sorted(list(timestamp_set))
         self.different_cam_list = list(viewpoint_set)
 
-        for x in self.viewpoint_stack:
-            x.camera_pose_id = self.different_cam_list.index(
-                self._get_camera_cache_key(x)
-            )
 
     def get_num_different_cameras(self):
         # how many different camera viewpoints are in this

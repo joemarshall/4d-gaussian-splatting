@@ -60,6 +60,8 @@ def loadCam(args, id, cam_info, resolution_scale):
     else:
         gt_image = cam_info.image
         depth = cam_info.depth
+
+    pose_id = cam_info.camera_pose_id
     
 
     return Camera(colmap_id=cam_info.uid, R=cam_info.R, T=cam_info.T, 
@@ -68,7 +70,7 @@ def loadCam(args, id, cam_info, resolution_scale):
                   image_name=cam_info.image_name, uid=id, data_device=args.data_device, 
                   timestamp=cam_info.timestamp,
                   cx=cx, cy=cy, fl_x=fl_x, fl_y=fl_y, depth=depth, resolution=resolution, image_path=cam_info.image_path,
-                  meta_only=args.dataloader
+                  meta_only=args.dataloader,camera_pose_id = pose_id
                   )
 
 def cameraList_from_camInfos(cam_infos, resolution_scale, args):
