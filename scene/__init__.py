@@ -14,7 +14,6 @@ import sys
 import torch
 import random
 import json
-from utils.pointcloud_renderer import show_pointcloud_glfw_pytorch3d
 from utils.system_utils import searchForMaxIteration
 from scene.dataset_readers import makePointCloudFromImages, sceneLoadTypeCallbacks
 from scene.gaussian_model import GaussianModel
