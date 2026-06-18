@@ -247,14 +247,14 @@ class GaussianModel:
 
         def restore_fn(self, var_name, in_val):
             if in_val is None:
-                print("Missing value in restore:", var_name)            
+                print("Missing value in restore:", var_name)
             if isinstance(in_val, torch.Tensor):
                 setattr(self, var_name, in_val.cuda())
             elif isinstance(
                 getattr(self, var_name), torch.optim.Optimizer
             ) and isinstance(in_val, dict):
                 return (var_name, in_val)
-            elif hasattr(self,var_name):
+            elif hasattr(self, var_name):
                 setattr(self, var_name, in_val)
             return None
 
@@ -281,13 +281,13 @@ class GaussianModel:
             self.training = False
         print("Model restored with {} points.".format(self._xyz.shape))
 
-        if type(self.spatial_lr_scale)!=float:
+        if type(self.spatial_lr_scale) != float:
             self.spatial_lr_scale = float(self.spatial_lr_scale)
 
         total_params = 0
-        for v in model_args:
+        for k, v in model_args.items():
             if isinstance(v, torch.Tensor):
-                print(v.shape)
+                print(k, v.shape)
                 total_params += np.prod(v.shape)
         print("Total number of parameters: ", total_params)
 
@@ -363,9 +363,7 @@ class GaussianModel:
     def get_max_sh_channels(self):
         if self.gaussian_dim == 3 or self.force_sh_3d:
             return (self.max_sh_degree + 1) ** 2
-        elif self.gaussian_dim == 4 and self.max_sh_degree_t == 0:
-            return sh_channels_4d[self.max_sh_degree]
-        elif self.gaussian_dim == 4 and self.max_sh_degree_t > 0:
+        elif self.gaussian_dim == 4:
             return (self.max_sh_degree + 1) ** 2 * (self.max_sh_degree_t + 1)
 
     def get_cov_t(self, scaling_modifier=1):
@@ -379,11 +377,16 @@ class GaussianModel:
             return actual_covariance[:, 3, 3].unsqueeze(1)
         else:
             return self.get_scaling_t * scaling_modifier
-    
-    @torch.no_grad()    
-    def update_t_visible_range(self, mask=None,scaling_modifier=1):
-        if self._visible_range is None or self._visible_range.shape[0] != self.get_xyz.shape[0]:
-            self._visible_range = torch.empty(self.get_xyz.shape[0], device=self.get_xyz.device)
+
+    @torch.no_grad()
+    def update_t_visible_range(self, mask=None, scaling_modifier=1):
+        if (
+            self._visible_range is None
+            or self._visible_range.shape[0] != self.get_xyz.shape[0]
+        ):
+            self._visible_range = torch.empty(
+                self.get_xyz.shape[0], device=self.get_xyz.device
+            )
             mask = None
         if mask is not None:
             mask = mask.squeeze()
@@ -391,23 +394,23 @@ class GaussianModel:
             rotation = self._rotation[mask]
             rotation_r = self._rotation_r[mask]
         else:
-            scale = scaling_modifier *self.get_scaling_xyzt
+            scale = scaling_modifier * self.get_scaling_xyzt
             rotation = self._rotation
             rotation_r = self._rotation_r
-        #print("SCALE:",scale,"MASK:",mask,"ROT:",rotation,"ROT_R:",rotation_r)
+        # print("SCALE:",scale,"MASK:",mask,"ROT:",rotation,"ROT_R:",rotation_r)
         L = build_scaling_rotation_4d(
             scale,
             rotation,
             rotation_r,
         )
         actual_covariance = L @ L.transpose(1, 2)
-        cov_t =actual_covariance[:, 3, 3]#.unsqueeze(1)
+        cov_t = actual_covariance[:, 3, 3]  # .unsqueeze(1)
         sd_t = torch.sqrt(cov_t)
         # opacity multiplier is 0.05 at this point
-        #visible_range = 1.96 * sd_t
+        # visible_range = 1.96 * sd_t
         # opacity multiplier is 0.01 at this point
         visible_range = 2.576 * sd_t
-        self._visible_range[mask]= visible_range
+        self._visible_range[mask] = visible_range
 
     def get_marginal_t(self, timestamp, scaling_modifier=1):  # Standard
         sigma = self.get_cov_t(scaling_modifier)
@@ -444,12 +447,11 @@ class GaussianModel:
         fused_point_cloud = torch.tensor(np.asarray(pcd.points)).float().cuda()
         fused_color = RGB2SH(torch.tensor(np.asarray(pcd.colors)).float().cuda())
         features = (
-            torch.zeros((fused_color.shape[0], self.get_max_sh_channels,3 ))
+            torch.zeros((fused_color.shape[0], self.get_max_sh_channels, 3))
             .float()
             .cuda()
         )
-        features[:, :3, 0] = fused_color
-        features[:, 3:, 1:] = 0.0
+        features[:, 0, 0:3] = fused_color
         if self.gaussian_dim == 4:
             if pcd.time is None:
                 fused_times = (
@@ -477,6 +479,7 @@ class GaussianModel:
                 torch.zeros_like(fused_times, device="cuda")
                 + (self.time_duration[1] - self.time_duration[0]) / 5
             )
+            #            scales_t = torch.log(torch.ones(dist_t.shape[0],device="cuda") * 100.0)
             scales_t = torch.log(torch.sqrt(dist_t))
             if self.rot_4d:
                 rots_r = torch.zeros((fused_point_cloud.shape[0], 4), device="cuda")
@@ -505,7 +508,9 @@ class GaussianModel:
             self._t = nn.Parameter(fused_times.contiguous().requires_grad_(True))
             self._scaling_t = nn.Parameter(scales_t.contiguous().requires_grad_(True))
             if self.rot_4d:
-                self._rotation_r = nn.Parameter(rots_r.contiguous().requires_grad_(True))
+                self._rotation_r = nn.Parameter(
+                    rots_r.contiguous().requires_grad_(True)
+                )
 
     def create_from_pth(self, path, spatial_lr_scale):
         spatial_lr_scale = float(spatial_lr_scale)
@@ -540,14 +545,18 @@ class GaussianModel:
         self._scaling_t = nn.Parameter(scales_t.requires_grad_(True))
         self._rotation_r = nn.Parameter(rots_r.requires_grad_(True))
 
-    def training_setup(self, training_args, reset_accumulated_gradients=True,batch_size_mult = 1.0):
+    def training_setup(
+        self, training_args, reset_accumulated_gradients=True, batch_size_mult=1.0
+    ):
         self.percent_dense = training_args.percent_dense
         for densifier in self.densifiers:
             densifier.training_setup(self, reset_accumulated_gradients)
         l = [
             {
                 "params": [self._xyz],
-                "lr": batch_size_mult *training_args.position_lr_init * self.spatial_lr_scale,
+                "lr": batch_size_mult
+                * training_args.position_lr_init
+                * self.spatial_lr_scale,
                 "name": "xyz",
             },
             {
@@ -582,18 +591,22 @@ class GaussianModel:
 
         if self.gaussian_dim == 4:
             if training_args.position_t_lr_init < 0:
-                training_args.position_t_lr_init = batch_size_mult *training_args.position_lr_init
+                training_args.position_t_lr_init = (
+                    batch_size_mult * training_args.position_lr_init
+                )
             l.append(
                 {
                     "params": [self._t],
-                    "lr": batch_size_mult * training_args.position_t_lr_init * self.spatial_lr_scale,
+                    "lr": batch_size_mult
+                    * training_args.position_t_lr_init
+                    * self.spatial_lr_scale,
                     "name": "t",
                 }
             )
             l.append(
                 {
                     "params": [self._scaling_t],
-                    "lr": batch_size_mult *training_args.scaling_lr,
+                    "lr": batch_size_mult * training_args.scaling_lr,
                     "name": "scaling_t",
                 }
             )
@@ -609,7 +622,7 @@ class GaussianModel:
         if self.optimizer_type == "default":
             self.optimizer = torch.optim.Adam(l, lr=0.0, eps=1e-15)
             self.shoptimizer = torch.optim.Adam(sh_l, lr=0.0, eps=1e-15)
-#            self.optimizer = torch.optim.Adam(l + sh_l, lr=0.0, eps=1e-15)
+        #            self.optimizer = torch.optim.Adam(l + sh_l, lr=0.0, eps=1e-15)
         #    self.shoptimizer = None
         elif self.optimizer_type == "sparse_adam":
             self.optimizer = SparseGaussianAdam(l + sh_l, lr=0.0, eps=1e-15)
@@ -653,7 +666,7 @@ class GaussianModel:
         #     visible = radii > 0
         #     self.optimizer.step(visible,radii.shape[0])
 
-    def update_learning_rate(self, iteration,total_iterations):
+    def update_learning_rate(self, iteration, total_iterations):
         """Learning rate scheduling per step"""
         # n.b. if we are batched, we use total_iterations not iteration
         # to calculate learning rates
@@ -661,7 +674,7 @@ class GaussianModel:
         if total_iterations > 0:
             batch_size = iteration / total_iterations
         else:
-           batch_size = 1.0 
+            batch_size = 1.0
         for param_group in self.optimizer.param_groups:
             if param_group["name"] == "xyz":
                 lr = batch_size * self.xyz_scheduler_args(iteration)
@@ -688,8 +701,8 @@ class GaussianModel:
             optimizers.append(self.optimizer)
         if self.shoptimizer:
             optimizers.append(self.shoptimizer)
-        if len(optimizers)==0:
-            return {name:tensor}
+        if len(optimizers) == 0:
+            return {name: tensor}
         for opt in optimizers:
             for group in opt.param_groups:
                 if group["name"] == name:
@@ -786,7 +799,6 @@ class GaussianModel:
                 self._scaling_t = self._scaling_t[valid_points_mask]
                 if self.rot_4d:
                     self._rotation_r = self._rotation_r[valid_points_mask]
-
 
     def cat_one_tensor_to_optimizer(self, tensor, name):
         for group in self.optimizer.param_groups:
@@ -905,6 +917,7 @@ class GaussianModel:
 
         for densifier in self.densifiers:
             densifier.densification_postfix(self)
+
     def prune_by_spatio_temporal_score(
         self, spatial_contribs, timestamps, score_threshold
     ):

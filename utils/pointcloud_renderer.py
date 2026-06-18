@@ -79,6 +79,7 @@ def show_pointcloud_glfw_pytorch3d(
 
     Controls:
     - 0-9: toggle visibility for points with camera index 0-9
+    - H: look at cloud center from +Z, 5 units away
     - W/S: move forward/back
     - A/D: strafe left/right
     - Q/E: move down/up
@@ -111,6 +112,7 @@ def show_pointcloud_glfw_pytorch3d(
     xyz = xyz.to(device=device, dtype=dtype).contiguous()
     color = color.to(device=device, dtype=dtype).contiguous()
     camera_indices = camera_indices.to(device=device, dtype=torch.int64).contiguous()
+    cloud_center = xyz.mean(dim=0)
 
     if float(color.max().detach().cpu().item()) > 1.0:
         color = color / 255.0
@@ -134,7 +136,6 @@ def show_pointcloud_glfw_pytorch3d(
         xyz = xyz.index_select(0, keep)
         color = color.index_select(0, keep)
         camera_indices = camera_indices.index_select(0, keep)
-        print(keep[0:20])
 
     enabled_camera_indices = set(range(10))
     indexed_point_masks = {idx: camera_indices == idx for idx in range(10)}
@@ -152,7 +153,6 @@ def show_pointcloud_glfw_pytorch3d(
         if not bool(visible_mask.any().item()):
             return None
         print(f"Rendering {visible_mask.sum().item()} points out of {xyz.shape[0]} total points.")
-        print(torch.min(camera_indices),torch.max(camera_indices))
         return Pointclouds(
             points=[xyz[visible_mask]],
             features=[color[visible_mask]],
@@ -247,9 +247,15 @@ def show_pointcloud_glfw_pytorch3d(
         scene_dirty = True
 
     def _key_cb(_window: glfw._GLFWwindow, key: int, _scancode: int, action: int, _mods: int) -> None:
-        nonlocal scene_dirty, visibility_dirty, point_cloud
+        nonlocal scene_dirty, visibility_dirty, point_cloud, eye, yaw, pitch
         if key == glfw.KEY_ESCAPE and action == glfw.PRESS:
             glfw.set_window_should_close(window, True)
+        if key == glfw.KEY_H and action == glfw.PRESS:
+            eye = cloud_center + torch.tensor([0.0, 0.0, 5.0], device=device, dtype=dtype)
+            new_forward = _normalize(cloud_center - eye)
+            yaw = float(torch.atan2(new_forward[0], new_forward[2]).item())
+            pitch = float(torch.asin(torch.clamp(new_forward[1], -0.999, 0.999)).item())
+            scene_dirty = True
         if action == glfw.PRESS and glfw.KEY_0 <= key <= glfw.KEY_9:
             toggled_index = key - glfw.KEY_0
             if toggled_index in enabled_camera_indices:

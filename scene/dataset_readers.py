@@ -189,15 +189,17 @@ def makePointCloudFromImages(scene, points_per_image=1000):
         all_points[i*points_per_image:(i+1)*points_per_image] = projected_points
         all_times[i*points_per_image:(i+1)*points_per_image] = cam.timestamp
         all_colors[i*points_per_image:(i+1)*points_per_image] = image[:,point_ys,point_xs].transpose(0,1)
-    import open3d as o3d
-    import open3d.core as o3c
-    pcd = o3d.t.geometry.PointCloud(o3c.Tensor(all_points.cpu().numpy(),o3c.float32))
-    pcd.point.colors = o3c.Tensor(all_colors.cpu().numpy(),o3c.float32)
-    o3d.visualization.draw_geometries([pcd.to_legacy()],
-                                  zoom=0.3412,
-                                  front=[0.4257, -0.2125, -0.8795],
-                                  lookat=[0, 0, 0],
-                                  up=[0, 1, 0])
+    # from utils.pointcloud_renderer import show_pointcloud_glfw_pytorch3d
+
+
+    # up = torch.tensor([0.0, -1.0, 0], device="cuda")
+
+    # look_at = torch.tensor([0.0, 0.0, 0.0], device="cuda")
+    # camera_position = torch.tensor([0.0, 0.0, 5.0], device="cuda")
+    # camera_indices = torch.zeros(all_points.shape[0], dtype=torch.int32, device="cuda")
+
+    # show_pointcloud_glfw_pytorch3d(torch.tensor(all_points,device="cuda"),torch.tensor(all_colors,device="cuda"),title="Total 3D point cloud",look_at=look_at,up=up,camera_position=camera_position,fov_degrees=70.0,camera_indices=camera_indices)
+
     return BasicPointCloud(points=all_points.cpu().numpy(), colors=all_colors.cpu().numpy(), normals=all_normals, time=all_times.cpu().numpy())
 
 def storePly(path, xyz, rgb):

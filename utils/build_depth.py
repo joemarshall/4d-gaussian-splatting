@@ -203,8 +203,6 @@ def calculate_depths(output_path: Path, ignore_existing: bool = False):
         up = torch.tensor([0.0, -1.0, 0], device="cuda")
         print("RENDER:",camera_position,look_at,up)
         from pointcloud_renderer import show_pointcloud_glfw_pytorch3d
-        #pts_cuda = pts_cuda[-10:]
-        #colors_cuda = colors_cuda[-10:]
 
 #        show_pointcloud_glfw_pytorch3d(pts_cuda,colors_cuda,title="Depth Anything 3D point cloud",look_at=look_at,up=up,camera_position=camera_position,fov_degrees=70.0,camera_indices=camera_indices)
 
