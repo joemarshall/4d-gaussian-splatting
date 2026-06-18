@@ -326,9 +326,7 @@ def get_model_pipeline_scene_gaussians(output_folder,override_pth):
 
         render_cmdline = [
             "--model_path",
-            str(output_folder),
-            "--loaded_pth",
-            str(latest_pth),
+            str(output_folder)
         ]
 
         render_parser = argparse.ArgumentParser(description="Render params")
@@ -357,7 +355,11 @@ def get_model_pipeline_scene_gaussians(output_folder,override_pth):
 
         gaussians = GaussianModel(model.sh_degree, gaussian_dim=4, rot_4d=render_args.rot_4d)
 
+
         scene = Scene(model, gaussians, shuffle=False)
+        model_params, first_iter, total_training_points = torch.load(latest_pth, weights_only=False)
+        gaussians.restore(model_params, None)
+
         return model,pipeline,scene,gaussians
 
 def render_set(model_path, iteration, views, gaussians, pipeline, background):
@@ -569,16 +571,21 @@ try:
         with torch.no_grad():
             model,pipeline,scene,gaussians = get_model_pipeline_scene_gaussians(args.output_folder,args.override_pth)
 
-
-            prune_mask = gaussians._xyz.norm(dim=1)>4.0
-#            prune_mask = (gaussians.get_cov_t() > 0.05).squeeze()
+            # static_mask = gaussians._xyz.norm(dim=1)>4.0
+            # gaussians._rotation_r[static_mask][0:4] = torch.tensor([1.0, 0.0, 0.0, 0.0], device=gaussians._rotation_r.device)
+            # gaussians._scaling_t[static_mask] = 4
+            # gaussians._t[static_mask] = 2.5
+            
+#            prune_mask = gaussians._xyz.norm(dim=1)>4.0
+#            prune_mask = (gaussians.get_cov_t() < 0.01).squeeze()
 
             #prune_mask = (gaussians.get_opacity < 0.9).squeeze()
-            # cov_t = gaussians.get_cov_t()
+            #cov_t = gaussians.get_cov_t().squeeze()
+            #prune_mask = cov_t < 0.5
             # static_threshold = torch.quantile(cov_t, 0.5)
 #            prune_mask|= (cov_t > static_threshold).squeeze()
 #            clone_split_prune(gaussians, None, None, prune_mask)
-#            print("Pruned:",prune_mask.shape[0]," -> ",gaussians.get_xyz.shape[0])
+            #print("Pruned:",prune_mask.shape[0]," -> ",gaussians.get_xyz.shape[0])
             #gaussians.reset_opacity(max_val = 1.0, min_val=1.0)
             
 
