@@ -1,22 +1,29 @@
 name: 4dgs
 channels:
-  - conda-forge
   - defaults
-  - nvidia
 dependencies:
+  - pip
   - torchmetrics 
   - ninja
-  - plyfile
-  - python=3.10
+#  - plyfile
+  - pybind11
   - tqdm 
   - imagesize
-  - kornia
-  - omegaconf
-  - pynput
+#  - omegaconf
+#  - pynput
   - pyparsing
   - matplotlib
+  - python=3.13
   - ffmpeg
+  - pytorch=2.12
+  - torchvision
+  - cuda-version=13.0
   - pip:
-    - ./simple-knn --no-build-isolation
-    - ./pointops2 --no-build-isolation
-    - torch torchvision --index-url https://download.pytorch.org/whl/cu130
+    - kornia
+    - omegaconf
+    - plyfile
+    - pynput
+    - safetensors
+##    - ./simple-knn --no-build-isolation
+#    - ./pointops2 --no-build-isolation
+#    - torch torchvision --index-url https://download.pytorch.org/whl/cu130
