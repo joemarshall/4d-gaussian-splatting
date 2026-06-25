@@ -89,13 +89,16 @@ class Scene:
             all_points = self.gaussians.get_xyz.detach().clone()
 
 
+            all_durations = torch.sqrt(self.gaussians.get_cov_t().detach().clone().squeeze())*2.44 * 2.0
+            all_times = self.gaussians.get_t.detach().clone().squeeze() - all_durations / 2.0
+
             up = torch.tensor([0.0, -1.0, 0], device="cuda")
 
             look_at = torch.tensor([0.0, 0.0, 0.0], device="cuda")
             camera_position = torch.tensor([0.0, 0.0, 5.0], device="cuda")
             camera_indices = torch.zeros(all_points.shape[0], dtype=torch.int32, device="cuda")
 
-            show_pointcloud_glfw_pytorch3d(torch.tensor(all_points,device="cuda"),torch.tensor(all_colors,device="cuda"),title="Total 3D point cloud",look_at=look_at,up=up,camera_position=camera_position,fov_degrees=70.0,camera_indices=camera_indices)
+            show_pointcloud_glfw_pytorch3d(torch.tensor(all_points,device="cuda"),torch.tensor(all_times,device="cuda"),torch.tensor(all_durations,device="cuda"),torch.tensor(all_colors,device="cuda"),title="Total 3D point cloud",look_at=look_at,up=up,camera_position=camera_position,fov_degrees=70.0,camera_indices=camera_indices)
 
    
 #                self.gaussians.create_from_pcd(scene_info.point_cloud, self.cameras_extent)

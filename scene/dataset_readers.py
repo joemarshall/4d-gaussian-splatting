@@ -246,7 +246,6 @@ def makePointCloudFromImages(scene, points_per_image=1000):
             if last_frame_img is not None:
                 # if the image has changed, then we want to prioritise adding points at this point 
                 # so we increase the weight of points that have changed in color
-                print("***************",image.shape,last_frame_img.shape    )
                 color_diff = torch.linalg.vector_norm(image - last_frame_img, dim=0)
                 point_sample_weight *= (0.5+color_diff)
             last_frames[cam.colmap_id] = image

@@ -60,6 +60,8 @@ def _camera_rt(eye: torch.Tensor, at: torch.Tensor, up: torch.Tensor) -> Tuple[t
 
 def show_pointcloud_glfw_pytorch3d(
     xyz: torch.Tensor,
+    times: torch.Tensor,
+    duration: torch.Tensor,
     color: torch.Tensor,
     camera_indices: torch.Tensor,
     camera_position: torch.Tensor,
@@ -72,6 +74,7 @@ def show_pointcloud_glfw_pytorch3d(
 #    point_radius: float = 0.006,
     points_per_pixel: int = 8,
     max_render_points: int = 1_000_000,
+    time_step: float = 0.05,
 ) -> None:
     """
     Open a blocking GLFW + OpenGL window and interactively render a point cloud
@@ -79,6 +82,7 @@ def show_pointcloud_glfw_pytorch3d(
 
     Controls:
     - 0-9: toggle visibility for points with camera index 0-9
+    - ] / [: move forward/backward in time
     - H: look at cloud center from +Z, 5 units away
     - W/S: move forward/back
     - A/D: strafe left/right
@@ -95,8 +99,14 @@ def show_pointcloud_glfw_pytorch3d(
         raise ValueError("xyz must have shape [N, 3].")
     if color.ndim != 2 or color.shape[-1] != 3:
         raise ValueError("color must have shape [N, 3].")
+    if times.ndim != 1:
+        raise ValueError("times must have shape [N].")
+    if duration.ndim != 1:
+        raise ValueError("duration must have shape [N].")
     if xyz.shape[0] != color.shape[0]:
         raise ValueError("xyz and color must have the same number of points.")
+    if times.shape[0] != xyz.shape[0] or duration.shape[0] != xyz.shape[0]:
+        raise ValueError("times and duration must have the same number of entries as xyz.")
     if camera_indices.ndim != 1:
         raise ValueError("camera_indices must have shape [N].")
     if camera_indices.shape[0] != xyz.shape[0]:
@@ -105,14 +115,19 @@ def show_pointcloud_glfw_pytorch3d(
         raise ValueError("camera_position, look_at, and up must each contain exactly 3 values.")
     if fov_degrees <= 0.0 or fov_degrees >= 179.0:
         raise ValueError("fov_degrees must be in (0, 179).")
+    if time_step <= 0.0:
+        raise ValueError("time_step must be > 0.")
 
     device = xyz.device
     dtype = xyz.dtype
 
     xyz = xyz.to(device=device, dtype=dtype).contiguous()
     color = color.to(device=device, dtype=dtype).contiguous()
+    times = times.to(device=device, dtype=dtype).contiguous()
+    duration = duration.to(device=device, dtype=dtype).contiguous()
     camera_indices = camera_indices.to(device=device, dtype=torch.int64).contiguous()
     cloud_center = xyz.mean(dim=0)
+    current_time = torch.tensor(0.0, device=device, dtype=dtype)
 
     if float(color.max().detach().cpu().item()) > 1.0:
         color = color / 255.0
@@ -135,6 +150,8 @@ def show_pointcloud_glfw_pytorch3d(
         keep = torch.randperm(xyz.shape[0], device=device)[:max_render_points]
         xyz = xyz.index_select(0, keep)
         color = color.index_select(0, keep)
+        times = times.index_select(0, keep)
+        duration = duration.index_select(0, keep)
         camera_indices = camera_indices.index_select(0, keep)
 
     enabled_camera_indices = set(range(10))
@@ -142,17 +159,28 @@ def show_pointcloud_glfw_pytorch3d(
 
     def _update_window_title() -> None:
         enabled_text = "".join(str(idx) if idx in enabled_camera_indices else "-" for idx in range(10))
-        glfw.set_window_title(window, f"{title} | cameras: {enabled_text}")
+        glfw.set_window_title(
+            window,
+            f"{title} | t={float(current_time.item()):.3f} | cameras: {enabled_text}",
+        )
 
     def _build_visible_point_cloud() -> Pointclouds | None:
+        nonlocal current_time
         visible_mask = torch.ones(camera_indices.shape[0], dtype=torch.bool, device=device)
         for idx, idx_mask in indexed_point_masks.items():
             if idx not in enabled_camera_indices:
                 visible_mask = visible_mask & (~idx_mask)
 
+        t = current_time
+        temporal_mask = (times <= t) & (t <= (times + duration))
+        visible_mask = visible_mask & temporal_mask
+
         if not bool(visible_mask.any().item()):
             return None
-        print(f"Rendering {visible_mask.sum().item()} points out of {xyz.shape[0]} total points.")
+        print(
+            f"Rendering {visible_mask.sum().item()} points out of {xyz.shape[0]} "
+            f"total points at t={float(current_time.item()):.3f}."
+        )
         return Pointclouds(
             points=[xyz[visible_mask]],
             features=[color[visible_mask]],
@@ -247,7 +275,7 @@ def show_pointcloud_glfw_pytorch3d(
         scene_dirty = True
 
     def _key_cb(_window: glfw._GLFWwindow, key: int, _scancode: int, action: int, _mods: int) -> None:
-        nonlocal scene_dirty, visibility_dirty, point_cloud, eye, yaw, pitch
+        nonlocal scene_dirty, visibility_dirty, point_cloud, eye, yaw, pitch, current_time
         if key == glfw.KEY_ESCAPE and action == glfw.PRESS:
             glfw.set_window_should_close(window, True)
         if key == glfw.KEY_H and action == glfw.PRESS:
@@ -256,6 +284,16 @@ def show_pointcloud_glfw_pytorch3d(
             yaw = float(torch.atan2(new_forward[0], new_forward[2]).item())
             pitch = float(torch.asin(torch.clamp(new_forward[1], -0.999, 0.999)).item())
             scene_dirty = True
+        if key == glfw.KEY_RIGHT_BRACKET and action in (glfw.PRESS, glfw.REPEAT):
+            current_time = current_time + time_step
+            point_cloud = _build_visible_point_cloud()
+            _update_window_title()
+            visibility_dirty = True
+        if key == glfw.KEY_LEFT_BRACKET and action in (glfw.PRESS, glfw.REPEAT):
+            current_time = torch.clamp(current_time - time_step, min=0.0)
+            point_cloud = _build_visible_point_cloud()
+            _update_window_title()
+            visibility_dirty = True
         if action == glfw.PRESS and glfw.KEY_0 <= key <= glfw.KEY_9:
             toggled_index = key - glfw.KEY_0
             if toggled_index in enabled_camera_indices:
@@ -476,6 +514,8 @@ if __name__ == "__main__":
     show_pointcloud_glfw_pytorch3d(
         xyz=xyz_test,
         color=color_test,
+        times=torch.zeros(xyz_test.shape[0], device=test_device),
+        duration=torch.ones(xyz_test.shape[0], device=test_device),
         camera_indices=torch.arange(xyz_test.shape[0], device=test_device) % 10,
         camera_position=camera_position_test,
         look_at=look_at_test,
