@@ -452,17 +452,6 @@ class GaussianModel:
             .cuda()
         )
         features[:, 0, 0:3] = fused_color
-        if self.gaussian_dim == 4:
-            if pcd.time is None:
-                fused_times = (
-                    torch.rand(fused_point_cloud.shape[0], 1, device="cuda") * 1.2 - 0.1
-                ) * (
-                    self.time_duration[1] - self.time_duration[0]
-                ) + self.time_duration[
-                    0
-                ]
-            else:
-                fused_times = torch.from_numpy(pcd.time).cuda().float()
 
         print("Number of points at initialisation : ", fused_point_cloud.shape[0])
 
@@ -474,13 +463,28 @@ class GaussianModel:
         rots = torch.zeros((fused_point_cloud.shape[0], 4), device="cuda")
         rots[:, 0] = 1
         if self.gaussian_dim == 4:
+            if pcd.times is None:
+                fused_times = (
+                    torch.rand(fused_point_cloud.shape[0], 1, device="cuda") * 1.2 - 0.1
+                ) * (
+                    self.time_duration[1] - self.time_duration[0]
+                ) + self.time_duration[
+                    0
+                ]
+            else:
+                fused_times = torch.from_numpy(pcd.times).cuda().float()
+            if pcd.durations is None:
             # dist_t = torch.clamp_min(distCUDA2(fused_times.repeat(1,3)), 1e-10)[...,None]
-            dist_t = (
-                torch.zeros_like(fused_times, device="cuda")
-                + (self.time_duration[1] - self.time_duration[0]) / 5
-            )
-            #            scales_t = torch.log(torch.ones(dist_t.shape[0],device="cuda") * 100.0)
-            scales_t = torch.log(torch.sqrt(dist_t))
+                dist_t = (
+                    torch.zeros_like(fused_times, device="cuda")
+                    + (self.time_duration[1] - self.time_duration[0]) / 5
+                )
+                #            scales_t = torch.log(torch.ones(dist_t.shape[0],device="cuda") * 100.0)
+                scales_t = torch.log(torch.sqrt(dist_t))
+            else:
+                durations = torch.from_numpy(pcd.durations).cuda().float()
+                fused_times = fused_times + durations / 2.0
+                scales_t = torch.log(durations) 
             if self.rot_4d:
                 rots_r = torch.zeros((fused_point_cloud.shape[0], 4), device="cuda")
                 rots_r[:, 0] = 1

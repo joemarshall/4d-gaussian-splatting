@@ -27,6 +27,7 @@ from omegaconf.dictconfig import DictConfig
 from scene.densifiers import *
 from pynput import keyboard
 
+
 torch.set_float32_matmul_precision("high")
 torch.backends.fp32_precision = "tf32"
 torch._dynamo.config.force_parameter_static_shapes = False
@@ -693,6 +694,24 @@ try:
                         lerp_track_cameras=lerp_track_pose_cameras,
                     )
                 if args.render:
+                    from utils.pointcloud_renderer import show_pointcloud_glfw_pytorch3d
+                    from utils.sh_utils import SH2RGB
+
+
+                    up = torch.tensor([0.0, -1.0, 0], device="cuda")
+
+                    camera_indices = torch.zeros(gaussians.get_xyz.shape[0], dtype=torch.int32, device="cuda")
+
+                    all_colors = SH2RGB(gaussians.get_sh_features_dc.detach().clone().squeeze(1))
+                    all_points = gaussians.get_xyz.detach().clone()
+                    all_colors = torch.clamp(all_colors,0.0,1.0)
+                    look_at = torch.mean(all_points,axis=0)
+                    camera_position = look_at + torch.tensor([0.0, 0.0, -5.0], device="cuda")
+                    print(look_at,camera_position)
+
+
+                    show_pointcloud_glfw_pytorch3d(all_points,all_colors,title="Total 3D point cloud",look_at=look_at,up=up,camera_position=camera_position,fov_degrees=70.0,camera_indices=camera_indices)
+
                     render_set(
                         model.model_path,
                         scene.loaded_iter,

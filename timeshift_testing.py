@@ -1,10 +1,29 @@
 import time
+import random
+from pathlib import Path
+
+from tqdm import tqdm
+
 
 import torch
 torch.set_float32_matmul_precision('high')
 
 from utils.sh_utils import eval_shfs_4d,eval_sh
 
+from utils.general_utils import (
+    inverse_sigmoid,
+    get_expon_lr_func,
+    build_rotation,
+    build_rotation_4d,
+    build_scaling_rotation_4d,
+)
+
+
+# initialize from depth, ?clip by cameras?
+# work out how to play it
+# work out how to make it small
+#
+#
 # total size of model:
 # for each gaussian:
 # x,y,z,t = 4
@@ -32,15 +51,57 @@ from utils.sh_utils import eval_shfs_4d,eval_sh
 # 
 #
 #
-# With SHAC-LST, we have instead:
-# 
+#  
 #
+#
+# store on disk as fp16 / bf16 = 50% less data
+# or even as 8 bit with custom compression per chunk
+# todo: check conversion time
+# todo: save sorted by mean of time
+# todo: split out stationary gaussians in background vs foreground
+# maybe: anything outside camera bounding box = stationary, zero time based parameters, gradient + fix rotation 
+#  
+#
+# to train with big file
+# need:
+# gaussians.set_active_time_range()
+# keep in memory:
+# 1) gaussian time
+# 2) gaussian covariances
+# loads:
+# 1) gaussians
+# 2) optimizer state
+# 3) state of densifiers if needed 
+# -  n.b. in densifiers, have a state dirty flag, and don't worry about saving
+# state if it is zero still (i.e. just post densification)
+# 
+
+#
+# ignore gradients (assume it is just after an optimizer step)
+#
+# todo2: try different more dense initializers (e.g. random selection of frame, x, y, depth to make points?)
+#       -n.b. can make sure initialisation happens spread out over time 
+# 
+
+# benchmark load/save <-> cuda on set_active_time_range
+# and use that to work out how many training steps per time range make sense
+# between switches
+
+# TODO: run on the CVL cluster 
+
+
+# can we stop training stationary points once we have found them? And does that help much performance-wise given we
+# can't train the other points without rendering them. 
+# or maybe we can if we depth-clip everything???
 
 
 
 
 
 
+
+
+from utils.big_tensors import *
 
 
 
@@ -49,20 +110,101 @@ from utils.sh_utils import eval_shfs_4d,eval_sh
 
 TIMES = []
 
-def add_time(label):
+def add_time(label,count = None):
     global TIMES
     last_time = TIMES[-1][2] if len(TIMES)>0 else time.monotonic()
     cur_time = time.monotonic()
     duration = cur_time - last_time
-    TIMES.append((label, duration, cur_time))
+    if count is None:
+        TIMES.append((label, duration, cur_time,None))
+    else:
+        TIMES.append((label, duration, cur_time,duration/count))
+
+output_folder = Path("output/9moving/model_output/")
+checkpoints = Path(output_folder).glob("*.pth")
+sorted_checkpoints = list(sorted(checkpoints, key=lambda x: x.stat().st_mtime))
+if len(sorted_checkpoints):
+    latest_pth = sorted_checkpoints[-1]
+
 
 add_time("start")
-all_tensors = torch.load("output/9moving/model_output/chkpnt_resume.pth", map_location="cpu",mmap=True,weights_only = False)
-add_time("loaded mmap")
-all_tensors = torch.load("output/9moving/model_output/chkpnt_resume.pth", map_location="cpu",mmap=False,weights_only = False)
-add_time("Loaded no mmap")
-print(TIMES)
+all_tensors = torch.load(latest_pth, map_location="cpu",mmap=True,weights_only = False)
+add_time("loaded raw data")
+chunked_tensor = TimeAndScaleChunkedTensor(device="cuda",min_chunk_size=.1)
+tensor_set = {}
+for k in all_tensors[0].keys():
+    if type(all_tensors[0][k]) == torch.Tensor or type(all_tensors[0][k]) == torch.nn.Parameter:
+        chunked_tensor.add_tracked_tensor(k)
+        tensor_set[k] = all_tensors[0][k]
 
+print(tensor_set['_t'])
+
+def get_scale_from_tensors(tensor_set):
+    scaling_xyzt = torch.exp(torch.cat([tensor_set['_scaling'], tensor_set['_scaling_t']], dim=1))
+    L = build_scaling_rotation_4d(
+        scaling_xyzt,
+        tensor_set['_rotation'],
+        tensor_set['_rotation_r']
+    )
+    actual_covariance = L @ L.transpose(1, 2)
+    cov_t =actual_covariance[:, 3, 3]#.unsqueeze(1)
+    sd_t = torch.sqrt(cov_t)
+    # opacity multiplier is 0.05 at this point
+    visible_range = 1.96 * sd_t
+    # opacity multiplier is 0.01 at this point
+    # visible_range = 2.576 * sd_t
+
+    return visible_range
+
+scales = get_scale_from_tensors(tensor_set)
+print("Scales:",scales.shape)
+
+chunked_tensor.update_chunks_from_device(tensor_set,tensor_set['_t'].squeeze(),scales)
+print("Made initial chunks")
+add_time("Made chunks")
+for x in tqdm(range(100)):
+    import random
+    time_start=random.random()*5.5
+    device_data,device_times,device_scales = chunked_tensor.move_chunks_to_device(min_time=time_start,max_time=time_start+0.5)
+    if device_data is not None:
+        chunked_tensor.update_chunks_from_device(device_data,device_times,device_scales)
+add_time("Retrieved chunks",100)
+
+
+# print(all_tensors[0].keys())
+# time_vals = all_tensors[0]["_t"]
+# print(torch.cuda.memory.memory_summary())
+# add_time("Start selection")
+# NUM_SELECTIONS = 1000
+# for x in range(NUM_SELECTIONS):
+#     start_time = random.uniform(0,4.5)
+#     end_time = start_time+0.5
+#     time_selection = (time_vals > start_time) & (time_vals < end_time)
+#     time_selection = time_selection.squeeze()
+#     selected_vars = []
+#     for t in all_tensors[0].values():
+#         #print(type(t))
+#         if (type(t) == torch.Tensor or type(t) == torch.nn.Parameter) and t.shape[0] == time_vals.shape[0]:
+#             selected = t[time_selection].detach().to(device="cuda")
+#             selected_vars.append(selected)
+#     #print(torch.cuda.memory.memory_allocated(),selected_vars)
+# selected_vars = []
+        
+
+# add_time("Done selection",NUM_SELECTIONS)
+# print(torch.cuda.memory.memory_summary())
+
+
+for label,duration,_the_time,count in TIMES:
+    if count is None:
+        print(label,":",duration)
+    else:
+        print(label,":",duration,"time/it:",count)
+
+
+
+import sys
+sys.exit(0)
 
 def dump_tensors(tensor_list, key_names = None, indent=0):
     total_floats=0
@@ -106,11 +248,19 @@ print("Floats per point:", floats_per_point)
 sh_features= all_tensors[0]["_features_rest"]
 sh_features = torch.cat([all_tensors[0]["_features_dc"], sh_features], dim=1)
 sh_means = sh_features.mean(dim=0)
+sh_max = sh_features.max(dim=0).values
+sh_min = sh_features.min(dim=0).values
 sh_variances = sh_features.var(dim=0)
 print(f"SH Coefficient Means (shape: {sh_features.shape}):")
 print(sh_means)
 print(f"SH Coefficient Variances (shape: {sh_features.shape}):")
 print(sh_variances)
+print(f"SH Coefficient Max (shape: {sh_features.shape}):")
+print(sh_max)
+print(f"SH Coefficient Min (shape: {sh_features.shape}):")
+print(sh_min)
+
+
 
 
 

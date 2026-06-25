@@ -164,6 +164,9 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
         else:
             sh_dc = pc.get_sh_features_dc
             sh_ac = pc.get_sh_features_rest
+            # reduce precision to see if storage precision matters
+            #sh_ac = sh_ac.to(dtype=torch.float16)
+            #sh_ac = sh_ac.to(dtype=torch.float32)
             if pc.gaussian_dim == 4 and ts is None:
                 ts = pc.get_t
     else:
