@@ -445,7 +445,7 @@ def makePointCloudFromImages(scene, points_per_image=1000):
                 all_durations[possible_points_to_extend] += last_time - t
                 print(
                     "Extended points:",
-                    possible_points_to_extend.count().item(),
+                    possible_points_to_extend.numel().item(),
                     "at time:",
                     t,
                 )
