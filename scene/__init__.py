@@ -52,6 +52,11 @@ class Scene:
         else:
             assert False, "Could not recognize scene type!"
 
+        if args.add_duplicate_input_video>0:
+            scene_info= scene_info.with_copied_cameras(args.add_duplicate_input_video)
+
+        print("Loaded {} training cameras and {} test cameras".format(len(scene_info.train_cameras), len(scene_info.test_cameras)))
+
         if not self.loaded_iter:
             with open(scene_info.ply_path, 'rb') as src_file, open(os.path.join(self.model_path, "input.ply") , 'wb') as dest_file:
                 dest_file.write(src_file.read())

@@ -63,6 +63,40 @@ class SceneInfo(NamedTuple):
     nerf_normalization: dict
     ply_path: str
 
+    def with_copied_cameras(self, num_copies):
+        """return a new sceneinfo which has train_cameras repeated num_copies time,
+        with timestamps offset by the last timestamp of the previous copy plus one frame delta
+        """
+        if num_copies < 1:
+            return self
+
+        if not self.train_cameras:
+            return self._replace(train_cameras=[])
+
+        timestamps = sorted({cam.timestamp for cam in self.train_cameras})
+        if len(timestamps) > 1:
+            frame_delta = min(
+                (timestamps[i + 1] - timestamps[i])
+                for i in range(len(timestamps) - 1)
+                if (timestamps[i + 1] - timestamps[i]) > 0
+            )
+        else:
+            frame_delta = 1.0 / 30.0
+
+        min_timestamp = min(cam.timestamp for cam in self.train_cameras)
+        max_timestamp = max(cam.timestamp for cam in self.train_cameras)
+        copy_period = (max_timestamp - min_timestamp) + frame_delta
+
+        copied_train_cameras = []
+        for copy_idx in range(num_copies + 1):
+            time_offset = copy_idx * copy_period
+            for cam in self.train_cameras:
+                copied_train_cameras.append(
+                    cam._replace(timestamp=cam.timestamp + time_offset)
+                )
+
+        return self._replace(train_cameras=copied_train_cameras)
+
 
 def getNerfppNorm(cam_info):
     def get_center_and_diag(cam_centers):
@@ -167,6 +201,7 @@ def readColmapCameras(cam_extrinsics, cam_intrinsics, images_folder, dataloader)
             cam_infos.append(cam_info)
             frame += 1
     sys.stdout.write("\n")
+
     return cam_infos
 
 
@@ -194,13 +229,18 @@ def makePointCloudFromImages(scene, points_per_image=1000):
     # spread across the image and save to ply with the calculated point (from the depth and the camera rays)
     # and timestamp set to the image timestamp
     # and return this as a BasicPointCloud for use with gaussian initialization
+
+    TENSOR_DEVICE = "cuda"
+
     dataset = scene.getTrainCameras()
     num_points_total = len(dataset) * points_per_image
-    all_points = torch.zeros((num_points_total, 3))
-    all_colors = torch.zeros((num_points_total, 3))
-    all_normals = np.zeros((num_points_total, 3))
-    all_times = torch.zeros((num_points_total, 1))
-    all_durations = torch.zeros((num_points_total, 1))
+    all_points = torch.zeros((num_points_total, 2), dtype=torch.int32,device=TENSOR_DEVICE)
+    all_xyz = torch.zeros((num_points_total, 3), device=TENSOR_DEVICE)
+    all_colors = torch.zeros((num_points_total, 3), device=TENSOR_DEVICE)
+    all_normals = torch.zeros((num_points_total, 3), device=TENSOR_DEVICE)
+    all_times = torch.zeros((num_points_total, 1), device=TENSOR_DEVICE)
+    all_durations = torch.zeros((num_points_total, 1), device=TENSOR_DEVICE)
+    all_src_cams = torch.zeros((num_points_total, 1), dtype=torch.int32, device=TENSOR_DEVICE)
 
     # live points, indexed by colmap_id
     # for each colmap_id we have a list of x,y and d
@@ -210,24 +250,26 @@ def makePointCloudFromImages(scene, points_per_image=1000):
 
     all_points_index = 0
 
-    # last frame images per camera - we prioritise adding points where the image 
+    # last frame images per camera - we prioritise adding points where the image
     # changed so we capture motion
     last_frames = {}
 
     def add_finished_points(
-        finished_points, finished_depth, finished_colors, finished_times, time_now
+        finished_points,finished_xyz, finished_depth, finished_colors, finished_times, time_now, cam_id
     ):
         nonlocal all_points_index
         num_points = finished_points.shape[0]
+        all_src_cams[all_points_index : all_points_index + num_points,0] = cam_id
+        all_xyz [ all_points_index : all_points_index + num_points] = finished_xyz
         all_points[all_points_index : all_points_index + num_points] = finished_points
         all_colors[all_points_index : all_points_index + num_points] = finished_colors
-        all_times[all_points_index : all_points_index + num_points] = finished_times.unsqueeze(-1)
+        all_times[all_points_index : all_points_index + num_points] = (
+            finished_times.unsqueeze(-1)
+        )
         all_durations[all_points_index : all_points_index + num_points] = (
             time_now - finished_times
         ).unsqueeze(-1)
         all_points_index += num_points
-
-
 
     for t in timestamps:
         frame_cams = dataset.get_indices_for_timestamp(t)
@@ -244,30 +286,36 @@ def makePointCloudFromImages(scene, points_per_image=1000):
 
             last_frame_img = last_frames.get(cam.colmap_id, None)
             if last_frame_img is not None:
-                # if the image has changed, then we want to prioritise adding points at this point 
+                # if the image has changed, then we want to prioritise adding points at this point
                 # so we increase the weight of points that have changed in color
                 color_diff = torch.linalg.vector_norm(image - last_frame_img, dim=0)
-                point_sample_weight *= (0.5+color_diff)
+                point_sample_weight *= 0.5 + color_diff
             last_frames[cam.colmap_id] = image
 
             point_data = live_points.get(cam.colmap_id, None)
             if point_data is not None:
                 old_points, old_xyz, old_depths, old_color, old_times = point_data
-                finished_points_mask = depth[old_points[:,0], old_points[:,1]] < 0
+                finished_points_mask = depth[old_points[:, 0], old_points[:, 1]] < 0
                 # check each old point and clear it if it is too different in depth
-                #finished_points_mask |= torch.abs(depth[old_points[:,0], old_points[:,1]] - old_depths) > 0.01
+                # finished_points_mask |= torch.abs(depth[old_points[:,0], old_points[:,1]] - old_depths) > 0.01
                 # check each old point and clear it if it is too different in color
 
-                colors_in_this_frame = image[:, old_points[:,0], old_points[:,1]].transpose(0, 1)
+                colors_in_this_frame = image[
+                    :, old_points[:, 0], old_points[:, 1]
+                ].transpose(0, 1)
 
                 finished_points_mask |= (
-                     torch.linalg.vector_norm(colors_in_this_frame - old_color, dim=-1) > 0.1
-                 )
+                    torch.linalg.vector_norm(colors_in_this_frame - old_color, dim=-1)
+                    > 0.1
+                )
 
                 still_live_points = ~finished_points_mask
 
                 # if a point isn't finished then don't sample it again in the current frame
-                point_sample_weight[old_points[still_live_points][:,0], old_points[still_live_points][:,1]] = 0.0
+                point_sample_weight[
+                    old_points[still_live_points][:, 0],
+                    old_points[still_live_points][:, 1],
+                ] = 0.0
                 if still_live_points.sum() == 0:
                     live_points[cam.colmap_id] = None
                 else:
@@ -278,15 +326,22 @@ def makePointCloudFromImages(scene, points_per_image=1000):
                         old_color[still_live_points],
                         old_times[still_live_points],
                     )
-                print("Live points:", still_live_points.sum().item(), "Finished points:", finished_points_mask.sum().item())
+                print(
+                    "Live points:",
+                    still_live_points.sum().item(),
+                    "Finished points:",
+                    finished_points_mask.sum().item(),
+                )
                 if finished_points_mask.sum() > 0:
                     # now add in the points that are finished to the all_points list with a duration
                     add_finished_points(
+                        old_points[finished_points_mask],
                         old_xyz[finished_points_mask],
                         old_depths[finished_points_mask],
                         old_color[finished_points_mask],
                         old_times[finished_points_mask],
                         t,
+                        cam.colmap_id
                     )
 
             print("Making points from image:", cam.image_path)
@@ -311,13 +366,15 @@ def makePointCloudFromImages(scene, points_per_image=1000):
 
             new_points = torch.stack([point_ys, point_xs], dim=-1)
 
-            projected_xyz = rays_d[new_points[:,0], new_points[:,1], :] * depth[new_points[:,0], new_points[:,1]].unsqueeze(-1)
+            projected_xyz = rays_d[new_points[:, 0], new_points[:, 1], :] * depth[
+                new_points[:, 0], new_points[:, 1]
+            ].unsqueeze(-1)
             projected_xyz += rays_o[0, 0]
 
             new_xyz = projected_xyz
-            new_times = torch.ones(new_points.shape[0], device="cuda") * cam.timestamp
-            new_colors = image[:, new_points[:,0], new_points[:,1]].transpose(0, 1)
-            new_depths = depth[new_points[:,0], new_points[:,1]]
+            new_times = torch.ones(new_points.shape[0], device=TENSOR_DEVICE) * cam.timestamp
+            new_colors = image[:, new_points[:, 0], new_points[:, 1]].transpose(0, 1)
+            new_depths = depth[new_points[:, 0], new_points[:, 1]]
 
             point_data = live_points.get(cam.colmap_id, None)
 
@@ -341,24 +398,65 @@ def makePointCloudFromImages(scene, points_per_image=1000):
     for cam_id, point_data in live_points.items():
         if point_data is not None:
             old_points, old_xyz, old_depths, old_color, old_times = point_data
-            add_finished_points(old_xyz, old_depths, old_color, old_times, last_time)
+            add_finished_points(old_points,old_xyz, old_depths, old_color, old_times, last_time,cam_id)
 
     print("Total points made:", all_points_index, "out of", num_points_total)
 
-    # up = torch.tensor([0.0, -1.0, 0], device="cuda")
+    # now iterate backwards through frames (and though all_points which is sorted in order of end time), and for any points that
+    # finish on the current frame plus 1, extend their duration to the current frame if the color is similar enough (as per calculation above)
+    last_timestamp = None
+    last_frames = {}  # image, cam, depth, t
 
-    # look_at = torch.tensor([0.0, 0.0, 0.0], device="cuda")
-    # camera_position = torch.tensor([0.0, 0.0, 5.0], device="cuda")
-    # camera_indices = torch.zeros(all_points.shape[0], dtype=torch.int32, device="cuda")
+    live_points = torch.zeros((all_points_index), dtype=torch.bool)
+    for t in reversed(timestamps):
+        frame_cams = dataset.get_indices_for_timestamp(t)
+        for idx in frame_cams:
+            (
+                image,
+                cam,
+                depth,
+            ) = dataset[idx]
+            last_frame_data = last_frames.get(cam.colmap_id, None)
+            if last_frame_data is not None:
+                last_image, last_cam, last_depth, last_time = last_frame_data
+                # check all points which end on the next frame (the last one in loop because we are going backwards)
+                possible_points_to_extend = torch.logical_and(all_times[:,0] == last_time,all_src_cams[:, 0] == cam.colmap_id).nonzero()
+                possible_points_to_extend = possible_points_to_extend.squeeze()
 
-    # show_pointcloud_glfw_pytorch3d(torch.tensor(all_points,device="cuda"),torch.tensor(all_colors,device="cuda"),title="Total 3D point cloud",look_at=look_at,up=up,camera_position=camera_position,fov_degrees=70.0,camera_indices=camera_indices)
+                diff_image = last_image - image
+                diff_image_norm = torch.linalg.vector_norm(diff_image, dim=0)
+
+                point_values = all_points[possible_points_to_extend]
+
+
+
+                sample_points = all_points[possible_points_to_extend]
+                print(diff_image_norm.shape,diff_image_norm.dtype,possible_points_to_extend.shape,all_points.shape,sample_points.shape)
+                
+
+                diff_image_samples = diff_image_norm[
+                    sample_points[:,0], sample_points[:,1] 
+                ]
+
+                possible_points_to_extend = possible_points_to_extend[diff_image_samples< 0.1]
+
+
+                all_times[possible_points_to_extend] = t
+                all_durations[possible_points_to_extend] += last_time - t
+                print(
+                    "Extended points:",
+                    possible_points_to_extend.count().item(),
+                    "at time:",
+                    t,
+                )
+            last_frames[cam.colmap_id] = (image, cam, depth, t)
 
     return BasicPointCloud(
-        points=all_points.cpu().numpy(),
+        points=all_xyz.cpu().numpy(),
         colors=all_colors.cpu().numpy(),
         normals=all_normals,
         times=all_times.cpu().numpy(),
-        durations=all_durations.cpu().numpy()
+        durations=all_durations.cpu().numpy(),
     )
 
 
