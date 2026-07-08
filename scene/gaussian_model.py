@@ -459,7 +459,8 @@ class GaussianModel:
             distCUDA2(torch.from_numpy(np.asarray(pcd.points)).float().cuda()),
             0.0000001,
         )
-        scales = torch.log(torch.sqrt(dist2))[..., None].repeat(1, 3)
+        # TODO: calculate scales for things
+        scales = torch.log(torch.sqrt(dist2)*2.0)[..., None].repeat(1, 3)
         rots = torch.zeros((fused_point_cloud.shape[0], 4), device="cuda")
         rots[:, 0] = 1
         if self.gaussian_dim == 4:
@@ -484,7 +485,9 @@ class GaussianModel:
             else:
                 durations = torch.from_numpy(pcd.durations).cuda().float()
                 fused_times = fused_times + durations / 2.0
-                scales_t = torch.log(durations) 
+                # double this because gaussians shrink more than they grow 
+                # and we want maximum coverage by minimum gaussians
+                scales_t = torch.log(durations)*2.0 
             if self.rot_4d:
                 rots_r = torch.zeros((fused_point_cloud.shape[0], 4), device="cuda")
                 rots_r[:, 0] = 1

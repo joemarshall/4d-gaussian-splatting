@@ -426,7 +426,6 @@ def makePointCloudFromImages(scene, points_per_image=1000):
                 diff_image = last_image - image
                 diff_image_norm = torch.linalg.vector_norm(diff_image, dim=0)
 
-                point_values = all_points[possible_points_to_extend]
 
 
 
