@@ -52,6 +52,9 @@ def trace_fn(frame, event, arg):
 
 parser = argparse.ArgumentParser()
 parser.add_argument("output_folder", help="Output folder path")
+
+parser.add_argument("--interactive", "-i", action="store_true", help="Live render mode")
+
 parser.add_argument("--render", "-r", action="store_true", help="Render mode")
 parser.add_argument("--vs_gt", "-t", action="store_true", help="Render vs gt")
 parser.add_argument("--test", action="store_true", help="Test mode")
@@ -330,7 +333,7 @@ def get_model_pipeline_scene_gaussians(output_folder,override_pth):
             str(output_folder)
         ]
 
-        render_parser = argparse.ArgumentParser(description="Render params")
+        render_parser = argparse.ArgumentParser(description="`Render` params")
         render_parser.add_argument("--rot_4d", action="store_true")
 
         model = ModelParams(render_parser, sentinel=True)
@@ -406,7 +409,11 @@ def render_set(model_path, iteration, views, gaussians, pipeline, background):
 
 
 try:
-    config_path = Path(args.output_folder).parent / "config.yaml"
+    config_path = Path(args.output_folder)/ "config.yaml"
+    if not config_path.exists():
+        config_path = Path(args.output_folder).parent / "config.yaml"
+    
+
 
     if args.opcheck:
                 model,pipeline,scene,gaussians = get_model_pipeline_scene_gaussians(args.output_folder,args.override_pth)
@@ -567,7 +574,7 @@ try:
                 sys.exit(0)
 
 
-    if args.render or args.graph_camera_positions:
+    if args.render or args.graph_camera_positions or args.interactive:
 
         with torch.no_grad():
             model,pipeline,scene,gaussians = get_model_pipeline_scene_gaussians(args.output_folder,args.override_pth)
@@ -674,13 +681,26 @@ try:
                     new_cam.lerp_transform(cam_before, cam_after, lerp_factor)
                     lerped_cameras.append((name, (cam[0], new_cam)))
 
+                sorted_lerped_cameras = sorted(
+                    lerped_cameras,
+                    key=lambda item: camera_id_and_frame_from_path(
+                        item[1][1].image_name
+                    )[1],
+                )
+                playback_input_views = []
+                for _, (_, cam) in sorted_lerped_cameras:
+                    # Camera.R/T are the world-to-view extrinsics expected by FoVPerspectiveCameras.
+                    cam_R = torch.as_tensor(cam.R, dtype=torch.float32, device="cuda").transpose(0, 1)
+                    cam_T = torch.as_tensor(cam.T, dtype=torch.float32, device="cuda")
+                    cam_fov_x = float(cam.FoVx)
+                    cam_fov_y = float(cam.FoVy)
+                    playback_input_views.append((cam_R, cam_T, cam_fov_x, cam_fov_y))
+                render_width = int(sorted_lerped_cameras[0][1][1].image_width)
+                render_height = int(sorted_lerped_cameras[0][1][1].image_height)
+                default_fov_x = playback_input_views[0][2]
+                default_fov_y = playback_input_views[0][3]
+
                 if args.graph_camera_positions:
-                    sorted_lerped_cameras = sorted(
-                        lerped_cameras,
-                        key=lambda item: camera_id_and_frame_from_path(
-                            item[1][1].image_name
-                        )[1],
-                    )
                     lerp_track_positions = [
                         entry[1][1].camera_center.detach().cpu()
                         for entry in sorted_lerped_cameras
@@ -693,38 +713,72 @@ try:
                         lerp_track_positions=lerp_track_positions,
                         lerp_track_cameras=lerp_track_pose_cameras,
                     )
-                if args.render:
-                    from utils.pointcloud_renderer import show_pointcloud_glfw_pytorch3d
+                if args.render or args.interactive:
+                    from utils.pointcloud_renderer import (
+                        show_gaussians_glfw,
+                        show_pointcloud_glfw_pytorch3d,
+                    )
                     from utils.sh_utils import SH2RGB
 
 
                     up = torch.tensor([0.0, -1.0, 0], device="cuda")
 
-                    camera_indices = torch.zeros(gaussians.get_xyz.shape[0], dtype=torch.int32, device="cuda")
-
-                    all_colors = SH2RGB(gaussians.get_sh_features_dc.detach().clone().squeeze(1))
                     all_points = gaussians.get_xyz.detach().clone()
-                    all_colors = torch.clamp(all_colors,0.0,1.0)
-
-                    all_durations = torch.sqrt(gaussians.get_cov_t().detach().clone().squeeze())*2.44 * 2.0
-                    all_times = gaussians.get_t.detach().clone().squeeze() - all_durations / 2.0
-
-
-                    look_at = torch.mean(all_points,axis=0)
+                    look_at = torch.mean(all_points, axis=0)
                     camera_position = look_at + torch.tensor([0.0, 0.0, -5.0], device="cuda")
-                    print(look_at,camera_position)
+                    print(look_at, camera_position)
 
+                    if args.interactive:
+                        show_gaussians_glfw(
+                            gaussians=gaussians,
+                            pipe=pipeline,
+                            bg_color=background,
+                            tensor_gradient_2d_buffer=None,
+                            camera_position=camera_position,
+                            look_at=look_at,
+                            up=up,
+                            fov_x=default_fov_x,
+                            fov_y=default_fov_y,
+                            title="Total 3D Gaussian Splat Viewer",
+                            input_views=playback_input_views,
+                            render_width=render_width,
+                            render_height=render_height,
+                        )
+                        sys.exit(0)
+                    else:
+                        camera_indices = torch.zeros(
+                            gaussians.get_xyz.shape[0],
+                            dtype=torch.int32,
+                            device="cuda",
+                        )
+                        all_colors = SH2RGB(gaussians.get_sh_features_dc.detach().clone().squeeze(1))
+                        all_colors = torch.clamp(all_colors, 0.0, 1.0)
+                        all_durations = torch.sqrt(gaussians.get_cov_t().detach().clone().squeeze()) * 2.44 * 2.0
+                        all_times = gaussians.get_t.detach().clone().squeeze() - all_durations / 2.0
 
-                    show_pointcloud_glfw_pytorch3d(torch.tensor(all_points,device="cuda"),torch.tensor(all_times,device="cuda"),torch.tensor(all_durations,device="cuda"),torch.tensor(all_colors,device="cuda"),title="Total 3D point cloud",look_at=look_at,up=up,camera_position=camera_position,fov_degrees=70.0,camera_indices=camera_indices)
+                        show_pointcloud_glfw_pytorch3d(
+                            torch.tensor(all_points, device="cuda"),
+                            torch.tensor(all_times, device="cuda"),
+                            torch.tensor(all_durations, device="cuda"),
+                            torch.tensor(all_colors, device="cuda"),
+                            title="Total 3D point cloud",
+                            look_at=look_at,
+                            up=up,
+                            camera_position=camera_position,
+                            fov_x=default_fov_x,
+                            fov_y=default_fov_y,
+                            camera_indices=camera_indices,
+                            input_views=playback_input_views,
+                        )
 
-                    render_set(
-                        model.model_path,
-                        scene.loaded_iter,
-                        lerped_cameras,
-                        gaussians,
-                        pipeline,
-                        background,
-                    )
+                        render_set(
+                            model.model_path,
+                            scene.loaded_iter,
+                            lerped_cameras,
+                            gaussians,
+                            pipeline,
+                            background,
+                        )
 
             else:
                 if args.graph_camera_positions:
