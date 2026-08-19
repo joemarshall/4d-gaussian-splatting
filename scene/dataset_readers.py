@@ -22,7 +22,7 @@ from scene.colmap_loader import (
     read_points3D_binary,
     read_points3D_text,
 )
-from utils.graphics_utils import getWorld2View2, focal2fov, fov2focal
+from utils.graphics_utils import getWorld2View2, focal2fov, fov2focal, rotation_matrix_to_quaternion
 import numpy as np
 import json
 from pathlib import Path
@@ -241,6 +241,7 @@ def makePointCloudFromImages(scene, points_per_image=1000):
     all_times = torch.zeros((num_points_total, 1), device=TENSOR_DEVICE)
     all_durations = torch.zeros((num_points_total, 1), device=TENSOR_DEVICE)
     all_src_cams = torch.zeros((num_points_total, 1), dtype=torch.int32, device=TENSOR_DEVICE)
+    all_depths = torch.zeros((num_points_total, 1), device=TENSOR_DEVICE)
 
     # live points, indexed by colmap_id
     # for each colmap_id we have a list of x,y and d
@@ -262,6 +263,7 @@ def makePointCloudFromImages(scene, points_per_image=1000):
         all_src_cams[all_points_index : all_points_index + num_points,0] = cam_id
         all_xyz [ all_points_index : all_points_index + num_points] = finished_xyz
         all_points[all_points_index : all_points_index + num_points] = finished_points
+        all_depths[all_points_index : all_points_index + num_points] = finished_depth.unsqueeze(-1)
         all_colors[all_points_index : all_points_index + num_points] = finished_colors
         all_times[all_points_index : all_points_index + num_points] = (
             finished_times.unsqueeze(-1)
@@ -269,7 +271,12 @@ def makePointCloudFromImages(scene, points_per_image=1000):
         all_durations[all_points_index : all_points_index + num_points] = (
             time_now - finished_times
         ).unsqueeze(-1)
+        count_zero = (all_durations[all_points_index : all_points_index + num_points] == 0).sum().item()
+        if count_zero > 0:
+            print("Warning - finished points with zero duration:", count_zero, "out of", num_points)
+            asdasd
         all_points_index += num_points
+
 
     for t in timestamps:
         frame_cams = dataset.get_indices_for_timestamp(t)
@@ -363,18 +370,16 @@ def makePointCloudFromImages(scene, points_per_image=1000):
 
             point_xs = point_idxs % cam.image_width
             point_ys = point_idxs // cam.image_width
+            new_depths = depth[point_ys, point_xs]
 
             new_points = torch.stack([point_ys, point_xs], dim=-1)
 
-            projected_xyz = rays_d[new_points[:, 0], new_points[:, 1], :] * depth[
-                new_points[:, 0], new_points[:, 1]
-            ].unsqueeze(-1)
+            projected_xyz = rays_d[new_points[:, 0], new_points[:, 1], :] * new_depths.unsqueeze(-1)
             projected_xyz += rays_o[0, 0]
 
             new_xyz = projected_xyz
             new_times = torch.ones(new_points.shape[0], device=TENSOR_DEVICE) * cam.timestamp
             new_colors = image[:, new_points[:, 0], new_points[:, 1]].transpose(0, 1)
-            new_depths = depth[new_points[:, 0], new_points[:, 1]]
 
             point_data = live_points.get(cam.colmap_id, None)
 
@@ -393,7 +398,7 @@ def makePointCloudFromImages(scene, points_per_image=1000):
                 new_times,
             )
 
-    last_time = timestamps[-1]
+    last_time = timestamps[-1] + timestamps[1]-timestamps[0]
 
     for cam_id, point_data in live_points.items():
         if point_data is not None:
@@ -450,12 +455,96 @@ def makePointCloudFromImages(scene, points_per_image=1000):
                 )
             last_frames[cam.colmap_id] = (image, cam, depth, t)
 
+    all_rotations = torch.zeros((all_points_index,4), device=TENSOR_DEVICE)
+    all_scales = torch.zeros((all_points_index,3), device=TENSOR_DEVICE)
+
+
+    first_frame_cams = dataset.get_indices_for_timestamp(timestamps[0])
+    print(len(first_frame_cams), "cameras in first frame:")
+
+    for idx in first_frame_cams:
+        (
+            image,
+            cam,
+            depth,
+        ) = dataset[idx]
+
+        rays_o, rays_d = cam.cuda().get_rays()
+
+        # get scale multiplier for 1 pixel move at distance 1
+        ray_scale_multiplier = torch.linalg.vector_norm(
+            rays_d[rays_d.shape[0] // 2, rays_d.shape[1] // 2, :] - rays_d[1+(rays_d.shape[0] // 2), rays_d.shape[1] // 2, :])
+        print("Ray scale multiplier for camera", cam.colmap_id, ":", ray_scale_multiplier.item())
+        this_cam_indices = cam.colmap_id == all_src_cams[:, 0]
+
+        this_cam_points = all_points[this_cam_indices]
+        this_cam_depths = all_depths[this_cam_indices]
+        this_cam_times = all_times[this_cam_indices]
+        this_cam_durations = all_durations[this_cam_indices]
+        this_cam_end_times = this_cam_times + this_cam_durations
+        this_cam_centre_times = this_cam_times+ (this_cam_durations *0.5)
+        this_cam_scales = torch.zeros((this_cam_points.shape[0],3), device=TENSOR_DEVICE)
+        cam_rotation = rotation_matrix_to_quaternion(torch.transpose(torch.tensor(cam.R,device=TENSOR_DEVICE,dtype=torch.float32),0,1))
+        this_cam_rotations = torch.ones((this_cam_points.shape[0],4) , device=TENSOR_DEVICE)* cam_rotation.unsqueeze(0)
+        last_timestamp = timestamps[0] - (timestamps[1]-timestamps[0])
+        for timestamp in timestamps:            
+            live_indices = torch.logical_and(this_cam_times[:,0] <= timestamp, this_cam_end_times[:,0] > timestamp)
+            centre_indices = torch.logical_and(this_cam_centre_times[:,0] < timestamp, this_cam_centre_times[:,0] >= last_timestamp)
+            last_timestamp = timestamp
+            if live_indices.count_nonzero() == 0 or centre_indices.count_nonzero() == 0:
+                continue
+
+            live_points = this_cam_points[live_indices]
+            centre_points = this_cam_points[centre_indices]
+            centre_depths = this_cam_depths[centre_indices][:,0]
+
+
+            from utils.pointdistance4d import find2d_nearest_points
+            point_indices, centre_scales_2d = find2d_nearest_points(live_points,centre_points)
+            # now project the 2d scales into 3d using the camera info
+            #centre_scales_2d = torch.tensor(10.0, device=TENSOR_DEVICE).repeat(centre_points.shape[0])
+#            print(centre_depths.shape,centre_scales_2d.shape,ray_scale_multiplier.shape)
+            centre_scales_3d = (centre_scales_2d * ray_scale_multiplier) * centre_depths 
+            # make the output be flattish in z
+            centre_scales_3d = torch.stack([centre_scales_3d*3.0, centre_scales_3d*3.0, centre_scales_3d*0.5],dim=1)
+#            print(centre_scales_3d.shape)
+            this_cam_scales[centre_indices] = centre_scales_3d
+        all_rotations[this_cam_indices] = this_cam_rotations
+        all_scales[this_cam_indices] = this_cam_scales
+        print("Finished calculating scales for camera:", cam.colmap_id, "with", this_cam_scales.shape[0], "points", (all_scales<=0).sum().item(), "scales <= 0")
+
+    print("Scale distribution:",all_scales[this_cam_indices].min().item(),all_scales[this_cam_indices].max().item(),all_scales[this_cam_indices].mean().item())
+    print(all_scales)
+
+    print("Found all scales",(all_scales==0).sum().item(), "out of", all_scales.shape[0], "points")
+
+    # test code to only use camera 2
+    # only_cam_2 = all_src_cams[:,0] == 2
+    # all_xyz = all_xyz[only_cam_2]
+    # all_colors = all_colors[only_cam_2]
+    # all_normals = all_normals[only_cam_2]
+    # all_times = all_times[only_cam_2]
+    # all_durations = all_durations[only_cam_2]
+    # all_scales = all_scales[only_cam_2]
+    # all_rotations = all_rotations[only_cam_2]
+    # # now we have calculated the points then calculate the scales
+    # # by going through points, keeping a track of live points
+    # # and doing KNN on only live points
+    # # n.b. we need to scale points somehow based on duration also
+    # from utils.pointdistance4d import pointDistance4D
+    # all_scales = pointDistance4D(
+    #      all_xyz,all_times,all_durations,timestamps)
+    # print("Found scales!",scales.shape)
+    
+
     return BasicPointCloud(
         points=all_xyz.cpu().numpy(),
         colors=all_colors.cpu().numpy(),
         normals=all_normals,
         times=all_times.cpu().numpy(),
         durations=all_durations.cpu().numpy(),
+        scales = all_scales.cpu().numpy(),
+        rotations = all_rotations.cpu().numpy()
     )
 
 

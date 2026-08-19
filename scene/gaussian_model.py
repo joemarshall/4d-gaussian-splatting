@@ -406,9 +406,9 @@ class GaussianModel:
         actual_covariance = L @ L.transpose(1, 2)
         cov_t = actual_covariance[:, 3, 3]  # .unsqueeze(1)
         sd_t = torch.sqrt(cov_t)
-        # opacity multiplier is 0.05 at this point
+        # opacity multiplier is 0.05 at this point (1.96)
         # visible_range = 1.96 * sd_t
-        # opacity multiplier is 0.01 at this point
+        # opacity multiplier is 0.01 at this point (2.576 = 99% of contribution)
         visible_range = 2.576 * sd_t
         self._visible_range[mask] = visible_range
 
@@ -454,15 +454,27 @@ class GaussianModel:
         features[:, 0, 0:3] = fused_color
 
         print("Number of points at initialisation : ", fused_point_cloud.shape[0])
+        if pcd.scales is not None:
+            if pcd.scales.shape[1] == 1:
+                dist2 = torch.clamp(torch.from_numpy(pcd.scales).float().cuda(), 0.0000001,0.1)
+                scales = self.scaling_inverse_activation(torch.sqrt(dist2)*2.0)[..., None].repeat(1, 3)
+            else:
+                # 3d scale provided, just use it
+                scales = self.scaling_inverse_activation(torch.from_numpy(pcd.scales).float().cuda())
+        else:
+            dist2 = torch.clamp_min(
+                distCUDA2(torch.from_numpy(np.asarray(pcd.points)).float().cuda()),
+                0.0000001,
+            )
+            scales = self.scaling_inverse_activation(torch.sqrt(dist2)*2.0)[..., None].repeat(1, 3)
 
-        dist2 = torch.clamp_min(
-            distCUDA2(torch.from_numpy(np.asarray(pcd.points)).float().cuda()),
-            0.0000001,
-        )
-        # TODO: calculate scales for things
-        scales = torch.log(torch.sqrt(dist2)*2.0)[..., None].repeat(1, 3)
-        rots = torch.zeros((fused_point_cloud.shape[0], 4), device="cuda")
-        rots[:, 0] = 1
+        if pcd.rotations is not None:
+            # we've been given a 3d rotation, use it
+            rots = torch.from_numpy(pcd.rotations).float().cuda()
+        else:
+            # no 3d rotation by default
+            rots = torch.zeros((fused_point_cloud.shape[0], 4), device="cuda")
+            rots[:, 0] = 1
         if self.gaussian_dim == 4:
             if pcd.times is None:
                 fused_times = (
@@ -487,10 +499,9 @@ class GaussianModel:
                 fused_times = fused_times + durations / 2.0
                 # double this because gaussians shrink more than they grow 
                 # and we want maximum coverage by minimum gaussians
-                scales_t = torch.log(durations)*2.0 
+                scales_t = torch.log(durations*2.0)
             if self.rot_4d:
-                rots_r = torch.zeros((fused_point_cloud.shape[0], 4), device="cuda")
-                rots_r[:, 0] = 1
+                rots_r = rots.clone()
 
         opacities = inverse_sigmoid(
             0.1

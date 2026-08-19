@@ -14,12 +14,18 @@ import math
 import numpy as np
 from typing import NamedTuple
 
+# a point cloud which may or may not have:
+# a) time info for 4d
+# b) scale as 1d or 3d
+# c) 3d rotation 
 class BasicPointCloud(NamedTuple):
     points : np.array
     colors : np.array
     normals : np.array
     times : np.array = None
     durations: np.array = None
+    scales: np.array = None
+    rotations: np.array = None
 
 def geom_transform_points(points, transf_matrix):
     P, _ = points.shape
