@@ -51,7 +51,7 @@ from utils.loss_utils import (
 from gaussian_renderer import render
 import sys
 from scene import Scene, GaussianModel
-from utils.general_utils import safe_state, knn
+from utils.general_utils import build_rotation_4d, safe_state, knn
 import uuid
 from pathlib import Path
 from tqdm import tqdm
@@ -484,6 +484,11 @@ def training(
     )
     tensor_gradient_2d_buffer.retain_grad()
     iteration = first_iter
+    #stop_iteration= True
+    
+    # print(build_rotation_4d(gaussians._rotation, gaussians._rotation_r))
+    # print(gaussians._rotation)
+    # print(gaussians._rotation_r)
     while not stop_iteration and iteration < opt.iterations + 1:
 
         for batch_data in training_dataloader:

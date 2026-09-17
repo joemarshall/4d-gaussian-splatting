@@ -200,6 +200,7 @@ void SimpleKNN::knn(int P, float3* points, float* meanDists)
 	cudaMemcpy(&maxx, result, sizeof(float3), cudaMemcpyDeviceToHost);
 
 	thrust::device_vector<uint32_t> morton(P);
+
 	thrust::device_vector<uint32_t> morton_sorted(P);
 	coord2Morton << <(P + 255) / 256, 256 >> > (P, points, minn, maxx, morton.data().get());
 

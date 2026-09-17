@@ -439,6 +439,8 @@ try:
 
                 scale_modifier = 1.0
 
+
+
                 viewpoint_camera = scene.getTrainCameras()[0][1].cuda()
                 viewmatrix = viewpoint_camera.world_view_transform
                 projmatrix = viewpoint_camera.full_proj_transform
@@ -578,7 +580,6 @@ try:
 
         with torch.no_grad():
             model,pipeline,scene,gaussians = get_model_pipeline_scene_gaussians(args.output_folder,args.override_pth)
-
             # static_mask = gaussians._xyz.norm(dim=1)>4.0
             # gaussians._rotation_r[static_mask][0:4] = torch.tensor([1.0, 0.0, 0.0, 0.0], device=gaussians._rotation_r.device)
             # gaussians._scaling_t[static_mask] = 4
@@ -598,6 +599,14 @@ try:
             
 
             print(f"Loaded model, {len(gaussians.get_xyz)} gaussians")
+            scales = gaussians.get_scaling
+            print("Scale distribution:",scales.min().item(),scales.max().item(),scales.mean().item())
+            scales_t = gaussians.get_scaling_t
+            print("T scaling:",torch.min(scales_t),torch.max(scales_t),torch.mean(scales_t))
+
+#            gaussians._scaling[scales > 0.1] = gaussians.scaling_inverse_activation(torch.tensor(0.1,device=gaussians._scaling.device))
+#            scales = gaussians.get_scaling
+#            print("Scale distribution:",scales.min().item(),scales.max().item(),scales.mean().item())
 
             bg_color = [1, 1, 1] if model.white_background else [0, 0, 0]
             background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
@@ -756,6 +765,8 @@ try:
                         all_durations = torch.sqrt(gaussians.get_cov_t().detach().clone().squeeze()) * 2.44 * 2.0
                         all_times = gaussians.get_t.detach().clone().squeeze() - all_durations / 2.0
 
+                        gaussians._scaling = torch.clamp(gaussians._scaling, 0.01, 0.1)
+
                         show_pointcloud_glfw_pytorch3d(
                             torch.tensor(all_points, device="cuda"),
                             torch.tensor(all_times, device="cuda"),
@@ -813,7 +824,11 @@ try:
                     )
 
 except KeyboardInterrupt:
-    print("Rendering interrupted by user, showing output so far")
+    if args.render and not args.interactive:
+        print("Rendering interrupted by user, showing output so far")
+    else:
+        print("Interrupted by user, exiting")
+        sys.exit(0)
 
 output_folder = Path(args.output_folder)
 
