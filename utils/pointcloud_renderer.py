@@ -561,10 +561,11 @@ def _show_glfw_with_renderer(
         scene_dirty = True
 
     def _key_cb(
-        _window: Any, key: int, _scancode: int, action: int, _mods: int
+        _window: Any, key: int, _scancode: int, action: int, mods: int
     ) -> None:
         nonlocal scene_dirty, cam_pos, cam_rot_c2w, current_time
         nonlocal is_playing_input_views, has_started_input_views, playback_start_time
+        cur_time_step = time_step*0.1 if mods & glfw.MOD_SHIFT else time_step
         if key == glfw.KEY_ESCAPE and action == glfw.PRESS:
             glfw.set_window_should_close(window, True)
         if key == glfw.KEY_P and action == glfw.PRESS and has_input_views:
@@ -592,11 +593,11 @@ def _show_glfw_with_renderer(
             cam_rot_c2w = _build_c2w_rotation(new_forward, base_world_up)
             scene_dirty = True
         if key == glfw.KEY_RIGHT_BRACKET and action in (glfw.PRESS, glfw.REPEAT):
-            current_time = current_time + time_step
+            current_time = current_time + cur_time_step
             _update_window_title()
             scene_dirty = True
         if key == glfw.KEY_LEFT_BRACKET and action in (glfw.PRESS, glfw.REPEAT):
-            current_time = torch.clamp(current_time - time_step, min=0.0)
+            current_time = torch.clamp(current_time - cur_time_step, min=0.0)
             _update_window_title()
             scene_dirty = True
         if (
