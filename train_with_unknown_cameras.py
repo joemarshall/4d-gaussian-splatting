@@ -273,7 +273,7 @@ class ColmapRunnerPath:
         else:
             args = [self.path] + [str(x) if type(x) != str else x for x in args]
         print("Running colmap command:", " ".join(args))
-        result = subprocess.check_output(args, text=True)
+        result = subprocess.check_output(args, text=True, shell=True)
         #        result = subprocess.check_output(args, text=True,shell=True)
         print(f"Command output: {result}")
 
@@ -405,6 +405,7 @@ for i, video_path in enumerate(sorted(args.video_folder.glob("*.mp4"))):
                 str(video_path),
                 "-start_number",
                 "0",
+                "-pix_fmt","rgb24",
             ]
             + ffmpeg_time_limit
             + [
@@ -627,6 +628,8 @@ else:
                 colmap_images_folder,
                 "--output_path",
                 colmap_path / "sparse",
+                "--Mapper.ba_global_ignore_redundant_points3D",
+                "1"
             ]
         )
 
@@ -661,26 +664,29 @@ else:
             ]
         )
 
-    # bundle adjustment
-    colmap_dense_sparse = colmap_path / "dense" / "0" / "sparse"
-    colmap.run_cmd(
-        [
-            "colmap",
-            "bundle_adjuster",
-            "--input_path",
-            colmap_dense_sparse,
-            "--output_path",
-            colmap_dense_sparse,
-            "--BundleAdjustment.refine_focal_length",
-            "1",
-            "--BundleAdjustment.refine_principal_point",
-            "1",
-            "--BundleAdjustment.refine_extra_params",
-            "1",
-            "--BundleAdjustment.max_num_iterations",
-            "10000",
-        ]
-    )
+#     # bundle adjustment
+#     colmap_dense_sparse = colmap_path / "dense" / "0" / "sparse"
+#     colmap.run_cmd(
+#         [
+#             "colmap",
+#             "bundle_adjuster",
+#             "--input_path",
+#             colmap_dense_sparse,
+#             "--output_path",
+#             colmap_dense_sparse,
+#             "--BundleAdjustment.refine_focal_length",
+#             "1",
+#  #           "--BundleAdjustment.refine_principal_point",
+#  #           "1",
+#             "--BundleAdjustment.refine_extra_params",
+#             "1",
+# #            "--BundleAdjustmentCeres.max_num_iterations",
+# #            "10000",
+#             "--BundleAdjustment.backend",
+#             "CASPAR"
+
+#         ]
+#     )
 
 
 # now undistort all the other images based on
