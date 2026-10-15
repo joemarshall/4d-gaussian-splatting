@@ -113,7 +113,7 @@ void attention_step1_forward_cuda_launcher_v2(int N, int M, int h, int C, const 
             attention_step1_forward_cuda_kernel_v2<32><<<blocks, n_threads, 0>>>(N, M, h, q, k, index0_offsets, index1, attn);
             break;
         default:
-            throw "d != 16 and d != 32";
+            assert(false && "d != 16 and d != 32");
     }
 }
 
@@ -140,7 +140,7 @@ void attention_step1_backward_cuda_launcher_v2(int N, int M, int h, int C, const
             attention_step1_backward_cuda_kernel_v2<32><<<blocks, n_threads, 0>>>(N, M, h, grad_out, index0_offsets, index1, q, k, grad_q, grad_k);
             break;
         default:
-            throw "d != 16 and d != 32";
+            assert(false && "d != 16 and d != 32");
     }
 
 }

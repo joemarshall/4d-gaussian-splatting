@@ -209,7 +209,7 @@ void dot_prod_with_idx_forward_cuda_launcher_v2(int N, int M, int h, int hdim, i
             dot_prod_with_idx_forward_cuda_kernel_v2<32><<<blocks, n_threads, 0>>>(N, M, h, q, index_q, k, index_k, table_q, table_k, rel_idx, rel_idx_offsets, sort_indices, output);
             break;
         default:
-            throw "d != 16 and d != 32";
+           assert(false && "d != 16 and d != 32");
     }
 }
 
@@ -238,7 +238,7 @@ void dot_prod_with_idx_backward_cuda_launcher_v2(int N, int M, int h, int hdim, 
             dot_prod_with_idx_backward_cuda_kernel_v2<32><<<blocks, n_threads, 0>>>(N, M, h, grad_out, q, index_q, k, index_k, table_q, table_k, rel_idx, rel_idx_offsets, sort_indices, grad_q, grad_k, grad_table_q, grad_table_k);
             break;
         default:
-            throw "d != 16 and d != 32";
+            assert(false && "d != 16 and d != 32");
     }
 }
 
@@ -361,7 +361,7 @@ void dot_prod_with_idx_forward_cuda_launcher_v3(int N, int M, int h, int hdim, i
             dot_prod_with_idx_forward_cuda_kernel_v3<32><<<blocks, n_threads, 0>>>(N, M, h, q, index_q_offsets, k, index_k, table_q, table_k, rel_idx, output);
             break;
         default:
-            throw "d != 16 and d != 32";
+            assert(false && "d != 16 and d != 32");
     }
 }
 
@@ -389,7 +389,7 @@ void dot_prod_with_idx_backward_cuda_launcher_v3(int N, int M, int h, int hdim, 
             dot_prod_with_idx_backward_cuda_kernel_v3<32><<<blocks, n_threads, 0>>>(N, M, h, grad_out, q, index_q_offsets, k, index_k, table_q, table_k, rel_idx, grad_q, grad_k, grad_table_q, grad_table_k);
             break;
         default:
-            throw "d != 16 and d != 32";
+            assert(false && "d != 16 and d != 32");
     }
 }
 
@@ -501,7 +501,7 @@ void attention_step2_with_rel_pos_value_forward_cuda_launcher_v2(int N, int M, i
             attention_step2_with_rel_pos_value_forward_cuda_kernel_v2<32><<<blocks, n_threads, 0>>>(N, M, h, attn, v, index0_offsets, index1, table, rel_idx, output);
             break;
         default:
-            throw "d != 16 and d != 32";
+            assert(false && "d != 16 and d != 32");
     }
 }
 
@@ -522,6 +522,6 @@ void attention_step2_with_rel_pos_value_backward_cuda_launcher_v2(int N, int M, 
             attention_step2_with_rel_pos_value_backward_cuda_kernel_v2<32><<<blocks, n_threads, 0>>>(N, M, h, grad_out, index0_offsets, index1, attn, v, table, rel_idx, grad_attn, grad_v, grad_table);
             break;
         default:
-            throw "d != 16 and d != 32";
+            assert(false && "d != 16 and d != 32");
     }
 }
