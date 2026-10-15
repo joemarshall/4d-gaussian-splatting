@@ -1,3 +1,4 @@
+import itertools
 from pathlib import Path
 import re
 import torch
@@ -5,8 +6,10 @@ from depth_anything_3.api import DepthAnything3
 from depth_anything_3.utils.geometry import unproject_depth
 import numpy as np
 from tqdm import tqdm
-
 from PIL import Image
+from torchvision.transforms.functional import pil_to_tensor, convert_image_dtype
+
+from concurrent.futures import ThreadPoolExecutor,wait
 
 
 def frame_and_camid_from_path(video_path):
@@ -79,6 +82,51 @@ def depth_to_point_cloud_vectorized(depth, intrinsics, extrinsics, device=None):
 
 
 
+class OnnxWrapper(torch.nn.Module):
+    """
+    Thin wrapper around DepthAnything3 that accepts N image tensors, intrinsic and extrinsic matrices
+    of shape (N, 3, H, W) and outputs depth (N, 1, H, W) 
+    """
+
+    def __init__(self, model):
+        super().__init__()
+        self.model = model.model  # underlying nn.Module
+
+    def forward(self, images,extrinsics,intrinsics):
+        # extrinsics (N,4,4) intrinsics (N,4,3) I think (TODO)
+        out = self.model(images, extrinsics=None, intrinsics=None, export_feat_layers=[], infer_gs=False)
+#        out = self.model(images, extrinsics, intrinsics, export_feat_layers=[], infer_gs=False)
+        return out["depth"]  # (B, N, H, W)
+
+def make_onnx_depth_model(model_name, output_path):
+    device = torch.device("cpu")
+    print("Loading PyTorch model: {}".format(model_name))
+    pt_model = DepthAnything3.from_pretrained(model_name)
+    pt_model = pt_model.to(device)
+    pt_model.eval()
+
+    wrapper = OnnxWrapper(pt_model)
+    wrapper.eval()
+
+    torch.onnx.export(
+        wrapper,
+        (torch.zeros((2,10, 3, 518, 518), device=device), torch.zeros((2,10, 4, 4), device=device), torch.zeros((2,10, 3, 3), device=device)),
+        input_names=["image","extrinsics","intrinsics"],
+        output_names=["depth"],
+        dynamic_axes={
+            "image": {0:"Batch",1: "N", 2: "H", 3:"W"},
+            "depth": {0:"Batch",1: "N", 2: "H", 3:"W"},
+            "extrinsics": {0:"Batch",1: "N"},
+            "intrinsics": {0:"Batch",1: "N"},
+        },
+        dynamo=False,
+        opset_version=17,
+        training=torch.onnx.TrainingMode.EVAL
+    )
+    print("Exported onnx model to {}".format(output_path))
+
+    
+
 # get camera intrinsics from colmap file
 # and use that for depth-anything to generate depthmaps for image
 # ( the estimate is better than the DA estimate)
@@ -88,38 +136,68 @@ def calculate_depths(output_path: Path, ignore_existing: bool = False):
     images = image_path.glob("*.png")
     image_names = [str(image.name) for image in images]
     if ignore_existing:
-        image_names = [
-            name
-            for name in image_names
-            if not (image_path / name.replace(".png", ".depth")).exists()
+        ids = [
+            (frame_and_camid_from_path(image_name), image_name)
+            for image_name in image_names
         ]
+        sorted_ids = sorted(ids, key=lambda x: x[0])
+        ids_by_frame= itertools.groupby(sorted_ids, key=lambda x: x[0][0])
+        image_names = []
+        frame_expected_count = None
+        for frame, images in ids_by_frame:
+            missing_depth = False
+            this_images = []
+            for x in images:
+                image_name = x[1]
+                this_images.append(image_name)
+                depth_path = image_path / image_name.replace(".png", ".depth")
+                if not depth_path.exists():
+                    missing_depth = True
+            if frame_expected_count is None:
+                frame_expected_count = len(this_images)
+            if len(this_images) != frame_expected_count:
+                print("Warning: frame {} has {} images, expected {}. Dropping".format(frame,len(this_images),frame_expected_count))
+                missing_depth = False
+            if missing_depth:
+                image_names.extend(this_images)
+            
 
     if len(image_names) == 0:
         print("No images to process for depth calculation, skipping.")
         return
+    print("Calculating depth for {} images".format(len(image_names)))
 
     print("Loading depth model")
     device = torch.device("cuda")
     # model = DepthAnything3.from_pretrained("depth-anything/DA3NESTED-GIANT-LARGE-1.1")
     model = DepthAnything3.from_pretrained("depth-anything/DA3-SMALL")
     #model = DepthAnything3.from_pretrained("depth-anything/DA3-GIANT-1.1")
+
     
-    model = model.to(device=device)
 
-    images = image_path.glob("*.png")
-
-    image_names = [str(image.name) for image in images]
     from PIL import Image
 
     test_img = Image.open(image_path / image_names[0])
     w = test_img.width
     h = test_img.height
+    # import logging
+    # torch._logging.set_logs(dynamo=logging.DEBUG, graph_code=True)
+    tensor_dtype= torch.float32
+    model = model.eval().to(device=device,dtype=tensor_dtype)
+
 
     colmap_path = output_path / "sparse" / "0"
     one_intrinsic, cam_w, cam_h = intrinsics_from_colmap_camera_file(colmap_path, w, h)
     extrinsics = extrinsics_from_colmap(colmap_path)
     intrinsics = [one_intrinsic for _ in range(len(extrinsics))]
     print("Writing depth outputs")
+
+    extrinsics = model._normalize_extrinsics(torch.tensor(extrinsics,device=device,dtype=tensor_dtype).unsqueeze(0))
+    intrinsics = torch.tensor(intrinsics,dtype=tensor_dtype,device=device).unsqueeze(0)
+
+
+
+    
 
     image_ids = [
         (frame_and_camid_from_path(image_name), image_name)
@@ -130,94 +208,71 @@ def calculate_depths(output_path: Path, ignore_existing: bool = False):
     cur_frame = None
     frame_images = []
 
+    # load a frame worth of images, and return them as a GPU tensor
+    def load_frame_images(imgs):
+        loaded_images = []
+        for img_path in imgs:
+            img = Image.open(img_path).convert("RGB")
+            if img.width > 2000 or image.height > 2000:
+                img = img.resize((img.width // 2, img.height // 2), Image.Resampling.LANCZOS)
+            # pad image to make it multiple of 14 on both axes (patch size)
+            padded_size = (((img.width + 13) // 14) * 14,((img.height + 13) // 14) * 14)
+            img_padded = Image.new("RGB",padded_size,(0,0,0))
+            img_padded.paste(img, (0, 0))
+            img_tensor = pil_to_tensor(img_padded)
+            img_tensor= convert_image_dtype(img_tensor, dtype=tensor_dtype) 
+            loaded_images.append(img_tensor)
+        return torch.stack(loaded_images, dim=0)  # (N, 3, H, W)
+
+
+
+    def launch_model_task(model, img_names, processed_imgs,extrinsics,intrinsics):
+        processed_imgs = processed_imgs.to(device=device)
+        @torch.compile
+        def compile_fn(model, processed_imgs,extrinsics,intrinsics):
+            return model._run_model_forward(processed_imgs.unsqueeze(0), extrinsics, intrinsics,export_feat_layers=[])
+        raw_output = compile_fn(model, processed_imgs,extrinsics,intrinsics)
+        prediction_depth = raw_output["depth"][0].to(device="cpu") 
+        del raw_output
+        del processed_imgs
+        torch.cuda.memory.empty_cache()
+        return prediction_depth, img_names
+
+    pool = ThreadPoolExecutor(max_workers=1)
+    futures = []
+
     def process_images(imgs):
-        prediction = model.inference(
-            imgs,
-            intrinsics=intrinsics,
-            extrinsics=extrinsics,
-            process_res=max(w, h),
-            process_res_method="upper_bound_crop",
-        )
-        h_out = prediction.depth.shape[1]
-        w_out = prediction.depth.shape[2]
-        pad_top = int(round((h - h_out) / 2.0))
-        pad_bottom = h - (h_out + pad_top)
-        pad_left = int(round((w - w_out) / 2.0))
-        pad_right = w - (w_out + pad_left)
+        nonlocal futures
+        process_depth_results()
+        processed_imgs = load_frame_images(imgs)
+        print("Submitting:",processed_imgs.shape,processed_imgs.device,processed_imgs.dtype,extrinsics.dtype,intrinsics.dtype)
+        futures.append(pool.submit(launch_model_task, model, imgs, processed_imgs,extrinsics,intrinsics))
+        print("Futures length:",len(futures))
 
+    def process_depth_results(max_left_in_queue=2):
+        processed_futures = []
+        running_count = [f.done() for f in futures].count(False)
+                
+        for f in futures:
+            if running_count > max_left_in_queue:
+                print("Waiting for completion of futures, running_count:",running_count)
+                wait([f for f in futures if not f.done()], return_when="FIRST_COMPLETED")
+                running_count = [f.done() for f in futures].count(False)
+            if f.done():
+                print("Future done, processing results")
+                prediction_depth, img_names = f.result()
+                for i, x in enumerate(img_names):
+                    depth_path = x.replace(".png", f".depth")
+                    print(
+                        torch.max(prediction_depth[i]), torch.min(prediction_depth[i])
+                    )
+                    depth_tensor = prediction_depth[i]
+                    depth_tensor=depth_tensor.to(dtype=torch.float16)
+                    print(f"Saving depth {x}:{depth_tensor.shape}")
+                    torch.save(depth_tensor, depth_path)
+                processed_futures.append(f)
+        futures[:] = [f for f in futures if not f in processed_futures]
 
-#        zero_centred_extrinsics = torch.tile(torch.eye(4),len(imgs))
-        print(torch.tensor(extrinsics).shape)
-        for x in range(len(extrinsics)):
-            print(x,"---\n",extrinsics[x],"\n------------------------")
-
-#        CAM_NUM=len(extrinsics)-1
-        CAM_START=0
-        CAM_END=len(extrinsics)
-
-        from depth_anything_3.utils.export.glb import _depths_to_world_points_with_colors
-        #prediction.extrinsics[-1] = np.eye(4)
-
-
-        conf_thresh = np.percentile(prediction.conf, 40.0)
-        all_points,all_colors = _depths_to_world_points_with_colors(prediction.depth[CAM_START:CAM_END],
-        prediction.intrinsics[CAM_START:CAM_END],
-        prediction.extrinsics[CAM_START:CAM_END],  # w2c
-        prediction.processed_images[CAM_START:CAM_END],
-        prediction.conf[CAM_START:CAM_END],
-        conf_thresh)
-
-        camera_indices = torch.zeros(all_points[:,0].shape,dtype=torch.int32,device="cuda")
-        print(prediction.depth.shape)
-        indices_length = camera_indices.shape[0]//prediction.depth.shape[0]
-        for x in range(prediction.depth.shape[0]):
-            print("CAMERA INDICES:",x,x*indices_length,(x+1)*indices_length)
-            camera_indices[x*indices_length:(x+1)*indices_length] = x
-        print("Before filter:",torch.min(camera_indices),torch.max(camera_indices))
-
-
-        all_colors = torch.tensor(all_colors, dtype=torch.float32) * (1.0 / 255.0)
-        all_points = torch.tensor(all_points, dtype=torch.float32)
-
-        # all_points=torch.cat((all_points,torch.tensor(prediction.extrinsics[CAM_NUM,0:3,3],dtype=torch.float32).unsqueeze(0)),dim=0)
-        # all_colors = torch.cat((all_colors,torch.tensor([1.0,0.0,0.0],dtype=torch.float32).unsqueeze(0)),dim=0)
-        print(all_points[-1],all_colors[-1])
-
-#        all_points = depth_to_point_cloud_vectorized(prediction.depth[0:1],prediction.intrinsics[0:1],prediction.extrinsics[0:1])
-#        all_points = unproject_depth(torch.tensor(prediction.depth[0:1],dtype=torch.float32).unsqueeze(0).unsqueeze(-1),torch.tensor(prediction.intrinsics,dtype=torch.float32).unsqueeze(0),c2w= torch.tensor(prediction.extrinsics,dtype=torch.float32).unsqueeze(0))[0]
-#        all_colors = torch.tensor(prediction.processed_images[0:1],dtype=torch.float32)*(1.0/255.0)
-#        print(all_points.shape,all_colors.shape,prediction.processed_images.shape,prediction.depth.shape)
-#        all_points= all_points.reshape(-1,3)
-#        all_colors = all_colors.reshape(-1,3)
-        print(torch.max(all_colors),torch.min(all_colors))
-        print(all_points.shape,all_colors.shape,prediction.processed_images.shape,prediction.depth.shape)
-        
-        pts_cuda = torch.tensor(all_points).to("cuda")
-        colors_cuda = torch.tensor(all_colors).to("cuda")
-        print(prediction.extrinsics[CAM_START])
-        fwd_direction = torch.tensor(prediction.extrinsics[CAM_START][0:3,2], device="cuda")
-        camera_position = torch.tensor(prediction.extrinsics[CAM_START][0:3,3], device="cuda")
-        camera_position = torch.tensor(prediction.extrinsics[CAM_START][0:3,0:3],device="cuda")@camera_position
-        print("********",camera_position)
-        look_at = all_points[all_points.shape[0]//2 + prediction.depth.shape[-1]//2]
-        up = torch.tensor([0.0, -1.0, 0], device="cuda")
-        print("RENDER:",camera_position,look_at,up)
-#        from pointcloud_renderer import show_pointcloud_glfw_pytorch3d
-
-#        show_pointcloud_glfw_pytorch3d(pts_cuda,colors_cuda,title="Depth Anything 3D point cloud",look_at=look_at,up=up,camera_position=camera_position,fov_degrees=70.0,camera_indices=camera_indices)
-
-        padding = ((0, 0), (pad_top, pad_bottom), (pad_left, pad_right))
-        prediction_depth_padded = np.pad(
-            prediction.depth, padding, mode="constant", constant_values=-1.0
-        )
-        for i, x in enumerate(frame_images):
-            depth_path = x.replace(".png", f".depth")
-            print(
-                np.max(prediction_depth_padded[i]), np.min(prediction_depth_padded[i])
-            )
-            depth_tensor = torch.tensor(prediction_depth_padded[i])
-            print(depth_tensor.shape)
-            torch.save(depth_tensor, depth_path)
 
     for (frame, camid), name in tqdm(image_ids):
         if cur_frame != frame:
@@ -398,5 +453,7 @@ def get_min_depth_maps(output_path):
 
 
 if __name__ == "__main__":
-    output_path = Path("output/9moving")
-    calculate_depths(output_path)
+#    make_onnx_depth_model("depth-anything/DA3-SMALL", Path("output/depth_model.onnx"))
+
+    output_path = Path("output/esper_ball")
+    calculate_depths(output_path,ignore_existing=True)
