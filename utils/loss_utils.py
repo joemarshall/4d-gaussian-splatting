@@ -14,6 +14,8 @@ import torch.nn.functional as F
 from math import exp
 from torchmetrics.image import MultiScaleStructuralSimilarityIndexMeasure
 
+from utils import build_depth
+
 
 def l1_loss(network_output, gt):
     return torch.abs((network_output - gt)).mean()
@@ -192,7 +194,7 @@ def loss_depth(
         return None
 
     depth_out = render_package["depth"].squeeze()
-    depth_out_scaled = _rescale_depth(gt_depth,depth_out)
+    depth_out_scaled = build_depth.transform_tensor_to_depth_size(depth_out)
     return l1_loss(gt_depth, depth_out_scaled)
 
 
