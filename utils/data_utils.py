@@ -29,7 +29,7 @@ class FastPNGToTorch:
         # No metadata is reported by default
         self.config.flags = [ImageDecoderFlags.REPORT_METADATA_EXIF]
         # Pixel format is PixelFormat.BGRA_PREMUL by default
-        self.config.pixel_format = PixelFormat.BGR
+        self.config.pixel_format = PixelFormat.RGB
         self.decoder = ImageDecoder(self.config)
 
     def decode(self, path,device,non_blocking):

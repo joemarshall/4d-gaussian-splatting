@@ -3,18 +3,86 @@ import os
 from pathlib import Path
 import re
 import time
-from depth_anything_3 import model
 import torch
-from depth_anything_3.api import DepthAnything3
-from depth_anything_3.utils.geometry import unproject_depth
 import numpy as np
 from tqdm import tqdm
 from PIL import Image
-from torchvision.transforms.functional import pil_to_tensor, convert_image_dtype
-
+from torchvision.transforms.functional import pil_to_tensor, convert_image_dtype, normalize
+from depth_anything_3.utils.geometry import affine_inverse
 torch._dynamo.config.capture_scalar_outputs = True
 
 from concurrent.futures import ThreadPoolExecutor, wait
+
+def make_44x4_from_3x4(extrinsics):
+    """
+    Convert a batch of 3x4 extrinsic matrices to 4x4 by adding a row [0, 0, 0, 1].
+    :param extrinsics: Tensor of shape (N, 3, 4)
+    :return: Tensor of shape (N, 4, 4)
+    """
+    N = extrinsics.shape[0]
+    output = torch.zeros((N,4,4), dtype=extrinsics.dtype, device=extrinsics.device)
+    output[:, :3, :4] = extrinsics
+    output[:, 3, 3] = 1.0
+    return output
+
+#@torch.compile(fullgraph=True)
+def align_extrinsics_umeyama(prediction_extrinsics, extrinsics):
+    pose_ref = affine_inverse(extrinsics)
+    pose_est = affine_inverse(make_44x4_from_3x4(prediction_extrinsics))
+
+    points_ref = pose_ref[:, :3, 3]
+    points_est = pose_est[:, :3, 3]
+    return umeyama_alignment_unsafe(points_ref, points_est)
+
+
+def umeyama_alignment_unsafe(
+    x: torch.Tensor, y: torch.Tensor
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """
+    Aligns point rows in x to the corresponding point rows in y.
+
+    No safety checking so it can torch.compile / torch.export and
+    doesn't need to sync cuda. Both inputs must have shape [pt, dimension] where
+    pt>2 and variance >0. Returns the aligned points
+    as a tensor on the same device and with the same dtype as x.
+    Umeyama, Shinji: Least-squares estimation of transformation parameters
+                     between two point patterns. IEEE PAMI, 1991
+    """
+    # if x.ndim != 2 or y.ndim != 2 or x.shape != y.shape:
+    #     raise ValueError("x and y must have the same [pt, dimension] shape")
+    # if x.shape[0] == 0 or x.shape[1] == 0:
+    #     raise ValueError("x and y must contain at least one point and dimension")
+    # if not x.is_floating_point() or not y.is_floating_point():
+    #     raise TypeError("x and y must be floating-point tensors")
+    # if x.device != y.device or x.dtype != y.dtype:
+    #     raise ValueError("x and y must have the same device and dtype")
+
+    point_count, dimension = x.shape
+    mean_x = x.mean(dim=0)
+    mean_y = y.mean(dim=0)
+    x_centered = x - mean_x
+    y_centered = y - mean_y
+    variance_x = x_centered.square().sum() / point_count
+    #torch._check(variance_x > torch.zeros(1, dtype=x.dtype, device=x.device), "Cannot estimate scale from zero-variance points")
+
+    covariance = y_centered.transpose(0, 1) @ x_centered / point_count
+    u, singular_values, vh = torch.linalg.svd(covariance)
+
+
+    correction = torch.ones(dimension, dtype=x.dtype, device=x.device)
+    correction[-1] = torch.where(
+        torch.linalg.det(u @ vh) < 0,
+        torch.tensor(-1.0, dtype=x.dtype, device=x.device),
+        torch.tensor(1.0, dtype=x.dtype, device=x.device),
+    )
+    rotation = (u * correction) @ vh
+
+    scale = (
+        (singular_values * correction).sum() / variance_x
+    )
+
+    translation = mean_y - scale * (mean_x @ rotation.transpose(0, 1))
+    return rotation, translation, scale
 
 
 def frame_and_camid_from_path(video_path):
@@ -89,7 +157,7 @@ def depth_to_point_cloud_vectorized(depth, intrinsics, extrinsics, device=None):
 class ModelWrapper(torch.nn.Module):
     """
     Thin wrapper around DepthAnything3 that accepts N image tensors, intrinsic and extrinsic matrices
-    of shape (N, 3, H, W) and outputs depth (N, 1, H, W)
+    of shape (N, 3, H, W) and outputs depth (N, 1, H, W) and extrinsic matrices (N, 4, 4)
     """
 
     def __init__(self, model):
@@ -104,12 +172,14 @@ class ModelWrapper(torch.nn.Module):
             export_feat_layers=[],
             infer_gs=False,
         )
-        return out["depth"]  # (B, N, H, W)
+        return out["depth"], out["extrinsics"]  # (B, N, H, W), (B, N, 4, 4)
 
 
 def make_onnx_depth_model(model_name, output_path):
     device = torch.device("cpu")
     print("Loading PyTorch model: {}".format(model_name))
+    from depth_anything_3.api import DepthAnything3
+
     pt_model = DepthAnything3.from_pretrained(model_name)
 
     wrapper = OnnxWrapper(pt_model)
@@ -148,64 +218,104 @@ def get_depth_rescale_and_clipping_size(src_size):
         (scale_size[1] // 14) * 14,
     )
     total_pad = (scale_size[0] - clipped_size[0], scale_size[1] - clipped_size[1])
-    pad_start = (total_pad[0] // 2, total_pad[1] //2)
+    pad_start = (total_pad[0] // 2, total_pad[1] // 2)
     pad_end = (total_pad[0] - pad_start[0], total_pad[1] - pad_start[1])
-    #print(f"Source size: {src_size}, Clipped size: {clipped_size}, Scale size: {scale_size}, Pad start: {pad_start}, Pad end: {pad_end}")
-    return (scale_size, clipped_size,pad_start,pad_end)
+    # print(f"Source size: {src_size}, Clipped size: {clipped_size}, Scale size: {scale_size}, Pad start: {pad_start}, Pad end: {pad_end}")
+    return (scale_size, clipped_size, pad_start, pad_end)
+
 
 def transform_image_to_depth_size(image):
     """
     Transform the input image to match the depth model's expected input size.
     This includes resizing and clipping the image to make it a multiple of 14 on both axes.
     """
-    scale_size, clip_size, pad_start, pad_end = get_depth_rescale_and_clipping_size((image.width, image.height))
+    scale_size, clip_size, pad_start, pad_end = get_depth_rescale_and_clipping_size(
+        (image.width, image.height)
+    )
     if scale_size != (image.width, image.height):
         image = image.resize(scale_size, Image.Resampling.LANCZOS)
     if clip_size != scale_size:
-        clip_rect = (pad_start[0], pad_start[1], pad_start[0] + clip_size[0], pad_start[1] + clip_size[1])
+        clip_rect = (
+            pad_start[0],
+            pad_start[1],
+            pad_start[0] + clip_size[0],
+            pad_start[1] + clip_size[1],
+        )
         image = image.crop(clip_rect)
     return image
 
-def interpolate_2d(tensor,size,mode="nearest"):
+
+def transform_intrinsics_to_depth_size(intrinsics, src_size):
+    """
+    Transform the input intrinsics to match the depth model's expected input size.
+    This includes resizing and clipping the intrinsics to make it a multiple of 14 on both axes.
+    """
+    scale_size, clip_size, pad_start, pad_end = get_depth_rescale_and_clipping_size(
+        src_size
+    )
+    scale_x = scale_size[0] / src_size[0]
+    scale_y = scale_size[1] / src_size[1]
+    intrinsics = intrinsics.clone()
+    intrinsics[..., 0, 0] *= scale_y
+    intrinsics[..., 1, 1] *= scale_x
+    intrinsics[..., 0, 2] *= scale_y
+    intrinsics[..., 1, 2] *= scale_x
+    if clip_size != scale_size:
+        intrinsics[..., 0, 2] -= pad_start[0]
+        intrinsics[..., 1, 2] -= pad_start[1]
+    return intrinsics
+
+
+def interpolate_2d(tensor, size, mode="nearest"):
     orig_shape = tensor.shape
     while len(tensor.shape) < 4:
         tensor = tensor.unsqueeze(0)
     new_shape = orig_shape[:-2] + size
-    retval =torch.nn.functional.interpolate(tensor, size=size, mode=mode)
-    assert retval.shape[-2:] == size, f"Interpolated tensor shape {retval.shape[-2:]} does not match expected size {size}"
+    retval = torch.nn.functional.interpolate(tensor, size=size, mode=mode)
+    assert (
+        retval.shape[-2:] == size
+    ), f"Interpolated tensor shape {retval.shape[-2:]} does not match expected size {size}"
     retval = retval.reshape(new_shape)
     return retval
 
-    
 
-def transform_depth_to_image_size(depth_tensor,image_tensor):
+def transform_depth_to_image_size(depth_tensor, image_tensor):
     """
     Transform the input tensor to match the original image size.
     This includes resizing and padding the tensor with -1
     """
     h, w = image_tensor.shape[-2:]
-    scale_size, clip_size, pad_start, pad_end = get_depth_rescale_and_clipping_size((w, h))
-    assert clip_size==(depth_tensor.shape[-1],depth_tensor.shape[-2]),f"Depth tensor shape {depth_tensor.shape[-2:]} does not match expected clip size {clip_size}"
+    scale_size, clip_size, pad_start, pad_end = get_depth_rescale_and_clipping_size(
+        (w, h)
+    )
+    assert clip_size == (
+        depth_tensor.shape[-1],
+        depth_tensor.shape[-2],
+    ), f"Depth tensor shape {depth_tensor.shape[-2:]} does not match expected clip size {clip_size}"
 
-    if clip_size == (w,h):
+    if clip_size == (w, h):
         return depth_tensor
 
     orig_shape = depth_tensor.shape
     while len(depth_tensor.shape) < 4:
         depth_tensor = depth_tensor.unsqueeze(0)
 
-
     if clip_size != scale_size:
         # expand by scale_size filled with -1 values
-        depth_tensor = torch.nn.functional.pad(depth_tensor, (pad_start[0], pad_end[0], pad_start[1], pad_end[1]), mode='constant', value=-1)
-        #print(depth_tensor.shape,scale_size,pad_start,pad_end)
-        assert(depth_tensor.shape[-2:] == (scale_size[1],scale_size[0]))
-    #print(depth_tensor.shape,scale_size,w,h)
-    if scale_size != (w,h):
-        depth_tensor = interpolate_2d(depth_tensor, size=(h,w))
+        depth_tensor = torch.nn.functional.pad(
+            depth_tensor,
+            (pad_start[0], pad_end[0], pad_start[1], pad_end[1]),
+            mode="constant",
+            value=-1,
+        )
+        # print(depth_tensor.shape,scale_size,pad_start,pad_end)
+        assert depth_tensor.shape[-2:] == (scale_size[1], scale_size[0])
+    # print(depth_tensor.shape,scale_size,w,h)
+    if scale_size != (w, h):
+        depth_tensor = interpolate_2d(depth_tensor, size=(h, w))
 
+    return depth_tensor.reshape(orig_shape[:-2] + (h, w))
 
-    return depth_tensor.reshape(orig_shape[:-2] + (h,w))
 
 def transform_tensor_to_depth_size(tensor):
     """
@@ -213,11 +323,17 @@ def transform_tensor_to_depth_size(tensor):
     This includes resizing and clipping the tensor to make it a multiple of 14 on both axes.
     """
     h, w = tensor.shape[-2:]
-    scale_size, clip_size, pad_start, pad_end = get_depth_rescale_and_clipping_size((w, h))
+    scale_size, clip_size, pad_start, pad_end = get_depth_rescale_and_clipping_size(
+        (w, h)
+    )
     if scale_size != (w, h):
-        tensor = interpolate_2d(tensor, (scale_size[1],scale_size[0]))
+        tensor = interpolate_2d(tensor, (scale_size[1], scale_size[0]))
     if clip_size != scale_size:
-        tensor = tensor[..., pad_start[1]: scale_size[1]-pad_end[1], pad_start[0]:scale_size[0]-pad_end[0]]
+        tensor = tensor[
+            ...,
+            pad_start[1] : scale_size[1] - pad_end[1],
+            pad_start[0] : scale_size[0] - pad_end[0],
+        ]
     return tensor
 
 
@@ -225,7 +341,7 @@ def calculate_depths(output_path: Path, ignore_existing: bool = False):
     """
     Calculate depth maps for all images in the output path.
     Uses colmap camera intrinsics and extrinsics to improve depth estimation.
-"""
+    """
     print("Depth for:", output_path)
     image_path = output_path / "images"
     images = image_path.glob("*.png")
@@ -267,6 +383,8 @@ def calculate_depths(output_path: Path, ignore_existing: bool = False):
 
     print("Loading depth model")
     device = torch.device("cuda")
+    from depth_anything_3.api import DepthAnything3
+
     # model = DepthAnything3.from_pretrained("depth-anything/DA3NESTED-GIANT-LARGE-1.1")
     model = DepthAnything3.from_pretrained("depth-anything/DA3-SMALL")
     # model = DepthAnything3.from_pretrained("depth-anything/DA3-GIANT-1.1")
@@ -288,14 +406,15 @@ def calculate_depths(output_path: Path, ignore_existing: bool = False):
     intrinsics = [one_intrinsic for _ in range(len(extrinsics))]
     print("Writing depth outputs")
 
-    extrinsics = model._normalize_extrinsics(
-        torch.tensor(np.stack(extrinsics), device=device, dtype=tensor_dtype).unsqueeze(
-            0
-        )
+    extrinsics = torch.tensor(np.stack(extrinsics), device=device, dtype=tensor_dtype).unsqueeze(0)
+
+    extrinsics_normalized = model._normalize_extrinsics(
+        extrinsics
     )
     intrinsics = torch.tensor(
         np.stack(intrinsics), dtype=tensor_dtype, device=device
     ).unsqueeze(0)
+    intrinsics = transform_intrinsics_to_depth_size(intrinsics, (w, h))
 
     num_cameras = len(extrinsics[0])
 
@@ -309,8 +428,7 @@ def calculate_depths(output_path: Path, ignore_existing: bool = False):
         list(y) for x, y in itertools.groupby(image_ids, key=lambda x: x[0][0])
     ]
 
-
-    # load a frame worth of images, and return them as a GPU tensor
+    # load a frame worth of images, and return them as a CPU tensor
     def load_frame_images(imgs):
         print(".", end="", flush=True)
         loaded_images = []
@@ -325,21 +443,24 @@ def calculate_depths(output_path: Path, ignore_existing: bool = False):
             resized_image = transform_image_to_depth_size(img)
             img_tensor = pil_to_tensor(resized_image)
             img_tensor = convert_image_dtype(img_tensor, dtype=tensor_dtype)
-            loaded_images.append(img_tensor)
+            img_tensor = normalize(img_tensor, mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+            loaded_images.append(img_tensor.pin_memory())
         return img_names, torch.stack(loaded_images, dim=0)  # (N, 3, H, W)
 
     def save_depth_task(depth_tensor, img_names):
         print(">", end="", flush=True)
         for i, x in enumerate(img_names):
             depth_path = x.replace(".png", f".depth")
-            #print(torch.max(depth_tensor[i]), torch.min(depth_tensor[i]))
+            # print(torch.max(depth_tensor[i]), torch.min(depth_tensor[i]))
             depth_tensor_i = depth_tensor[i]
             depth_tensor_i = depth_tensor_i.to(dtype=torch.float16)
-            #print(f"Saving depth {x}:{depth_tensor_i.shape}")
+            # print(f"Saving depth {x}:{depth_tensor_i.shape}")
             torch.save(depth_tensor_i, depth_path)
         return img_names[0]
 
-    scale_size, clip_size, pad_start, pad_end = get_depth_rescale_and_clipping_size((w, h))
+    scale_size, clip_size, pad_start, pad_end = get_depth_rescale_and_clipping_size(
+        (w, h)
+    )
 
     compiled_name = f"compiled_d_a_{clip_size[0]}x{clip_size[1]}.pt2"
     try:
@@ -358,8 +479,8 @@ def calculate_depths(output_path: Path, ignore_existing: bool = False):
         example_inputs = (
             (example_images,),
             {
-                "extrinsics": torch.randn_like(extrinsics),
-                "intrinsics": torch.randn_like(intrinsics),
+                "extrinsics": extrinsics_normalized,
+                "intrinsics": intrinsics,
             },
         )
 
@@ -382,14 +503,14 @@ def calculate_depths(output_path: Path, ignore_existing: bool = False):
             with torch.no_grad():
                 wrapper(example_inputs[0][0], **example_inputs[1])
             print("Done running eagerly to create cache ")
-            compiled_fn = torch.compile(wrapper.forward,fullgraph=True)
+            compiled_fn = torch.compile(wrapper.forward, fullgraph=True)
             print("Running eagerly to compile")
             with torch.no_grad():
                 compiled_fn(example_inputs[0][0], **example_inputs[1])
             print("Done running eagerly to compile ")
 
             artifacts = torch.compiler.save_cache_artifacts()
-            if  artifacts is not None:
+            if artifacts is not None:
                 # we've compiled something, save cache
                 artifact_bytes, cache_info = artifacts
                 with open("compiler_cache.tmp", "wb") as f:
@@ -424,39 +545,27 @@ def calculate_depths(output_path: Path, ignore_existing: bool = False):
         # compiled_fn.save_compiled_function(compiled_name)
         # print("Compiled and saved model")
     #   else:
-    # print("Pre-populate frequency cache with one run of the model")
-    # example_images = torch.randn(1,10, 3, scale_size[1], scale_size[0],device=extrinsics.device)
-    # example_inputs = (
-    #         (
-    #             example_images,
-    #         ),
-    #         {"extrinsics":torch.randn_like(extrinsics),
-    #         "intrinsics":torch.randn_like(intrinsics),
-    #         },
-
-    # )
-    # wrapper.forward(*example_inputs[0], **example_inputs[1])
-
-    #    print(model.model.backbone.pretrained.rope.frequency_cache)
 
     first_launch = False
-    def launch_model_task(img_names, processed_imgs, extrinsics, intrinsics):
+
+    def launch_model_task(img_names, processed_imgs, extrinsics,extrinsics_normalized, intrinsics):
         nonlocal first_launch
-        #print("#", end="", flush=True)
         print(f"Launching model, device:{device}")
-        processed_imgs = processed_imgs.unsqueeze(0).to(device=device,non_blocking=True)
-        #print(processed_imgs.shape)
+        processed_imgs = processed_imgs.unsqueeze(0).to(
+            device=device, non_blocking=True
+        )
         start_time = time.time()
-        #torch.cuda.synchronize(device)
+        # torch.cuda.synchronize(device)
         try:
             if first_launch:
                 first_launch = False
-                print("Profiling first run") 
+                print("Profiling first run")
                 from torch.profiler import profile, ProfilerActivity
-                activities=[ProfilerActivity.CPU,ProfilerActivity.CUDA]
+
+                activities = [ProfilerActivity.CPU, ProfilerActivity.CUDA]
                 with profile(activities=activities) as prof:
                     raw_output = compiled_fn(
-                        processed_imgs, extrinsics=extrinsics, intrinsics=intrinsics
+                        processed_imgs, extrinsics=extrinsics_normalized, intrinsics=intrinsics
                     )
                 prof.export_chrome_trace("first_run.json")
 
@@ -465,24 +574,25 @@ def calculate_depths(output_path: Path, ignore_existing: bool = False):
                     raw_output = aot_compiled(
                         wrapper,
                         processed_imgs,
-                        extrinsics=extrinsics,
+                        extrinsics=extrinsics_normalized,
                         intrinsics=intrinsics,
                     )
                 elif compiled_fn is not None:
                     raw_output = compiled_fn(
-                        processed_imgs, extrinsics=extrinsics, intrinsics=intrinsics
+                        processed_imgs, extrinsics=extrinsics_normalized, intrinsics=intrinsics
                     )
                 else:
                     raw_output = wrapper(
-                        processed_imgs, extrinsics=extrinsics, intrinsics=intrinsics
+                        processed_imgs, extrinsics=extrinsics_normalized, intrinsics=intrinsics
                     )
-            #print("Model run: syncing")
-            #torch.cuda.synchronize(device)
-            # TODO: this copy forces a cuda synchronisation.
-            # we could try instead 
-            prediction_depth = raw_output[0].to(device="cpu")
+            depth = raw_output[0][0]
+            prediction_extrinsics = raw_output[1]
+
+            time_before_cpu = time.time()-start_time
+            prediction_depth = prediction_depth.to(device="cpu")
+
             time_taken = time.time() - start_time
-            print(f"Model run complete, device: {device}, time: {time_taken}")
+            print(f"Model run complete, device: {device}, time: {time_taken} (before cpu {time_before_cpu})")
             del raw_output
         except Exception as e:
             print(f"Error in model execution: {e}")
@@ -502,6 +612,7 @@ def calculate_depths(output_path: Path, ignore_existing: bool = False):
     load_futures = []
     process_futures = []
     save_futures = []
+    test_frame = False
     with tqdm(total=len(ids_by_frame), desc="Depth Calculation") as pbar:
         while save_pos < len(ids_by_frame):
             while len(load_futures) < 5 and load_pos < len(ids_by_frame):
@@ -516,11 +627,26 @@ def calculate_depths(output_path: Path, ignore_existing: bool = False):
                 f = load_ready.pop(0)
                 load_futures.remove(f)
                 img_names, processed_imgs = f.result()
+                if test_frame:
+                    test_frame = False
+                    pred = model.inference(
+                        img_names,
+                        process_res=max(clip_size),
+                        extrinsics=extrinsics[0].cpu().numpy(),
+                        intrinsics=intrinsics[0].cpu().numpy(),
+                        process_res_method="upper_bound_crop"
+                    )
+                    print(
+                        f"First frame prediction range: {np.max(pred.depth)} {np.min(pred.depth)}"
+                    )
+
+
                 process_futures.append(
                     depth_pool.submit(
                         launch_model_task,
                         img_names,
                         processed_imgs,
+                        extrinsics_normalized = extrinsics_normalized,
                         extrinsics=extrinsics,
                         intrinsics=intrinsics,
                     )
@@ -536,7 +662,7 @@ def calculate_depths(output_path: Path, ignore_existing: bool = False):
             for f in save_ready:
                 save_pos += 1
                 save_futures.remove(f)
-                #print("Done save:", f.result())
+                # print("Done save:", f.result())
                 pbar.update(1)
             wait(
                 load_futures + save_futures + process_futures,
@@ -723,18 +849,26 @@ if __name__ == "__main__":
     output_path = Path("output/9moving")
     calculate_depths(output_path, ignore_existing=True)
 
-    tensor = torch.rand( 2074,2104)
-#    tensor = torch.rand(1, 1, 2073, 2005)
+    tensor = torch.rand(2074, 2104)
+    #    tensor = torch.rand(1, 1, 2073, 2005)
     transformed_tensor = transform_tensor_to_depth_size(tensor)
     print(transformed_tensor.shape, tensor.shape)
 
     image_size_tensor = transform_depth_to_image_size(transformed_tensor, tensor)
-    print(image_size_tensor.shape, tensor.shape,"ImgSize tensor:\n",image_size_tensor[...,0:10,0:10])
+    print(
+        image_size_tensor.shape,
+        tensor.shape,
+        "ImgSize tensor:\n",
+        image_size_tensor[..., 0:10, 0:10],
+    )
     retransformed = transform_tensor_to_depth_size(image_size_tensor)
     print(torch.count_nonzero(retransformed < 0.0))
-    print(retransformed.shape, tensor.shape,torch.all(retransformed==transformed_tensor))
+    print(
+        retransformed.shape,
+        tensor.shape,
+        torch.all(retransformed == transformed_tensor),
+    )
     if torch.any(retransformed != transformed_tensor):
         print("Error: retransformed tensor does not match original transformed tensor")
         print("Original transformed tensor:\n", transformed_tensor)
         print("Retransformed tensor:\n", retransformed)
-

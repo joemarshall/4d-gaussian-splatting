@@ -234,7 +234,7 @@ def makePointCloudFromImages(scene, points_per_image=1000):
     TENSOR_DEVICE = "cuda"
 
     dataset = scene.getTrainCameras()
-    timestamps = dataset.get_timestamps()[:10]
+    timestamps = dataset.get_timestamps()
     num_cameras = dataset.get_num_different_cameras()
 
 

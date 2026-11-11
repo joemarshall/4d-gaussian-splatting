@@ -877,7 +877,6 @@ if args.show_images:
             [shutil.which("pwsh.exe"), "-Command", "ConvertTo-Sixel", str(file),"-width","150"],
             shell=False,
         )
-        print("!!!")
 #        subprocess.run(["magick", str(file), "-geometry", "x800", "sixel:-"])
 #        subprocess.run(["timg", "-m", "sixel", str(file)])
 

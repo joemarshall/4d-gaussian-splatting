@@ -1,14 +1,34 @@
-def undistort_image_and_save(x,tgt):
+from concurrent.futures import as_completed
+
+def check_undistorted_image(x,tgt,undistort_options,distorted_camera):
+    from PIL import Image
+    try:
+        img = Image.open(tgt).verify()
+        return tgt,-1,-1
+    except Exception as e:
+        print(f"Error verifying image {tgt}: {e}")
+    import os
+    os.unlink(tgt)
+    return undistort_image_and_save(x,tgt,undistort_options,distorted_camera)
+    
+
+
+
+def undistort_image_and_save(x,tgt,undistort_options,distorted_camera):
+    import pycolmap
+
     if tgt.exists():
         print("Skipping undistortion for", x.name, "because", tgt, "already exists.")
         return
-    print("Undistorting image", x.name,tgt.name)
+    #print(f"Undistorting image {x.name} to {tgt}")
     dst_image, _dst_cam = pycolmap.undistort_image(
         options=undistort_options,
         distorted_camera=distorted_camera,
         distorted_image=pycolmap.Bitmap.read(x, as_rgb=True),
     )
+    #print(f"Saving undistorted image to {tgt} {dst_image.width}x{dst_image.height}")
     dst_image.write(tgt)
+    return tgt,dst_image.width,dst_image.height
 
 
 if __name__ == "__main__":
@@ -449,24 +469,28 @@ if __name__ == "__main__":
     distorted_image_list = list(distorted_image_folder.glob(f"cam*_*.png"))
     image_folder_list = list(image_folder.glob(f"cam*_*.png"))
 
-    from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
+    from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, wait
 
-    if len(image_folder_list) < len(distorted_image_list):
-        print("Found more distorted images than undistorted images.")
-        print("Undistorting the remaining images.")
-        undistort_options = pycolmap.UndistortCameraOptions()
+    undistort_options = pycolmap.UndistortCameraOptions()
 
-
-
-        with ProcessPoolExecutor(max_workers=os.cpu_count()) as executor:
-            futures = []
-            for x in distorted_image_list:
-                if x.name in [img.name for img in image_folder_list]:
-                    continue
-                else:
-                    print(x.name,(image_folder / x.name).exists())
-                    futures.append(executor.submit(undistort_image_and_save, x,image_folder/x.name))
-            executor.shutdown(wait=True)
+#        with ThreadPoolExecutor(max_workers=64) as executor:
+    with ProcessPoolExecutor(max_workers=32) as executor:
+        futures = []
+        for x in distorted_image_list:
+            if x.name in [img.name for img in image_folder_list]:
+                futures.append(executor.submit(check_undistorted_image, x,image_folder/x.name,undistort_options,distorted_camera))
+                continue
+            else:
+                futures.append(executor.submit(undistort_image_and_save, x,image_folder/x.name,undistort_options,distorted_camera))
+        with tqdm(total=len(futures), desc="Undistorting images") as bar:
+            for future in as_completed(futures):
+                bar.update(1)
+                name,w,h =future.result()
+                bar.set_postfix_str(f"{Path(name).name} ({w}x{h})")
+        print("Waited")
+        import time
+        time.sleep(10)
+        executor.shutdown(wait=True)
 
         # for x in distorted_image_list:
         #     if x.name in [img.name for img in image_folder_list]:
@@ -479,14 +503,18 @@ if __name__ == "__main__":
 
 
         
-    # find max frame number
+    # find max frame number and num cameras
+    camera_ids = set()
     all_frames = (args.output_folder / "images").glob("*.png")
     max_frame_idx = 0
     for x in all_frames:
         _base, cam_idx, frame_idx = split_frame_name(x.name)
         max_frame_idx = max(frame_idx, max_frame_idx)
+        camera_ids.add(cam_idx)
 
+    num_cameras = len(camera_ids)
     print("Max frame index:", max_frame_idx)
+    print("Number of cameras:", num_cameras)
 
     duration_seconds = max_frame_idx / 30
 
@@ -546,16 +574,16 @@ if __name__ == "__main__":
 
     # write config file with default settings for training
     train_file_data = f"""
-    gaussian_dim: 4
-    time_duration: [0.0, {duration_seconds}]
-    num_pts: {max_frame_idx}_000
-    num_pts_ratio: 1.0
-    rot_4d: True
-    force_sh_3d: False
-    batch_size: {num_cameras}
-    exhaust_test: True
+gaussian_dim: 4
+time_duration: [0.0, {duration_seconds}]
+num_pts: {max_frame_idx}_000
+num_pts_ratio: 1.0
+rot_4d: True
+force_sh_3d: False
+batch_size: {num_cameras}
+exhaust_test: True
 
-    ModelParams:
+ModelParams:
     sh_degree: 3
     source_path: "{args.output_folder}"
     model_path: "{args.output_folder}/model_output"
@@ -570,7 +598,7 @@ if __name__ == "__main__":
     frame_ratio: 1
     dataloader: True
 
-    PipelineParams:
+PipelineParams:
     convert_SHs_python: False
     compute_cov3D_python: False
     debug: False
@@ -579,7 +607,7 @@ if __name__ == "__main__":
     env_optimize_from: 0
     eval_shfs_4d: True
 
-    OptimizationParams:
+OptimizationParams:
     iterations: 30_000
     position_lr_init: 0.00016
     position_t_lr_init: -1.0

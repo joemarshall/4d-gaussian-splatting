@@ -1,29 +1,38 @@
-name: 4dgs
+name: 4d2
 channels:
-  - defaults
+    - defaults
 dependencies:
-  - pip
-  - torchmetrics 
-  - ninja
-#  - plyfile
-  - pybind11
-  - tqdm 
-  - imagesize
-#  - omegaconf
-#  - pynput
-  - pyparsing
-  - matplotlib
-  - python=3.13
-  - ffmpeg
-  - pytorch=2.12
-  - torchvision
-  - cuda-version=13.0
-  - pip:
-    - kornia
+    - python=3.14
+    - cuda-cccl=13.0
+    - cuda-nvcc=13.0
+    - libcusparse-dev
+    - libcublas-dev
+    - libcusolver-dev
+    - pybind11
+    - vs2022_win-64
+    - pytorch=2.14
+    - torchvision
+    - torchmetrics
+    - matplotlib
+    - transformers=5.17
+    - imagesize
+    - onnx=1.22
+    - onnxruntime=1.30
+    - onnxscript=0.7.1
+    - onnxconverter-common=1.16
     - omegaconf
-    - plyfile
-    - pynput
-    - safetensors
-##    - ./simple-knn --no-build-isolation
-#    - ./pointops2 --no-build-isolation
-#    - torch torchvision --index-url https://download.pytorch.org/whl/cu130
+    - opencv
+    - imageio
+    - addict
+    - einops
+    - conda-forge::plyfile
+    - conda-forge::trimesh
+    - conda-forge::moviepy
+    - conda-forge::kornia
+    - glfw
+    - pyopengl
+    - pip:
+      - https://github.com/lyehe/build_gpu_colmap/releases/download/v4.2.1/pycolmap-4.2.1+cuda.cudss-cp314-cp314-win_amd64.whl
+      - triton_windows==3.8
+      - glfw
+      - evo

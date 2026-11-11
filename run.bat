@@ -5,9 +5,13 @@ rem set PYTORCH_ALLOC_CONF=per_process_memory_fraction:0.9,expandable_segments:T
 set CUDA_LAUNCH_BLOCKING=0
 set TORCH_LOGS=recompiles
 
+
+python train.py --config output\9moving\config.yaml --start_checkpoint auto_latest    --logpath logs
+::python train.py --config output\esper_ball\config.yaml --start_checkpoint auto_latest    --logpath logs
+
 ::python train.py --config output\9moving\config.yaml --start_checkpoint auto_latest    --logpath logs
 ::python train.py --config output\9moving\config.yaml --start_checkpoint auto_latest   --use_fastgs_densification --logpath logs
-python train.py --config output\9moving\config.yaml --start_checkpoint auto_latest    --logpath logs
+::python train.py --config output\9moving\config.yaml --start_checkpoint auto_latest    --logpath logs
 ::python train.py --config output\9moving\config.yaml --start_checkpoint auto_latest   --use_lff_densification --logpath logs
 ::python train.py --config output\9moving\config.yaml --start_checkpoint auto_latest  --use_fastgs_densification --use_lff_densification --logpath logs
 ::python train.py --config output\9moving\config.yaml --start_checkpoint auto_latest   --logpath logs
