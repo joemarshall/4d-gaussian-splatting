@@ -251,7 +251,7 @@ class GaussianModel:
             if isinstance(in_val, torch.Tensor):
                 setattr(self, var_name, in_val.cuda())
             elif isinstance(
-                getattr(self, var_name), torch.optim.Optimizer
+                getattr(self, var_name,None), torch.optim.Optimizer
             ) and isinstance(in_val, dict):
                 return (var_name, in_val)
             elif hasattr(self, var_name):
@@ -294,7 +294,7 @@ class GaussianModel:
     def capture(self):
 
         def save_fn(self, var_name, in_val):
-            var = getattr(self, var_name)
+            var = getattr(self, var_name,None)
             if isinstance(var, torch.Tensor):
                 return var
             elif isinstance(var, torch.optim.Optimizer):

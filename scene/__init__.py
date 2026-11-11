@@ -85,7 +85,13 @@ class Scene:
             self.test_cameras[resolution_scale] = cameraList_from_camInfos(scene_info.test_cameras, resolution_scale, args)
             
     def init_gaussians_from_scene(self):
-        img_point_cloud = makePointCloudFromImages(self)
+        num_images = len(self.train_cameras[1.0])
+        max_points = 3000000
+        points_per_image = max_points // num_images
+        if points_per_image > 1000:
+            points_per_image = 1000
+        print("initializing with {} points per image".format(points_per_image))
+        img_point_cloud = makePointCloudFromImages(self,points_per_image)
         self.gaussians.create_from_pcd(img_point_cloud, self.cameras_extent)
         if sys.platform == "win32":
             from utils.pointcloud_renderer import show_pointcloud_glfw_pytorch3d
@@ -103,6 +109,11 @@ class Scene:
             look_at = torch.tensor([0.0, 0.0, 0.0], device="cuda")
             camera_position = torch.tensor([0.0, 0.0, 5.0], device="cuda")
             camera_indices = torch.zeros(all_points.shape[0], dtype=torch.int32, device="cuda")
+            camera_count=9
+            points_per_camera = all_points.shape[0] // camera_count
+            for i in range(camera_count):
+                camera_indices[points_per_camera * i:points_per_camera * (i + 1)] = i
+
 
             show_pointcloud_glfw_pytorch3d(torch.tensor(all_points,device="cuda"),torch.tensor(all_times,device="cuda"),torch.tensor(all_durations,device="cuda"),torch.tensor(all_colors,device="cuda"),title="Total 3D point cloud",look_at=look_at,up=up,camera_position=camera_position,fov_x=math.radians(70.0),fov_y=math.radians(70.0),camera_indices=camera_indices)
 

@@ -34,6 +34,7 @@ import torch
 from utils.general_utils import fps
 from multiprocessing.pool import ThreadPool
 import imagesize
+from utils.build_depth  import transform_depth_to_image_size
 
 
 class CameraInfo(NamedTuple):
@@ -233,7 +234,11 @@ def makePointCloudFromImages(scene, points_per_image=1000):
     TENSOR_DEVICE = "cuda"
 
     dataset = scene.getTrainCameras()
-    num_points_total = len(dataset) * points_per_image
+    timestamps = dataset.get_timestamps()[:10]
+    num_cameras = dataset.get_num_different_cameras()
+
+
+    num_points_total = len(timestamps) * points_per_image * num_cameras
     all_points = torch.zeros((num_points_total, 2), dtype=torch.int32,device=TENSOR_DEVICE)
     all_xyz = torch.zeros((num_points_total, 3), device=TENSOR_DEVICE)
     all_colors = torch.zeros((num_points_total, 3), device=TENSOR_DEVICE)
@@ -247,7 +252,6 @@ def makePointCloudFromImages(scene, points_per_image=1000):
     # for each colmap_id we have a list of x,y and d
     live_points = {}
 
-    timestamps = dataset.get_timestamps()
 
     all_points_index = 0
 
@@ -259,6 +263,7 @@ def makePointCloudFromImages(scene, points_per_image=1000):
         finished_points,finished_xyz, finished_depth, finished_colors, finished_times, time_now, cam_id
     ):
         nonlocal all_points_index
+        print(f"Adding finished points: {finished_points.shape[0]}, finished_xyz: {finished_xyz.shape[0]}, finished_depth: {finished_depth.shape[0]}, finished_colors: {finished_colors.shape[0]}, finished_times: {finished_times.shape[0]}")
         num_points = finished_points.shape[0]
         all_src_cams[all_points_index : all_points_index + num_points,0] = cam_id
         all_xyz [ all_points_index : all_points_index + num_points] = finished_xyz
@@ -274,20 +279,20 @@ def makePointCloudFromImages(scene, points_per_image=1000):
         count_zero = (all_durations[all_points_index : all_points_index + num_points] == 0).sum().item()
         if count_zero > 0:
             print("Warning - finished points with zero duration:", count_zero, "out of", num_points)
-            asdasd
         all_points_index += num_points
 
-
-    for t in timestamps:
-        frame_cams = dataset.get_indices_for_timestamp(t)
-        for idx in frame_cams:
+    batches = [ dataset.get_indices_for_timestamp(t) for t in timestamps]
+    sampler = dataset.get_index_batch_list_sampler(batches,readahead=5,output_device="cuda")
+    for t,batch in zip(timestamps,sampler):
+        for idx in batch:
             (
                 image,
                 cam,
                 depth,
             ) = dataset[idx]
+            
             rays_o, rays_d = cam.cuda().get_rays()
-
+            depth = transform_depth_to_image_size(depth,image)
             valid_depth = depth > 0
             point_sample_weight = valid_depth.float()
 
@@ -413,9 +418,11 @@ def makePointCloudFromImages(scene, points_per_image=1000):
     last_frames = {}  # image, cam, depth, t
 
     live_points = torch.zeros((all_points_index), dtype=torch.bool)
-    for t in reversed(timestamps):
-        frame_cams = dataset.get_indices_for_timestamp(t)
-        for idx in frame_cams:
+    batches = [ dataset.get_indices_for_timestamp(t) for t in reversed(timestamps)]
+    sampler = dataset.get_index_batch_list_sampler(batches,readahead=5,output_device="cuda")
+
+    for t,batch in zip(reversed(timestamps),sampler):
+        for idx in batch:
             (
                 image,
                 cam,
