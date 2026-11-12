@@ -588,6 +588,11 @@ def calculate_depths(output_path: Path, ignore_existing: bool = False):
             depth = raw_output[0][0]
             prediction_extrinsics = raw_output[1]
 
+            _,_,scale_adjustment = align_extrinsics_umeyama(
+                prediction_extrinsics[0], extrinsics[0])
+
+
+            prediction_depth = depth / scale_adjustment
             time_before_cpu = time.time()-start_time
             prediction_depth = prediction_depth.to(device="cpu")
 

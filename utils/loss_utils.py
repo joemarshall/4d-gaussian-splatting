@@ -195,6 +195,13 @@ def loss_depth(
 
     depth_out = render_package["depth"].squeeze()
     depth_out_scaled = build_depth.transform_tensor_to_depth_size(depth_out)
+
+    gt_depth = gt_depth - gt_depth.min()
+    gt_depth = gt_depth / (gt_depth.max() + 1e-8)
+
+    depth_out_scaled = depth_out_scaled - depth_out_scaled.min()
+    depth_out_scaled = depth_out_scaled / (depth_out_scaled.max() + 1e-8)
+
     return l1_loss(gt_depth, depth_out_scaled)
 
 

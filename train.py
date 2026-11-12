@@ -65,6 +65,8 @@ if __name__ == "__main__":
     from torchvision.utils import make_grid
     import time
     from typing import List
+    import weakref
+    import gc
 
     from scene.densifiers import *
 
@@ -80,7 +82,6 @@ if __name__ == "__main__":
     torch.backends.fp32_precision = "tf32"
     torch._dynamo.config.force_parameter_static_shapes = False
 
-
     TRACK_MEMORY = False
     CLEAR_CACHE = False
 
@@ -91,13 +92,44 @@ if __name__ == "__main__":
     if RUN_PROFILER:
         from torch.profiler import profile, ProfilerActivity, record_function
 
-
     if TRACK_MEMORY:
         torch.cuda.memory._record_memory_history(max_entries=1000000)
 
-
     # from torch.utils.viz._cycles import warn_tensor_cycles
     # warn_tensor_cycles()
+
+    _finalizers = {}
+
+    def show_referrers(tensor, timepoint,name):
+        gc.collect()
+        print("Referrers for tensor {} at {}:".format(name, timepoint))
+        for ref in gc.get_referrers(tensor):
+            refstr = str(ref)
+            objtype = type(ref)
+            if not refstr.startswith("<built-in"):
+                print(objtype,refstr[:55])
+        storage = tensor.untyped_storage()
+        print("Referrers for storage {} at {}:".format(name, timepoint))
+        for ref in gc.get_referrers(storage):
+            if ref == tensor:
+                continue
+            refstr = str(ref)
+            objtype = type(ref)
+            if not refstr.startswith("<built-in"):
+                print(objtype,refstr[:55])
+
+    def track_tensor_release(tensor, name,raise_exception=False):
+        def on_release_storage(name, raise_exception):
+            if raise_exception:
+                raise RuntimeError(f"Tensor {name} released")
+            else:
+                print(f"Tensor storage {name} released")
+        def on_release_tensor(name):
+            print("Tensor {} released".format(name))
+        print("Tracking tensor {} release".format(name))
+        _finalizers[name]=weakref.finalize(tensor.untyped_storage(), on_release_storage,name,raise_exception)
+        _finalizers[name]=weakref.finalize(tensor, on_release_tensor,name)
+
 
     try:
         from torch.utils.tensorboard import SummaryWriter
@@ -106,7 +138,6 @@ if __name__ == "__main__":
     except ImportError:
         TENSORBOARD_FOUND = False
 
-
     def viewer_thread(args, name):
         process = subprocess.run(args, capture_output=True, text=True)
         if process.returncode == 0:
@@ -114,15 +145,44 @@ if __name__ == "__main__":
         else:
             print(f"Error rendering video {name}: {process.stdout} {process.stderr}")
 
-
     def launch_viewer(args, name):
         print("Render video in subprocess with args: {}".format(args))
         threading.Thread(target=viewer_thread, args=(args, name), daemon=True).start()
 
+    def run_batch_dummy(
+        batch_data,
+        batch_size,
+        gaussians,
+        pipe,
+        background,
+        opt,
+        tensor_gradient_2d_buffer,
+        iteration,            
+    ):
+        for batch_idx in range(batch_size):
+            gt_image, viewpoint_cam, gt_depth = batch_data[batch_idx]
+            if batch_idx == batch_size-1:
+                gt_image_last = gt_image
+            gt_image = gt_image.detach().to(device="cuda", non_blocking=True).detach()
+            viewpoint_cam = viewpoint_cam.cuda()
+            gt_depth = (
+                gt_depth.to(device="cuda", non_blocking=True).detach()
+                if gt_depth is not None
+                else None
+            )
+            
+            track_tensor_release(gt_image, f"gt_image_{batch_idx}",raise_exception=False)        
 
     # @torch.compile(dynamic=True)
     def run_batch(
-        batch_data, batch_size, gaussians, pipe, background, opt, tensor_gradient_2d_buffer, iteration
+        batch_data,
+        batch_size,
+        gaussians,
+        pipe,
+        background,
+        opt,
+        tensor_gradient_2d_buffer,
+        iteration,
     ):
         batch_point_grad = []
         batch_visibility_filter = []
@@ -131,9 +191,17 @@ if __name__ == "__main__":
         loss_items = {}
         for batch_idx in range(batch_size):
             gt_image, viewpoint_cam, gt_depth = batch_data[batch_idx]
-            gt_image = gt_image.to(device="cuda",non_blocking=True)
+            batch_data[batch_idx]=None
+            if batch_idx == batch_size-1:
+                gt_image_last = gt_image
+            gt_image = gt_image.to(device="cuda", non_blocking=True).detach()
             viewpoint_cam = viewpoint_cam.cuda()
-            gt_depth = gt_depth.to(device="cuda",non_blocking=True) if gt_depth is not None else None
+            gt_depth = (
+                gt_depth.to(device="cuda", non_blocking=True).detach()
+                if gt_depth is not None
+                else None
+            )
+            #track_tensor_release(gt_image, f"gt_image_{batch_idx}",raise_exception=False)
 
             render_pkg = render(
                 viewpoint_cam, gaussians, pipe, background, tensor_gradient_2d_buffer
@@ -146,18 +214,26 @@ if __name__ == "__main__":
                 render_pkg["depth"],
             )
 
-
             losses = [
                 ("L1", 1.0, loss_l1),
                 ("SSIM", opt.lambda_dssim, loss_ssim),
                 ("Opacity", opt.lambda_opa_bistable, loss_bistable_opacity),
                 ("Depth", opt.lambda_depth, loss_depth),
             ]
-
+            #show_referrers(gt_image, "before loss",f"gt_image_{batch_idx}")
             # with record_function("PROFILE_loss"):
             loss_dict = combine_losses(
-                losses, render_pkg, gt_image, gt_depth, gaussians,opt, divisor = batch_size, iterations = iteration,max_iterations = opt.iterations
+                losses,
+                render_pkg,
+                gt_image,
+                gt_depth,
+                gaussians,
+                opt,
+                divisor=batch_size,
+                iterations=iteration,
+                max_iterations=opt.iterations,
             )
+            #show_referrers(gt_image, "after loss",f"gt_image_{batch_idx}")
 
             ###### rigid loss ######
             if opt.lambda_rigid > 0:
@@ -184,7 +260,9 @@ if __name__ == "__main__":
                 # mean_t, cov_t = gaussians.get_t, gaussians.get_cov_t(scaling_modifier=1)
                 # mean_t_nn, cov_t_nn = mean_t[idx], cov_t[idx]
                 # weight *= torch.exp(-0.5*(mean_t[None, :, None]-mean_t_nn)**2/cov_t[None, :, None]/cov_t_nn*(cov_t[None, :, None]+cov_t_nn)).squeeze(-1).detach()
-                vel_dist = torch.norm(velocity[idx] - velocity[None, :, None], p=2, dim=-1)
+                vel_dist = torch.norm(
+                    velocity[idx] - velocity[None, :, None], p=2, dim=-1
+                )
                 Lrigid = (weight * vel_dist).sum() / k / xyz_cur.shape[0]
                 loss = loss + opt.lambda_rigid * Lrigid
             ########################
@@ -200,15 +278,20 @@ if __name__ == "__main__":
 
             # with record_function("PROFILE_bwd"):
             loss_dict["loss"].backward()
-            batch_point_grad.append(torch.norm(viewspace_point_tensor.grad[:, :2], dim=-1))
-            batch_radii.append(radii)
-            batch_visibility_filter.append(visibility_filter)
+            batch_point_grad.append(
+                torch.norm(viewspace_point_tensor.grad[:, :2].detach(), dim=-1)
+            )
+            batch_radii.append(radii.detach())
+            batch_visibility_filter.append(visibility_filter.detach())
 
             for k, v in loss_dict.items():
                 if k not in loss_items:
-                    loss_items[k] = v
+                    loss_items[k] = v.item()
                 else:
-                    loss_items[k] += v
+                    loss_items[k] += v.item()
+            #show_referrers(gt_image, "at end of batch",f"gt_image_{batch_idx}")
+            del gt_image
+            del loss_dict
 
         batch_viewspace_point_grad = None
         if batch_size > 1:
@@ -234,8 +317,8 @@ if __name__ == "__main__":
                 batch_t_grad = batch_t_grad.unsqueeze(1)
             return (
                 loss_items,
-                image,
-                gt_image,
+                image.detach(),
+                gt_image_last,
                 visibility_filter,
                 radii,
                 batch_viewspace_point_grad,
@@ -247,8 +330,8 @@ if __name__ == "__main__":
                 batch_t_grad = gaussians._t.grad.clone().detach()
             return (
                 loss_items,
-                image,
-                gt_image,
+                image.detach(),
+                gt_image_last,
                 visibility_filter,
                 radii,
                 None,
@@ -256,12 +339,10 @@ if __name__ == "__main__":
                 viewspace_point_tensor,
             )
 
-
     def collate_fn(x):
         return x
 
-
-    def try_save(gaussians, iteration, total_training_points,scene, name):
+    def try_save(gaussians, iteration, total_training_points, scene, name):
         print(
             "\n[ITER {}] Saving checkpoint ({} gaussians) [{}]".format(
                 iteration, gaussians.get_xyz.shape[0], name
@@ -270,7 +351,7 @@ if __name__ == "__main__":
         try:
             with torch.no_grad():
                 torch.save(
-                    (gaussians.capture(), iteration,total_training_points),
+                    (gaussians.capture(), iteration, total_training_points),
                     scene.model_path + f"/chkpnt_{name}.pth",
                 )
                 # empty cache after save or bad things happen
@@ -295,7 +376,6 @@ if __name__ == "__main__":
 
             print("Error saving checkpoint:")
             traceback.print_exc(e)
-
 
     def training(
         dataset,
@@ -374,7 +454,9 @@ if __name__ == "__main__":
             loaded = False
             for checkpoint, mtime in try_checkpoints:
                 try:
-                    model_params, first_iter,total_training_points = torch.load(checkpoint, weights_only=False)
+                    model_params, first_iter, total_training_points = torch.load(
+                        checkpoint, weights_only=False
+                    )
                     gaussians.restore(model_params, opt)
                     model_params = None
                     print(f"Loaded checkpoint {checkpoint} modified at {mtime}")
@@ -384,7 +466,9 @@ if __name__ == "__main__":
                     print(f"Error loading checkpoint {checkpoint}: {e}")
                     continue
         elif checkpoint is not None:
-            model_params, first_iter, total_training_points = torch.load(checkpoint, weights_only=False)
+            model_params, first_iter, total_training_points = torch.load(
+                checkpoint, weights_only=False
+            )
             gaussians.restore(model_params, opt)
             model_params = None
             loaded_checkpoint = True
@@ -393,10 +477,8 @@ if __name__ == "__main__":
             scene.init_gaussians_from_scene()
             try_save(gaussians, 0, 0, scene, name="post_init")
 
-            
         gaussians.training_setup(opt, batch_size_mult=1.0)
         total_training_points = 0
-
 
         bg_color = [1, 1, 1] if dataset.white_background else [0, 0, 0]
         background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
@@ -420,7 +502,9 @@ if __name__ == "__main__":
                     device="cuda",
                 ).requires_grad_(True)
             )
-            env_map_optimizer = torch.optim.Adam([env_map], lr=opt.lowfeature_lr, eps=1e-15)
+            env_map_optimizer = torch.optim.Adam(
+                [env_map], lr=opt.lowfeature_lr, eps=1e-15
+            )
         else:
             env_map = None
 
@@ -490,8 +574,8 @@ if __name__ == "__main__":
         )
         tensor_gradient_2d_buffer.retain_grad()
         iteration = first_iter
-        #stop_iteration= True
-        
+        # stop_iteration= True
+
         # print(build_rotation_4d(gaussians._rotation, gaussians._rotation_r))
         # print(gaussians._rotation)
         # print(gaussians._rotation_r)
@@ -512,7 +596,7 @@ if __name__ == "__main__":
                         ]
                         print(
                             "\nTiming breakdown for last batch (in seconds, of {}):".format(
-                                total_time 
+                                total_time
                             )
                         )
                         for i, (title, t) in enumerate(times):
@@ -521,12 +605,15 @@ if __name__ == "__main__":
                     times = []
                     times.append(("start", time.monotonic()))
 
-
                 if CUDA_EVENTS:
                     iter_start.record()
-                gaussians.update_learning_rate(iteration,total_training_points)
+                gaussians.update_learning_rate(iteration, total_training_points)
                 # Every 1000 its we increase the levels of SH up to a maximum degree
-                if iteration> opt.sh_increase_start and (iteration - opt.sh_increase_start) % opt.sh_increase_interval == 0:
+                if (
+                    iteration > opt.sh_increase_start
+                    and (iteration - opt.sh_increase_start) % opt.sh_increase_interval
+                    == 0
+                ):
                     gaussians.oneupSHdegree()
 
                 if SHOW_TIMINGS:
@@ -546,7 +633,8 @@ if __name__ == "__main__":
 
                 ts_batch = batch_data[0][1].timestamp
                 batch_data = [
-                    (data[0].cuda(), data[1].cuda(), data[2].cuda()) for data in batch_data
+                    (data[0].cuda(), data[1].cuda(), data[2].cuda())
+                    for data in batch_data
                 ]
 
                 if SHOW_TIMINGS:
@@ -572,7 +660,7 @@ if __name__ == "__main__":
                     background,
                     opt,
                     tensor_gradient_2d_buffer,
-                    iteration
+                    iteration,
                 )
 
                 if RUN_PROFILER:
@@ -583,14 +671,27 @@ if __name__ == "__main__":
                         results = run_batch(*args)
                     print(
                         "PROF:",
-                        prof.key_averages().table(sort_by="cuda_time_total", row_limit=100),
+                        prof.key_averages().table(
+                            sort_by="cuda_time_total", row_limit=100
+                        ),
                     )
                     print(
                         "PROFCPU:",
-                        prof.key_averages().table(sort_by="cpu_time_total", row_limit=100),
+                        prof.key_averages().table(
+                            sort_by="cpu_time_total", row_limit=100
+                        ),
                     )
                 else:
+                    # print("Dummy call")
+                    # run_batch_dummy(*args)
+                    # print("Outside call")
+                    # del args
+                    # print("after del args")
+                    # del batch_data
+                    # continue
                     results = run_batch(*args)
+
+                del args
 
                 (
                     losses,
@@ -607,7 +708,7 @@ if __name__ == "__main__":
                 visible_points = visibility_filter.sum().item()
                 all_points = len(visibility_filter)
 
-                #print(f"\n{visible_points/all_points:.2%} fraction of points in batch[{batch_size}]: {visible_points}/ n = {all_points}, iteration {iteration}")
+                # print(f"\n{visible_points/all_points:.2%} fraction of points in batch[{batch_size}]: {visible_points}/ n = {all_points}, iteration {iteration}")
 
                 if CUDA_EVENTS:
                     iter_end.record()
@@ -623,9 +724,9 @@ if __name__ == "__main__":
                     psnr_for_log = psnr(image, gt_image).mean().double()
                     for k, v in losses.items():
                         if k not in smoothed_logs:
-                            smoothed_logs[k] = v.item()
+                            smoothed_logs[k] = v
                         else:
-                            smoothed_logs[k] = 0.4 * v.item() + 0.6 * smoothed_logs[k]
+                            smoothed_logs[k] = 0.4 * v + 0.6 * smoothed_logs[k]
 
                     if iteration % 10 == 0:
                         postfix = {
@@ -654,7 +755,13 @@ if __name__ == "__main__":
                     #     loss_dict,
                     # )
                     if iteration in saving_iterations:
-                        try_save(gaussians, iteration, total_training_points, scene, f"iter_{iteration}")
+                        try_save(
+                            gaussians,
+                            iteration,
+                            total_training_points,
+                            scene,
+                            f"iter_{iteration}",
+                        )
                     # elif iteration in testing_iterations:
                     #     if test_psnr >= best_psnr:
                     #         best_psnr = test_psnr
@@ -719,6 +826,7 @@ if __name__ == "__main__":
                     if SHOW_TIMINGS:
                         times.append(("call_densifier_per_iteration", time.monotonic()))
 
+
         # Generate prefilter masks at end of training (including early stop via Ctrl+C)
         if generate_prefilter_masks and gaussians.gaussian_dim == 4:
             _save_prefilter_masks(gaussians, scene, dataset)
@@ -728,7 +836,6 @@ if __name__ == "__main__":
         print("\n[ITER {}] Saving checkpoint before exiting".format(iteration))
         try_save(gaussians, iteration, total_training_points, scene, name="resume")
         sys.exit(0)
-
 
     def _save_prefilter_masks(gaussians, scene, dataset):
         """Generate and save per-timestamp active Gaussian masks for prefiltering.
@@ -753,7 +860,6 @@ if __name__ == "__main__":
             f"active Gaussians per frame, {100.0 * total_active / max(total_possible, 1):.1f}% total)"
         )
 
-
     def prepare_output_and_logger(args):
         if not args.model_path:
             if os.getenv("OAR_JOB_ID"):
@@ -776,7 +882,6 @@ if __name__ == "__main__":
             print("Tensorboard not available: not logging progress")
         return tb_writer
 
-
     def training_report(
         tb_writer,
         iteration,
@@ -791,9 +896,11 @@ if __name__ == "__main__":
         loss_dict=None,
     ):
         if tb_writer:
-            tb_writer.add_scalar("train_loss_patches/l1_loss", Ll1.item(), iteration)
-            tb_writer.add_scalar("train_loss_patches/ssim_loss", Ll1.item(), iteration)
-            tb_writer.add_scalar("train_loss_patches/total_loss", loss.item(), iteration)
+            tb_writer.add_scalar("train_loss_patches/l1_loss", Ll1, iteration)
+            tb_writer.add_scalar("train_loss_patches/ssim_loss", Ll1, iteration)
+            tb_writer.add_scalar(
+                "train_loss_patches/total_loss", loss, iteration
+            )
             tb_writer.add_scalar("iter_time", elapsed, iteration)
             tb_writer.add_scalar(
                 "total_points", scene.gaussians.get_xyz.shape[0], iteration
@@ -805,13 +912,13 @@ if __name__ == "__main__":
                 if "Lrigid" in loss_dict:
                     tb_writer.add_scalar(
                         "train_loss_patches/rigid_loss",
-                        loss_dict["Lrigid"].item(),
+                        loss_dict["Lrigid"],
                         iteration,
                     )
                 if "Ldepth" in loss_dict:
                     tb_writer.add_scalar(
                         "train_loss_patches/depth_loss",
-                        loss_dict["Ldepth"].item(),
+                        loss_dict["Ldepth"],
                         iteration,
                     )
                 if "Ltv" in loss_dict:
@@ -820,7 +927,9 @@ if __name__ == "__main__":
                     )
                 if "Lopa" in loss_dict:
                     tb_writer.add_scalar(
-                        "train_loss_patches/opa_loss", loss_dict["Lopa"].item(), iteration
+                        "train_loss_patches/opa_loss",
+                        loss_dict["Lopa"].item(),
+                        iteration,
                     )
                 if "Lptsopa" in loss_dict:
                     tb_writer.add_scalar(
@@ -907,13 +1016,19 @@ if __name__ == "__main__":
                     )
                     if tb_writer:
                         tb_writer.add_scalar(
-                            config["name"] + "/loss_viewpoint - l1_loss", l1_test, iteration
+                            config["name"] + "/loss_viewpoint - l1_loss",
+                            l1_test,
+                            iteration,
                         )
                         tb_writer.add_scalar(
-                            config["name"] + "/loss_viewpoint - psnr", psnr_test, iteration
+                            config["name"] + "/loss_viewpoint - psnr",
+                            psnr_test,
+                            iteration,
                         )
                         tb_writer.add_scalar(
-                            config["name"] + "/loss_viewpoint - ssim", ssim_test, iteration
+                            config["name"] + "/loss_viewpoint - ssim",
+                            ssim_test,
+                            iteration,
                         )
                         tb_writer.add_scalar(
                             config["name"] + "/loss_viewpoint - msssim",
@@ -927,15 +1042,12 @@ if __name__ == "__main__":
             torch.cuda.empty_cache()
         return psnr_test_iter
 
-
     def setup_seed(seed):
         torch.manual_seed(seed)
         torch.cuda.manual_seed_all(seed)
         np.random.seed(seed)
         random.seed(seed)
         torch.backends.cudnn.deterministic = True
-
-
 
     # Set up command line argument parser
     parser = ArgumentParser(description="Training script parameters")

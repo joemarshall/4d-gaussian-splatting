@@ -6,8 +6,8 @@ set CUDA_LAUNCH_BLOCKING=0
 set TORCH_LOGS=recompiles
 
 
-python train.py --config output\9moving\config.yaml --start_checkpoint auto_latest    --logpath logs
-::python train.py --config output\esper_ball\config.yaml --start_checkpoint auto_latest    --logpath logs
+::python train.py --config output\9moving\config.yaml --start_checkpoint auto_latest    --logpath logs
+python train.py --config output\esper_ball\config.yaml --start_checkpoint auto_latest    --logpath logs
 
 ::python train.py --config output\9moving\config.yaml --start_checkpoint auto_latest    --logpath logs
 ::python train.py --config output\9moving\config.yaml --start_checkpoint auto_latest   --use_fastgs_densification --logpath logs

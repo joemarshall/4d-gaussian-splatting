@@ -1,9 +1,11 @@
 from argparse import ArgumentParser
 
-from matplotlib import pyplot
+from matplotlib import pyplot,gridspec
 from omegaconf import OmegaConf, DictConfig
 from arguments import ModelParams, PipelineParams, OptimizationParams
 import scene
+
+from utils.build_depth import transform_depth_to_image_size
 
 parser = ArgumentParser(description="Training script parameters")
 parser.add_argument("--config", type=str)
@@ -48,7 +50,11 @@ timestamps = dataset.get_timestamps()
 image_ids = [dataset.get_indices_for_timestamp(t) for t in timestamps]
 sampler = dataset.get_index_batch_list_sampler(image_ids,readahead=5)
 for batch in sampler:
-    for id in batch:
+    gs1 = gridspec.GridSpec(4, 3)
+    gs1.update(wspace=0, hspace=0)
+    figure = pyplot.figure(figsize=(4,3))
+
+    for i,id in enumerate(batch):
         print(id)
         image, cam, depth = dataset[id]
         if depth is None:
@@ -61,9 +67,11 @@ for batch in sampler:
             "Depth shape:",
             depth.shape,
         )
-        figure, axes = pyplot.subplots(1, 2)
-        axes[0].imshow(image.permute(1, 2, 0).cpu().numpy())
-        axes[0].set_title("Image")
-        axes[1].imshow(depth.squeeze().cpu().numpy())
-        axes[1].set_title("Depth")
-        pyplot.show()
+        image_and_depth = image.permute(1, 2, 0)
+        depth_transformed = transform_depth_to_image_size(depth, image)
+        image_and_depth[:,:,0] = depth_transformed / (depth_transformed.max() + 1e-8)
+        ax = pyplot.subplot(gs1[i])
+        ax.imshow(image_and_depth.cpu().numpy())
+        ax.set_axis_off()
+
+    pyplot.show()
