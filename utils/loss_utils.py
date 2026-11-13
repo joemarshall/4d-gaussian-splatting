@@ -187,13 +187,7 @@ def _rescale_depth(src_depth,tgt_depth):
     return rval
     
 
-def loss_depth(
-    render_package, gt_image, gt_depth, gaussians, args, iterations, max_iterations
-):
-    if iterations > max_iterations * 5 / 6:
-        return None
-
-    depth_out = render_package["depth"].squeeze()
+def _depth_internal_loss(depth_out,gt_depth):
     depth_out_scaled = build_depth.transform_tensor_to_depth_size(depth_out)
 
     gt_depth = gt_depth - gt_depth.min()
@@ -203,6 +197,15 @@ def loss_depth(
     depth_out_scaled = depth_out_scaled / (depth_out_scaled.max() + 1e-8)
 
     return l1_loss(gt_depth, depth_out_scaled)
+
+def _depth_internal_no_op(render_depth,gt_depth):
+   return torch.tensor(0.0, device=gt_depth.device, dtype=gt_depth.dtype)
+
+def loss_depth(
+    render_package, gt_image, gt_depth, gaussians, args, iterations, max_iterations
+):
+    return torch.cond(iterations > (max_iterations * 5 / 6), _depth_internal_no_op, _depth_internal_loss,(render_package['depth'].squeeze(), gt_depth))
+
 
 
 

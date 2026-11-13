@@ -85,13 +85,7 @@ class Scene:
             self.test_cameras[resolution_scale] = cameraList_from_camInfos(scene_info.test_cameras, resolution_scale, args)
             
     def init_gaussians_from_scene(self):
-        num_images = len(self.train_cameras[1.0])
-        max_points = 3000000
-        points_per_image = max_points // num_images
-        if points_per_image > 1000:
-            points_per_image = 1000
-        print("initializing with {} points per image".format(points_per_image))
-        img_point_cloud = makePointCloudFromImages(self,points_per_image)
+        img_point_cloud = makePointCloudFromImages(self)
         self.gaussians.create_from_pcd(img_point_cloud, self.cameras_extent)
         if sys.platform == "win32":
             from utils.pointcloud_renderer import show_pointcloud_glfw_pytorch3d

@@ -497,9 +497,7 @@ class GaussianModel:
             else:
                 durations = torch.from_numpy(pcd.durations).cuda().float()
                 fused_times = fused_times + durations / 2.0
-                # double this because gaussians shrink more than they grow 
-                # and we want maximum coverage by minimum gaussians
-                scales_t = torch.log(durations*2.0)
+                scales_t = torch.log(durations)
             if self.rot_4d:
                 rots_r = rots.clone()
 
@@ -651,6 +649,24 @@ class GaussianModel:
             lr_delay_mult=training_args.position_lr_delay_mult,
             max_steps=training_args.position_lr_max_steps,
         )
+
+    def mark_dynamic_tensors_for_compile(self):
+        # mark all parameters as dynamic in gaussian count so that they
+        # compile nicely with torch.compile
+        for x in [
+            self._xyz,
+            self._features_dc,
+            self._features_rest,
+            self._opacity,
+            self._scaling,
+            self._rotation,
+            self._t,
+            self._scaling_t,
+            self._rotation_r]:
+            if x is not None:
+                torch._dynamo.mark_dynamic(x,0)
+        
+
 
     def optimizer_step(self, iteration, radii=None):
         if self.optimizer is not None:

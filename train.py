@@ -81,6 +81,9 @@ if __name__ == "__main__":
     torch.set_float32_matmul_precision("high")
     torch.backends.fp32_precision = "tf32"
     torch._dynamo.config.force_parameter_static_shapes = False
+    torch._dynamo.config.capture_dynamic_output_shape_ops = True
+    torch._dynamo.config.reorderable_logging_functions.add(print)
+
 
     TRACK_MEMORY = False
     CLEAR_CACHE = False
@@ -173,7 +176,6 @@ if __name__ == "__main__":
             
             track_tensor_release(gt_image, f"gt_image_{batch_idx}",raise_exception=False)        
 
-    # @torch.compile(dynamic=True)
     def run_batch(
         batch_data,
         batch_size,
@@ -183,6 +185,9 @@ if __name__ == "__main__":
         opt,
         tensor_gradient_2d_buffer,
         iteration,
+        max_iterations,
+        SHOW_TIMINGS,
+        times
     ):
         batch_point_grad = []
         batch_visibility_filter = []
@@ -192,20 +197,28 @@ if __name__ == "__main__":
         for batch_idx in range(batch_size):
             gt_image, viewpoint_cam, gt_depth = batch_data[batch_idx]
             batch_data[batch_idx]=None
+            gt_image = gt_image.to(device="cuda", non_blocking=True).detach()
             if batch_idx == batch_size-1:
                 gt_image_last = gt_image
-            gt_image = gt_image.to(device="cuda", non_blocking=True).detach()
-            viewpoint_cam = viewpoint_cam.cuda()
             gt_depth = (
                 gt_depth.to(device="cuda", non_blocking=True).detach()
                 if gt_depth is not None
                 else None
             )
+            if SHOW_TIMINGS:
+                times.append(("gt_image", time.monotonic()))
             #track_tensor_release(gt_image, f"gt_image_{batch_idx}",raise_exception=False)
 
-            render_pkg = render(
-                viewpoint_cam, gaussians, pipe, background, tensor_gradient_2d_buffer
-            )
+            #@torch.compile()
+            def actual_render(viewpoint_cam, gaussians, pipe, background, tensor_gradient_2d_buffer):
+                render_pkg = render(
+                    viewpoint_cam, gaussians, pipe, background, tensor_gradient_2d_buffer
+                )
+                return render_pkg
+            render_pkg = actual_render(viewpoint_cam, gaussians, pipe, background, tensor_gradient_2d_buffer)
+
+            if SHOW_TIMINGS:
+                times.append(("actual render", time.monotonic()))
             image, viewspace_point_tensor, visibility_filter, radii, depth = (
                 render_pkg["render"],
                 render_pkg["viewspace_points"],
@@ -217,7 +230,7 @@ if __name__ == "__main__":
             losses = [
                 ("L1", 1.0, loss_l1),
                 ("SSIM", opt.lambda_dssim, loss_ssim),
-                ("Opacity", opt.lambda_opa_bistable, loss_bistable_opacity),
+                #("Opacity", opt.lambda_opa_bistable, loss_bistable_opacity),
                 ("Depth", opt.lambda_depth, loss_depth),
             ]
             #show_referrers(gt_image, "before loss",f"gt_image_{batch_idx}")
@@ -231,7 +244,7 @@ if __name__ == "__main__":
                 opt,
                 divisor=batch_size,
                 iterations=iteration,
-                max_iterations=opt.iterations,
+                max_iterations=max_iterations,
             )
             #show_referrers(gt_image, "after loss",f"gt_image_{batch_idx}")
 
@@ -275,9 +288,13 @@ if __name__ == "__main__":
                 Lmotion = velocity.norm(p=2, dim=1).mean()
                 loss = loss + opt.lambda_motion * Lmotion
             ########################
+            if SHOW_TIMINGS:
+                times.append(("losses", time.monotonic()))
 
             # with record_function("PROFILE_bwd"):
             loss_dict["loss"].backward()
+            if SHOW_TIMINGS:
+                times.append(("backward", time.monotonic()))
             batch_point_grad.append(
                 torch.norm(viewspace_point_tensor.grad[:, :2].detach(), dim=-1)
             )
@@ -286,12 +303,14 @@ if __name__ == "__main__":
 
             for k, v in loss_dict.items():
                 if k not in loss_items:
-                    loss_items[k] = v.item()
+                    loss_items[k] = v.detach()
                 else:
-                    loss_items[k] += v.item()
-            #show_referrers(gt_image, "at end of batch",f"gt_image_{batch_idx}")
-            del gt_image
-            del loss_dict
+                    loss_items[k] += v.detach()
+            #del gt_image
+            #del loss_dict
+            if SHOW_TIMINGS:
+                times.append(("done render", time.monotonic()))
+
 
         batch_viewspace_point_grad = None
         if batch_size > 1:
@@ -564,8 +583,7 @@ if __name__ == "__main__":
         times = []
 
         tensor_gradient_2d_buffer = (
-            torch.zeros_like(
-                gaussians.get_xyz,
+            torch.zeros((0,3),
                 dtype=gaussians.get_xyz.dtype,
                 requires_grad=True,
                 device="cuda",
@@ -573,6 +591,7 @@ if __name__ == "__main__":
             + 0
         )
         tensor_gradient_2d_buffer.retain_grad()
+        torch._dynamo.mark_dynamic(tensor_gradient_2d_buffer,0)
         iteration = first_iter
         # stop_iteration= True
 
@@ -633,7 +652,7 @@ if __name__ == "__main__":
 
                 ts_batch = batch_data[0][1].timestamp
                 batch_data = [
-                    (data[0].cuda(), data[1].cuda(), data[2].cuda())
+                    (data[0], data[1].cuda(), data[2])
                     for data in batch_data
                 ]
 
@@ -651,6 +670,9 @@ if __name__ == "__main__":
                         + 0
                     )
                     tensor_gradient_2d_buffer.retain_grad()
+                    torch._dynamo.mark_dynamic(tensor_gradient_2d_buffer,0)
+
+                gaussians.mark_dynamic_tensors_for_compile()
 
                 args = (
                     batch_data,
@@ -660,7 +682,10 @@ if __name__ == "__main__":
                     background,
                     opt,
                     tensor_gradient_2d_buffer,
-                    iteration,
+                    torch.tensor(iteration, device="cuda"),
+                    torch.tensor(opt.iterations, device="cuda"),
+                    SHOW_TIMINGS,
+                    times
                 )
 
                 if RUN_PROFILER:
@@ -690,6 +715,8 @@ if __name__ == "__main__":
                     # del batch_data
                     # continue
                     results = run_batch(*args)
+                if SHOW_TIMINGS:
+                    times.append(("render", time.monotonic()))
 
                 del args
 
@@ -703,8 +730,6 @@ if __name__ == "__main__":
                     batch_t_grad,
                     viewspace_point_tensor,
                 ) = results
-                if SHOW_TIMINGS:
-                    times.append(("render", time.monotonic()))
                 visible_points = visibility_filter.sum().item()
                 all_points = len(visibility_filter)
 
@@ -912,13 +937,13 @@ if __name__ == "__main__":
                 if "Lrigid" in loss_dict:
                     tb_writer.add_scalar(
                         "train_loss_patches/rigid_loss",
-                        loss_dict["Lrigid"],
+                        loss_dict["Lrigid"].item(),
                         iteration,
                     )
                 if "Ldepth" in loss_dict:
                     tb_writer.add_scalar(
                         "train_loss_patches/depth_loss",
-                        loss_dict["Ldepth"],
+                        loss_dict["Ldepth"].item(),
                         iteration,
                     )
                 if "Ltv" in loss_dict:

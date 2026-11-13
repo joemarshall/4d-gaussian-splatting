@@ -65,7 +65,7 @@ namespace BACKWARD
 		const float focal_x, float focal_y,
 		const float tan_fovx, float tan_fovy,
 		const glm::vec3* campos,
-		const float timestamp,
+		const float *timestamp,
 		const float time_duration,
 		const bool rot_4d, const int gaussian_dim, const bool force_sh_3d,
 		const float3* dL_dmean2D,

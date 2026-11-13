@@ -148,11 +148,11 @@ __device__ void computeColorFromSH(int idx, int deg, int max_coeffs, const glm::
 // Backward pass for conversion of spherical harmonics to RGB for
 // each Gaussian.
 __device__ void computeColorFromSH_4D(int idx, int deg, int deg_t, int max_coeffs, const glm::vec3* means, glm::vec3 campos,
-            const float* shs_dc, const float* shs_ac, const int8_t *clamped, const float* ts, const float timestamp, const float time_duration,
+            const float* shs_dc, const float* shs_ac, const int8_t *clamped, const float* ts, const float *timestamp, const float time_duration,
             const glm::vec3* dL_dcolor, glm::vec3* dL_dmeans, glm::vec3* dL_dshs_dc, glm::vec3* dL_dshs_ac, float* dL_dts)
 {
 	// Compute intermediate values, as it is done during forward
-	const float dir_t = ts[idx] - timestamp;
+	const float dir_t = ts[idx] - *timestamp;
 	glm::vec3 pos = means[idx];
 	glm::vec3 dir_orig = pos - campos;
 	glm::vec3 dir = dir_orig / glm::length(dir_orig);
@@ -696,12 +696,12 @@ __device__ void computeCov3D(int idx, const glm::vec3 scale, float mod, const gl
 // Backward pass for the conversion of scale and rotation to a
 // 3D covariance matrix for each Gaussian.
 __device__ void computeCov3D_conditional(int idx, const glm::vec3 scale, const float scale_t, float mod,
-    const glm::vec4 rot, const glm::vec4 rot_r, const float prefilter_var, const float t, const float timestamp, const float opacity, bool& mask,
+    const glm::vec4 rot, const glm::vec4 rot_r, const float prefilter_var, const float t, const float *timestamp, const float opacity, bool& mask,
     const float* dL_dcov3Ds, const glm::vec3* dL_dmeans, float* dL_dopacity, float* dL_dts,
     glm::vec3* dL_dscales, float* dL_dscales_t,
     glm::vec4* dL_drots, glm::vec4* dL_drots_r)
 {
-    float dt=timestamp-t;
+    float dt=*timestamp-t;
 	glm::mat4 S = glm::mat4(1.0f);
 	S[0][0] = mod * scale.x;
 	S[1][1] = mod * scale.y;
@@ -864,7 +864,7 @@ __global__ void preprocessCUDA(
 	const float scale_modifier,
 	const float* proj,
 	const glm::vec3* campos,
-	const float timestamp,
+	const float *timestamp,
 	const float time_duration,
 	const bool rot_4d, const int gaussian_dim, const bool force_sh_3d,
 	const float3* dL_dmean2D,
@@ -1168,7 +1168,7 @@ void BACKWARD::preprocess(
 	const float focal_x, float focal_y,
 	const float tan_fovx, float tan_fovy,
 	const glm::vec3* campos,
-	const float timestamp,
+	const float *timestamp,
 	const float time_duration,
 	const bool rot_4d, const int gaussian_dim, const bool force_sh_3d,
 	const float3* dL_dmean2D,

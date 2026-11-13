@@ -34,7 +34,7 @@ __global__ void preprocessCUDA(int P,
 	const float* viewmatrix,
 	const float* projmatrix,
 	const glm::vec3* cam_pos,
-	const float timestamp,
+	const float *timestamp,
 	const float time_duration,
 	const bool rot_4d, const int gaussian_dim, 
 	const int W, int H,
@@ -89,7 +89,7 @@ __global__ void preprocessCUDA(int P,
 		computeCov3D(scales[idx], scale_modifier, rotations[idx], cov3Ds + idx * 6);
 		cov3D = cov3Ds + idx * 6;
 		if (gaussian_dim == 4){  // no rot_4d
-            float dt = ts[idx]-timestamp;
+            float dt = ts[idx]-*timestamp;
             float sigma = scales_t[idx] * scale_modifier;
 		    float marginal_t = __expf(-0.5*dt*dt/((prefilter_var > 0.0) ? (prefilter_var + sigma) : sigma));
 		    if (marginal_t <= 0.05) return;
@@ -335,7 +335,7 @@ void CALC_CONTRIBUTION::preprocess(int P,
 	const float* viewmatrix,
 	const float* projmatrix,
 	const glm::vec3* cam_pos,
-	const float timestamp,
+	const float *timestamp,
 	const float time_duration,
 	const bool rot_4d, const int gaussian_dim, 
 	const int W, int H,

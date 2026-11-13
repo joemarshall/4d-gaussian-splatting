@@ -471,10 +471,10 @@ __device__ inline void computeCov3D(const glm::vec3 scale, float mod, const glm:
 
 __device__ inline void computeCov3D_conditional(const glm::vec3 scale, const float scale_t, float mod,
 		const glm::vec4 rot, const glm::vec4 rot_r, float* cov3D, float3& p_orig,
-		float t, const float timestamp, int idx, bool& mask, float& opacity, const float prefilter_var)
+		float t, const float *timestamp, int idx, bool& mask, float& opacity, const float prefilter_var)
 {
 	// Create scaling matrix
-	float dt=timestamp-t;
+	float dt=(*timestamp)-t;
 	glm::mat4 S = glm::mat4(1.0f);
 	S[0][0] = mod * scale.x;
 	S[1][1] = mod * scale.y;

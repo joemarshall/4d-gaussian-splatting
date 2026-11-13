@@ -117,7 +117,7 @@ class CameraDataset(Dataset):
                 yield batch
 
     class ReadAheadSampler(Sampler[List[int]]):
-        def __init__(self, dataset, child_sampler,num_batches_readahead=1,output_device = "cpu"):
+        def __init__(self, dataset, child_sampler,num_batches_readahead=4,output_device = "cpu"):
             self.dataset = dataset
             self.child_sampler = child_sampler
             self.num_batches_readahead = num_batches_readahead
@@ -378,7 +378,7 @@ class CameraDataset(Dataset):
         return camlist
 
     def get_frame_batch_sampler(self, suggested_batch_size=4,output_device = "cpu"):
-        return CameraDataset.ReadAheadSampler(self,CameraDataset.TimeCoherentCameraAndFrameSampler(self),output_device=output_device)
+        return CameraDataset.ReadAheadSampler(self,CameraDataset.RandomSampler(self),output_device=output_device,num_batches_readahead=4)
 
     def get_index_batch_list_sampler(self, index_list,readahead=5,output_device = "cpu"):
         return CameraDataset.ReadAheadSampler(self,CameraDataset.IndexListSampler(self, index_list),num_batches_readahead=readahead,output_device=output_device)
@@ -397,7 +397,7 @@ class CameraDataset(Dataset):
             )
             if cached_image is not None:
                 #                print("Using cached image:", viewpoint_cam.image_path)
-                return cached_image, viewpoint_cam, cached_depth
+                return cached_image, viewpoint_cam.cuda(), cached_depth
             else:
                 raise RuntimeError(
                     "ImageCache get_image_for_file returned None for image: {}".format(

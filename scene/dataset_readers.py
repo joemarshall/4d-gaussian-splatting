@@ -224,7 +224,7 @@ def fetchPly(path):
     )
 
 
-def makePointCloudFromImages(scene, points_per_image=1000):
+def makePointCloudFromImages(scene, points_per_image=1000,max_points = 3000000):
     # get the training dataset from the scene
     # then for all images choose points
     # spread across the image and save to ply with the calculated point (from the depth and the camera rays)
@@ -232,13 +232,24 @@ def makePointCloudFromImages(scene, points_per_image=1000):
     # and return this as a BasicPointCloud for use with gaussian initialization
 
     TENSOR_DEVICE = "cuda"
+    bg = torch.tensor((1,1,1), device=TENSOR_DEVICE) if scene.white_background else torch.tensor((0,0,0), device=TENSOR_DEVICE)
+
 
     dataset = scene.getTrainCameras()
     timestamps = dataset.get_timestamps()
     num_cameras = dataset.get_num_different_cameras()
 
 
+
     num_points_total = len(timestamps) * points_per_image * num_cameras
+    if num_points_total > max_points:
+        print("Skipping timestamps to limit total points to", max_points)
+        # Calculate the number of timestamps to keep
+        num_timestamps_to_keep = max_points // (points_per_image * num_cameras)
+        # Select the timestamps to keep (evenly spaced)
+        timestamps = timestamps[::len(timestamps) // num_timestamps_to_keep]
+    num_points_total = len(timestamps) * points_per_image * num_cameras
+    print(f"Finding {num_points_total} points at {len(timestamps)} timestamps")
     all_points = torch.zeros((num_points_total, 2), dtype=torch.int32,device=TENSOR_DEVICE)
     all_xyz = torch.zeros((num_points_total, 3), device=TENSOR_DEVICE)
     all_colors = torch.zeros((num_points_total, 3), device=TENSOR_DEVICE)
@@ -263,7 +274,7 @@ def makePointCloudFromImages(scene, points_per_image=1000):
         finished_points,finished_xyz, finished_depth, finished_colors, finished_times, time_now, cam_id
     ):
         nonlocal all_points_index
-        print(f"Adding finished points: {finished_points.shape[0]}, finished_xyz: {finished_xyz.shape[0]}, finished_depth: {finished_depth.shape[0]}, finished_colors: {finished_colors.shape[0]}, finished_times: {finished_times.shape[0]}")
+        #print(f"Adding finished points: {finished_points.shape[0]}, finished_xyz: {finished_xyz.shape[0]}, finished_depth: {finished_depth.shape[0]}, finished_colors: {finished_colors.shape[0]}, finished_times: {finished_times.shape[0]}")
         num_points = finished_points.shape[0]
         all_src_cams[all_points_index : all_points_index + num_points,0] = cam_id
         all_xyz [ all_points_index : all_points_index + num_points] = finished_xyz
@@ -283,7 +294,9 @@ def makePointCloudFromImages(scene, points_per_image=1000):
 
     batches = [ dataset.get_indices_for_timestamp(t) for t in timestamps]
     sampler = dataset.get_index_batch_list_sampler(batches,readahead=5,output_device="cuda")
+    progress = tqdm(total=len(batches)*2,desc="Making point cloud from images")
     for t,batch in zip(timestamps,sampler):
+        progress.update(1)
         for idx in batch:
             (
                 image,
@@ -296,12 +309,29 @@ def makePointCloudFromImages(scene, points_per_image=1000):
             valid_depth = depth > 0
             point_sample_weight = valid_depth.float()
 
+            # be much more likely to sample non-bg colour points
+            # n.b. if there is bg colour in fg, then lets hope
+            # it comes out in nearby gaussians in the optimisation process
+            # img = [c,h,w]
+            # bg = [c]
+            # unsqueeze to [c,1,1] then broadcast against [c,h,w] to get the 
+            # difference
+            bg_diff = image  - bg.unsqueeze(-1).unsqueeze(-1)
+            # now get max absolute difference from bg colour
+            bg_diff = torch.abs(bg_diff)
+            bg_diff = torch.max(bg_diff)
+            # now clamp multiply by 10.0 and clamp to 0-1 so that
+            # anything less than 0.05 from bg colour is not sampled
+            # and anything more than 0.15 from bg colour is fully sampled
+            point_sample_weight *= torch.clamp((bg_diff * 10.0)-0.05, 0.0, 1.0)
+            
+
             last_frame_img = last_frames.get(cam.colmap_id, None)
             if last_frame_img is not None:
                 # if the image has changed, then we want to prioritise adding points at this point
                 # so we increase the weight of points that have changed in color
                 color_diff = torch.linalg.vector_norm(image - last_frame_img, dim=0)
-                point_sample_weight *= 0.5 + color_diff
+                point_sample_weight *= 0.25 + torch.clamp(color_diff, 0.0, 1.0)
             last_frames[cam.colmap_id] = image
 
             point_data = live_points.get(cam.colmap_id, None)
@@ -318,7 +348,7 @@ def makePointCloudFromImages(scene, points_per_image=1000):
 
                 finished_points_mask |= (
                     torch.linalg.vector_norm(colors_in_this_frame - old_color, dim=-1)
-                    > 0.1
+                    > 0.05
                 )
 
                 still_live_points = ~finished_points_mask
@@ -338,12 +368,12 @@ def makePointCloudFromImages(scene, points_per_image=1000):
                         old_color[still_live_points],
                         old_times[still_live_points],
                     )
-                print(
-                    "Live points:",
-                    still_live_points.sum().item(),
-                    "Finished points:",
-                    finished_points_mask.sum().item(),
-                )
+                # print(
+                #     "Live points:",
+                #     still_live_points.sum().item(),
+                #     "Finished points:",
+                #     finished_points_mask.sum().item(),
+                # )
                 if finished_points_mask.sum() > 0:
                     # now add in the points that are finished to the all_points list with a duration
                     add_finished_points(
@@ -356,7 +386,7 @@ def makePointCloudFromImages(scene, points_per_image=1000):
                         cam.colmap_id
                     )
 
-            print("Making points from image:", cam.image_path)
+            #print("Making points from image:", cam.image_path)
             # read the depth and image
             # sample points across the image
             # for each point, calculate the 3D position using the camera intrinsics and extrinsics
@@ -422,6 +452,7 @@ def makePointCloudFromImages(scene, points_per_image=1000):
     sampler = dataset.get_index_batch_list_sampler(batches,readahead=5,output_device="cuda")
 
     for t,batch in zip(reversed(timestamps),sampler):
+        progress.update(1)
         for idx in batch:
             (
                 image,
@@ -442,7 +473,7 @@ def makePointCloudFromImages(scene, points_per_image=1000):
 
 
                 sample_points = all_points[possible_points_to_extend]
-                print(diff_image_norm.shape,diff_image_norm.dtype,possible_points_to_extend.shape,all_points.shape,sample_points.shape)
+                #print(diff_image_norm.shape,diff_image_norm.dtype,possible_points_to_extend.shape,all_points.shape,sample_points.shape)
                 
 
                 diff_image_samples = diff_image_norm[
@@ -454,12 +485,12 @@ def makePointCloudFromImages(scene, points_per_image=1000):
 
                 all_times[possible_points_to_extend] = t
                 all_durations[possible_points_to_extend] += last_time - t
-                print(
-                    "Extended points:",
-                    possible_points_to_extend.numel(),
-                    "at time:",
-                    t,
-                )
+                # print(
+                #     "Extended points:",
+                #     possible_points_to_extend.numel(),
+                #     "at time:",
+                #     t,
+                # )
             last_frames[cam.colmap_id] = (image, cam, depth, t)
 
     all_rotations = torch.zeros((all_points_index,4), device=TENSOR_DEVICE)
@@ -467,7 +498,7 @@ def makePointCloudFromImages(scene, points_per_image=1000):
 
 
     first_frame_cams = dataset.get_indices_for_timestamp(timestamps[0])
-    print(len(first_frame_cams), "cameras in first frame:")
+    #print(len(first_frame_cams), "cameras in first frame:")
 
     for idx in first_frame_cams:
         (
@@ -481,7 +512,6 @@ def makePointCloudFromImages(scene, points_per_image=1000):
         # get scale multiplier for 1 pixel move at distance 1
         ray_scale_multiplier = torch.linalg.vector_norm(
             rays_d[rays_d.shape[0] // 2, rays_d.shape[1] // 2, :] - rays_d[1+(rays_d.shape[0] // 2), rays_d.shape[1] // 2, :])
-        print("Ray scale multiplier for camera", cam.colmap_id, ":", ray_scale_multiplier.item())
         this_cam_indices = cam.colmap_id == all_src_cams[:, 0]
 
         this_cam_points = all_points[this_cam_indices]

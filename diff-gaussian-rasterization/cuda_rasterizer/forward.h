@@ -40,7 +40,7 @@ namespace FORWARD
 		const float* viewmatrix,
 		const float* projmatrix,
 		const glm::vec3* cam_pos,
-		const float timestamp,
+		const float *timestamp,
 		const float time_duration,
 		const bool rot_4d, const int gaussian_dim, const bool force_sh_3d,
 		const int W, int H,

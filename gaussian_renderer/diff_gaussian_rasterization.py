@@ -26,8 +26,13 @@ parent_dir = os.path.join(
 )
 _C = load(
     name="diff_gaussian_rasterization",
-    extra_cuda_cflags=["-I " + os.path.join(parent_dir, "third_party/glm/"), "-O3"],#,"-g"],    
-    extra_cflags=["/FS","/GL","/O2"] if sys.platform=="win32" else [],# without this windows builds are flaky because of pdb files being locked
+    extra_cuda_cflags=[
+        "-I " + os.path.join(parent_dir, "third_party/glm/"),
+        "-O3",
+    ],  # ,"-g"],
+    extra_cflags=(
+        ["/FS", "/GL", "/O2"] if sys.platform == "win32" else []
+    ),  # without this windows builds are flaky because of pdb files being locked
     sources=[
         os.path.join(parent_dir, "cuda_rasterizer/rasterizer_impl.cu"),
         os.path.join(parent_dir, "cuda_rasterizer/forward.cu"),
@@ -65,6 +70,42 @@ def rasterize_gaussians(
     prefilter_var,
     raster_settings,
 ):
+    # for x in [
+    #     means3D,
+    #     means2D,
+    #     sh_dc,
+    #     sh_ac,
+    #     colors_precomp,
+    #     flow_2d,
+    #     opacities,
+    #     ts,
+    #     scales,
+    #     scales_t,
+    #     rotations,
+    #     rotations_r,
+    #     cov3D_precomp,
+    #     prefilter_var,
+    #     raster_settings.bg,
+    #     raster_settings.scale_modifier,
+    #     raster_settings.viewmatrix,
+    #     raster_settings.projmatrix,
+    #     raster_settings.tanfovx,
+    #     raster_settings.tanfovy,
+    #     raster_settings.image_height,
+    #     raster_settings.image_width,
+    #     raster_settings.sh_degree,
+    #     raster_settings.sh_degree_t,
+    #     raster_settings.campos,
+    #     raster_settings.timestamp,
+    #     raster_settings.time_duration,
+    #     raster_settings.rot_4d,
+    #     raster_settings.gaussian_dim,
+    #     raster_settings.force_sh_3d,
+    #     raster_settings.prefiltered,
+    #     raster_settings.debug,
+    #     raster_settings.metric_map,
+    # ]:
+    #     print("FWD ARG:", type(x))
     all_results = _forward_op(
         means3D,
         means2D,
@@ -100,6 +141,8 @@ def rasterize_gaussians(
         raster_settings.debug,
         raster_settings.metric_map,
     )
+    # for x in all_results[0:7]:
+    #     print("FWD OUT:", type(x), x.shape if isinstance(x, torch.Tensor) else None)
     return all_results[
         0:7
     ]  # return the tensors we actually want, and not those needed for backward pass
@@ -134,7 +177,7 @@ def _forward_op(
     sh_degree: int,
     sh_degree_t: int,
     campos: torch.Tensor,
-    timestamp: float,
+    timestamp: torch.Tensor,
     time_duration: float,
     rot_4d: bool,
     gaussian_dim: int,
@@ -242,7 +285,6 @@ def _forward_op(
             out_metric_counts,
         ) = C_rasterize_gaussians(*args)
 
-
     # print(
     #     "Real outs:",
     #      (
@@ -259,8 +301,6 @@ def _forward_op(
     #     imgBuffer.shape,
     #     num_rendered,         ),
     #  )
-
-
     return (
         color,
         radii,
@@ -304,7 +344,7 @@ def _(
     sh_degree: int,
     sh_degree_t: int,
     campos: torch.Tensor,
-    timestamp: float,
+    timestamp: torch.Tensor,
     time_duration: float,
     rot_4d: bool,
     gaussian_dim: int,
@@ -316,12 +356,12 @@ def _(
     ctx = torch.library.get_ctx()
     P = means3D.shape[0]
 
-    color = means3D.new_empty(3, image_height,image_width)
+    color = means3D.new_empty(3, image_height, image_width)
     radii = means3D.new_empty(P, dtype=torch.int32)
-    depth = means3D.new_empty(1, image_height,image_width)
-    T = means3D.new_empty(1, image_height,image_width)
-    flow = means3D.new_empty( 2, image_height, image_width)
-    if metric_map.ndim >0:
+    depth = means3D.new_empty(1, image_height, image_width)
+    T = means3D.new_empty(1, image_height, image_width)
+    flow = means3D.new_empty(2, image_height, image_width)
+    if metric_map.ndim > 0:
         out_metric_counts = means3D.new_empty(P, dtype=torch.int32)
     else:
         out_metric_counts = means3D.new_empty(0, dtype=torch.int32)
@@ -355,7 +395,6 @@ def _(
     #     num_rendered,         ),
     #  )
 
-
     return (
         color,
         radii,
@@ -369,9 +408,7 @@ def _(
         binningBuffer,
         imgBuffer,
         num_rendered,
-    ) 
-
-
+    )
 
 
 def _setup_ctx(ctx, inputs, output):
@@ -481,9 +518,9 @@ def _backward_op(
     grad_geomBuffer,
     grad_binningBuffer,
     grad_imgBuffer,
-    grad_num_rendered,    
+    grad_num_rendered,
 ):
-#    print("BACKWARD OP!!!!")
+    #    print("BACKWARD OP!!!!")
     # Restore necessary values from context
     num_rendered = ctx.num_rendered
     prefilter_var = ctx.prefilter_var
@@ -569,7 +606,6 @@ def _backward_op(
         debug,
     )
 
-
     # Compute gradients for relevant tensors by invoking backward method
     if debug:
         cpu_args = cpu_deep_copy_tuple(args)  # Copy them before they can be corrupted
@@ -612,7 +648,7 @@ def _backward_op(
             grad_rotations_r,
         ) = C_rasterize_gaussians_backward(*args)
 
-    grads = (        
+    grads = (
         grad_means3D,
         grad_means2D,
         grad_sh_dc,
@@ -651,7 +687,6 @@ def _backward_op(
     # print("Backward pass - return types:")
     # for x in grads:
     #     print(type(x),x.shape if isinstance(x, torch.Tensor) else None, x.dtype if isinstance(x, torch.Tensor) else None)
-
 
     grad_names = [
         "grad_means3D",
@@ -699,7 +734,7 @@ class GaussianRasterizationSettings(NamedTuple):
     sh_degree: int
     sh_degree_t: int
     campos: torch.Tensor
-    timestamp: float
+    timestamp: torch.Tensor
     time_duration: float
     rot_4d: bool
     gaussian_dim: int
@@ -921,7 +956,7 @@ def C_rasterize_gaussians(
     degree: int,
     degree_t: int,
     campos: torch.Tensor,
-    timestamp: float,
+    timestamp: torch.Tensor,
     time_duration: float,
     rot_4d: bool,
     gaussian_dim: int,
@@ -1009,7 +1044,7 @@ def C_rasterize_gaussians_FAKE(
     degree: int,
     degree_t: int,
     campos: torch.Tensor,
-    timestamp: float,
+    timestamp: torch.Tensor,
     time_duration: float,
     rot_4d: bool,
     gaussian_dim: int,
@@ -1127,7 +1162,7 @@ def C_rasterize_gaussians_backward(
     degree: int,
     degree_t: int,
     campos: torch.Tensor,
-    timestamp: float,
+    timestamp: torch.Tensor,
     time_duration: float,
     rot_4d: bool,
     gaussian_dim: int,
@@ -1197,8 +1232,7 @@ def C_rasterize_gaussians_backward(
     # for x in args:
     #      print(type(x),x.device if hasattr(x,"device") else "N/A",x.shape if hasattr(x,"shape") else "")
 
-
-    retval =  _C.rasterize_gaussians_backward(*args)
+    retval = _C.rasterize_gaussians_backward(*args)
 
     (
         dL_dmeans2D,
@@ -1214,7 +1248,7 @@ def C_rasterize_gaussians_backward(
         dL_dscales_t,
         dL_drotations,
         dL_drotations_r,
-    )=retval
+    ) = retval
 
     # print(
     #     "Real BW:",
@@ -1235,8 +1269,6 @@ def C_rasterize_gaussians_backward(
     #  ))
 
     return retval
-
-
 
 
 @C_rasterize_gaussians_backward.register_fake
@@ -1269,7 +1301,7 @@ def C_rasterize_gaussians_backward_FAKE(
     degree: int,
     degree_t: int,
     campos: torch.Tensor,
-    timestamp: float,
+    timestamp: torch.Tensor,
     time_duration: float,
     rot_4d: bool,
     gaussian_dim: int,
@@ -1328,7 +1360,6 @@ def C_rasterize_gaussians_backward_FAKE(
     #     dL_drotations.shape,
     #     dL_drotations_r.shape,
     #  ))
-
 
     return (
         dL_dmeans2D,

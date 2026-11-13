@@ -59,7 +59,7 @@ RasterizeGaussiansCUDA(
 	const int degree,
 	const int degree_t, 
 	const torch::Tensor& campos,
-	const float timestamp,
+	const torch::Tensor& timestamp,
 	const float time_duration,
 	const bool rot_4d,
 	const int gaussian_dim,
@@ -112,8 +112,8 @@ RasterizeGaussiansCUDA(
 	  metric_count_out_data = out_metric_count.contiguous().data_ptr<int>();
 
   }else{
-	out_metric_count = torch::Tensor();
-	metric_count_out_data = nullptr;
+	out_metric_count = torch::zeros({0},int_opts);
+//	metric_count_out_data = nullptr;
   }
 
 
@@ -151,7 +151,7 @@ RasterizeGaussiansCUDA(
 		viewmatrix.contiguous().data<float>(), 
 		projmatrix.contiguous().data<float>(),
 		campos.contiguous().data<float>(),
-		timestamp,
+		timestamp.contiguous().data_ptr<float>(),
 		time_duration,
 		rot_4d,
 		gaussian_dim,
@@ -206,7 +206,7 @@ std::tuple<torch::Tensor, torch::Tensor,torch::Tensor, torch::Tensor, torch::Ten
 	const int degree,
 	const int degree_t,
 	const torch::Tensor& campos,
-	const float timestamp,
+	const torch::Tensor& timestamp,
 	const float time_duration,
 	const bool rot_4d,
 	const int gaussian_dim,
@@ -265,7 +265,7 @@ std::tuple<torch::Tensor, torch::Tensor,torch::Tensor, torch::Tensor, torch::Ten
 	  viewmatrix.contiguous().data<float>(),
 	  projmatrix.contiguous().data<float>(),
 	  campos.contiguous().data<float>(),
-	  timestamp,
+	  timestamp.contiguous().data_ptr<float>(),
       time_duration,
       rot_4d,
       gaussian_dim,
@@ -340,7 +340,7 @@ CalculateGaussianContributionsCUDA(
     const int image_height,
     const int image_width,
 	const torch::Tensor& campos,
-	const float timestamp,
+	const torch::Tensor& timestamp,
 	const float time_duration,
 	const bool rot_4d,
 	const int gaussian_dim,
@@ -396,7 +396,7 @@ CalculateGaussianContributionsCUDA(
 		viewmatrix.contiguous().data<float>(), 
 		projmatrix.contiguous().data<float>(),
 		campos.contiguous().data<float>(),
-		timestamp,
+		timestamp.contiguous().data_ptr<float>(),
 		time_duration,
 		rot_4d,
 		gaussian_dim,

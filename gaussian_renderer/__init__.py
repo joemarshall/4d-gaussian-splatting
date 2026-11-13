@@ -49,7 +49,7 @@ def _make_rasterizer(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torc
             sh_degree=pc.active_sh_degree,
             sh_degree_t=pc.active_sh_degree_t,
             campos=viewpoint_camera.camera_center,
-            timestamp=viewpoint_camera.timestamp,
+            timestamp=viewpoint_camera.timestamp_tensor,
             time_duration=pc.time_duration[1]-pc.time_duration[0],
             rot_4d=pc.rot_4d,
             gaussian_dim=pc.gaussian_dim,
@@ -82,7 +82,7 @@ def _make_rasterizer(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torc
             sh_degree=pc.active_sh_degree,
             sh_degree_t=pc.active_sh_degree_t,
             campos=viewpoint_camera.camera_center,
-            timestamp=viewpoint_camera.timestamp,
+            timestamp=viewpoint_camera.timestamp_tensor,
             time_duration=pc.time_duration[1]-pc.time_duration[0],
             rot_4d=pc.rot_4d,
             gaussian_dim=pc.gaussian_dim,
@@ -103,6 +103,7 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
     """
     tensor_gradient_2d_buffer.grad=None
     screenspace_points = tensor_gradient_2d_buffer
+
 
     # Set up rasterization configuration
     rasterizer = _make_rasterizer(viewpoint_camera, pc, pipe, bg_color, scaling_modifier, override_color, metric_map)
@@ -158,7 +159,7 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
             if pc.gaussian_dim == 3 or pc.force_sh_3d:
                 sh2rgb = eval_sh(pc.active_sh_degree, shs_view, dir_pp_normalized)
             elif pc.gaussian_dim == 4:
-                dir_t = (pc.get_t - viewpoint_camera.timestamp).detach()
+                dir_t = (pc.get_t - viewpoint_camera.timestamp_tensor).detach()
                 sh2rgb = eval_shfs_4d(pc.active_sh_degree, pc.active_sh_degree_t, shs_view, dir_pp_normalized, dir_t, pc.time_duration[1] - pc.time_duration[0])
             colors_precomp = torch.clamp_min(sh2rgb + 0.5, 0.0)
         else:
@@ -229,6 +230,9 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
             )
 
     else:
+    
+
+
         rendered_image, radii, depth, alpha, flow, covs_com,metric_count = rasterizer(
             means3D = means3D,
             means2D = means2D,
@@ -244,7 +248,9 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
             rotations_r = rotations_r,
             cov3D_precomp = cov3D_precomp,
             prefilter_var = prefilter_var)
-    
+
+
+
     if pipe.env_map_res:
         assert pc.env_map is not None
         R = 60
@@ -279,8 +285,19 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
                 "depth": depth
                 }
     else:
+
+        # return {"render": torch.zeros((3,viewpoint_camera.image_height, viewpoint_camera.image_width),dtype=torch.float32, device="cuda"),
+        #         "viewspace_points": screenspace_points,
+        #         "visibility_filter" : torch.zeros(pc.get_xyz.shape[0], device="cuda") > 0,
+        #         "radii": torch.ones(pc.get_xyz.shape[0], device="cuda"),
+        #         "depth": torch.zeros((viewpoint_camera.image_height, viewpoint_camera.image_width),dtype=torch.float32, device="cuda"),
+        #         "alpha": torch.zeros((viewpoint_camera.image_height, viewpoint_camera.image_width),dtype=torch.float32, device="cuda"),
+        #         "flow": None,
+        #         "metric_counts": metric_count}
+
+        
         # Those Gaussians that were frustum culled or had a radius of 0 were not visible.
-        # They will be excluded from value updates used in the splitting criteria.
+        #They will be excluded from value updates used in the splitting criteria.
         return {"render": rendered_image,
                 "viewspace_points": screenspace_points,
                 "visibility_filter" : radii_all > 0,

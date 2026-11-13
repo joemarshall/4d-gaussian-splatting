@@ -142,6 +142,7 @@ class Camera:
             Camera.projection_cache[self.cache_key] = cache_entry
 
         self.cached_cuda=cuda_copy
+        cuda_copy.timestamp_tensor = torch.tensor([self.timestamp], device=cuda_copy.data_device)
         return self.cached_cuda
 
 

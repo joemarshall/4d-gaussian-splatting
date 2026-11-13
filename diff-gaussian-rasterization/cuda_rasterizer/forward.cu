@@ -72,7 +72,7 @@ __device__ glm::vec3 computeColorFromSH(int idx, int deg, int max_coeffs, const 
 }
 
 __device__ glm::vec3 computeColorFromSH_4D(int idx, int deg, int deg_t, int max_coeffs, const glm::vec3* means,
-		 glm::vec3 campos, const float* shs_dc, const float* shs_ac, int8_t *clamped, const float* ts, const float timestamp, const float time_duration)
+		 glm::vec3 campos, const float* shs_dc, const float* shs_ac, int8_t *clamped, const float* ts, const float *timestamp, const float time_duration)
 {
 	// The implementation is loosely based on code for
 	// "Differentiable Point-Based Radiance Fields for
@@ -81,7 +81,7 @@ __device__ glm::vec3 computeColorFromSH_4D(int idx, int deg, int deg_t, int max_
 	glm::vec3 dir = pos - campos;
 	dir = dir / glm::length(dir);
 
-	const float dir_t = ts[idx]-timestamp;
+	const float dir_t = ts[idx]-*timestamp;
 
 	glm::vec3* sh_dc = (glm::vec3*)shs_dc + idx;
 	glm::vec3* sh_ac = ((glm::vec3*)shs_ac) + idx * max_coeffs;
@@ -226,7 +226,7 @@ __global__ void preprocessCUDA(int P, int D, int D_t, int M,
 	const float* viewmatrix,
 	const float* projmatrix,
 	const glm::vec3* cam_pos,
-	const float timestamp,
+	const float *timestamp,
 	const float time_duration,
 	const bool rot_4d, const int gaussian_dim, const bool force_sh_3d,
 	const int W, int H,
@@ -283,7 +283,7 @@ __global__ void preprocessCUDA(int P, int D, int D_t, int M,
 		computeCov3D(scales[idx], scale_modifier, rotations[idx], cov3Ds + idx * 6);
 		cov3D = cov3Ds + idx * 6;
 		if (gaussian_dim == 4){  // no rot_4d
-            float dt = ts[idx]-timestamp;
+            float dt = ts[idx]-*timestamp;
             float sigma = scales_t[idx] * scale_modifier;
 		    float marginal_t = __expf(-0.5*dt*dt/((prefilter_var > 0.0) ? (prefilter_var + sigma) : sigma));
 		    if (marginal_t <= 0.05) return;
@@ -565,7 +565,7 @@ void FORWARD::preprocess(int P, int D, int D_t, int M,
 	const float* viewmatrix,
 	const float* projmatrix,
 	const glm::vec3* cam_pos,
-	const float timestamp,
+	const float *timestamp,
 	const float time_duration,
 	const bool rot_4d, const int gaussian_dim, const bool force_sh_3d,
 	const int W, int H,
