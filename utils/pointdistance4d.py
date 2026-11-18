@@ -271,6 +271,8 @@ def find2d_nearest_points(points2d: torch.tensor, query_points2d: torch.tensor):
     # Map back from sorted p index to original p index
     nearest_indices = p_sort_order[cand_pos[torch.arange(M, device=q.device), min_w_idx]]
 
+    if(min_dist2==torch.inf).any():
+        print("Warning: Some query points have no nearest neighbour (all candidates were exact overlaps).")
     return nearest_indices, nearest_distances
 
 if __name__ == "__main__":

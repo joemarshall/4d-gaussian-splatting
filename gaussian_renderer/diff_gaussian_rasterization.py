@@ -29,6 +29,11 @@ _C = load(
     extra_cuda_cflags=[
         "-I " + os.path.join(parent_dir, "third_party/glm/"),
         "-O3",
+        "-Xptxas=-v",
+        "-arch=native",
+        "--use_fast_math",
+        "--maxrregcount",
+        "32"
     ],  # ,"-g"],
     extra_cflags=(
         ["/FS", "/GL", "/O2"] if sys.platform == "win32" else []

@@ -233,6 +233,7 @@ def makePointCloudFromImages(scene, points_per_image=1000,max_points = 3000000):
 
     TENSOR_DEVICE = "cuda"
     bg = torch.tensor((1,1,1), device=TENSOR_DEVICE) if scene.white_background else torch.tensor((0,0,0), device=TENSOR_DEVICE)
+    print("Making point cloud from images with background color:", bg)
 
 
     dataset = scene.getTrainCameras()
@@ -319,11 +320,11 @@ def makePointCloudFromImages(scene, points_per_image=1000,max_points = 3000000):
             bg_diff = image  - bg.unsqueeze(-1).unsqueeze(-1)
             # now get max absolute difference from bg colour
             bg_diff = torch.abs(bg_diff)
-            bg_diff = torch.max(bg_diff)
+            bg_diff = torch.amax(bg_diff,dim=0)
             # now clamp multiply by 10.0 and clamp to 0-1 so that
             # anything less than 0.05 from bg colour is not sampled
             # and anything more than 0.15 from bg colour is fully sampled
-            point_sample_weight *= torch.clamp((bg_diff * 10.0)-0.05, 0.0, 1.0)
+            point_sample_weight *= torch.clamp((bg_diff -0.1)* 10.0, 0.0, 1.0)
             
 
             last_frame_img = last_frames.get(cam.colmap_id, None)

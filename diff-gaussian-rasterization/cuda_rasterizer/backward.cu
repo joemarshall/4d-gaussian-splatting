@@ -934,8 +934,8 @@ __global__ void preprocessCUDA(
 
 // Backward version of the rendering procedure.
 template <uint32_t C>
-__global__ void __launch_bounds__(BLOCK_X * BLOCK_Y)
-renderCUDA(
+__global__ void  __maxnreg__(40)
+renderCUDABW(
 	const uint2* __restrict__ ranges,
 	const uint32_t* __restrict__ point_list,
 	int W, int H,
@@ -997,11 +997,14 @@ renderCUDA(
 	float dL_dflow[2] = { 0 };
 	float dL_depth = 0;
 	float dL_mask = 0;
+	float bg_dot_dpixel = 0;
+
 	float accum_depth_rec = 0;
 	float accum_mask_rec = 0;
 	if (inside){
 		for (int i = 0; i < C; i++){
 			dL_dpixel[i] = dL_dpixels[i * H * W + pix_id];
+			bg_dot_dpixel += bg_color[i] * dL_dpixel[i];
 		}
 		for (int i = 0; i < 2; i++){
 			dL_dflow[i] = dL_dpix_flow[i * H * W + pix_id];
@@ -1063,7 +1066,8 @@ renderCUDA(
 			if (alpha < 1.0f / 255.0f)
 				continue;
 
-			T = T / (1.f - alpha);
+			const float inv_neg_alpha = 1.f / (1.f - alpha);
+			T = T * inv_neg_alpha;
 			const float dchannel_dcolor = alpha * T;
 
 			// Propagate gradients to per-Gaussian colors and keep
@@ -1115,12 +1119,10 @@ renderCUDA(
 			// Update last alpha (to be used in the next iteration)
 			last_alpha = alpha;
 
+
 			// Account for fact that alpha also influences how much of
 			// the background color is added if nothing left to blend
-			float bg_dot_dpixel = 0;
-			for (int i = 0; i < C; i++)
-				bg_dot_dpixel += bg_color[i] * dL_dpixel[i];
-			dL_dalpha += (-T_final / (1.f - alpha)) * bg_dot_dpixel;
+			dL_dalpha += (-T_final *inv_neg_alpha) * bg_dot_dpixel;
 
 
 			// Helpful reusable temporary variables
@@ -1265,7 +1267,7 @@ void BACKWARD::render(
 	float* dL_dcolors,
 	float* dL_dflows)
 {
-	renderCUDA<NUM_CHANNELS> << <grid, block >> >(
+	renderCUDABW<NUM_CHANNELS> << <grid, block >> >(
 		ranges,
 		point_list,
 		W, H,

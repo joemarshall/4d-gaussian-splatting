@@ -1,0 +1,1 @@
+.\ncu.exe --config-file off -o profile.nvvp python train.py python train.py --config output\esper_ball\config.yaml --start_checkpoint auto_latest    --logpath logs

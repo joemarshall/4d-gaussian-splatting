@@ -110,6 +110,7 @@ class TemporalPointCloudStore:
         camera_indices: torch.Tensor,
         max_render_points: int = 1_000_000,
     ) -> None:
+        self.max_render_points=max_render_points
         if xyz.ndim != 2 or xyz.shape[-1] != 3:
             raise ValueError("xyz must have shape [N, 3].")
         if color.ndim != 2 or color.shape[-1] != 3:
@@ -147,16 +148,6 @@ class TemporalPointCloudStore:
             self.color = self.color / 255.0
         self.color = self.color.clamp(0.0, 1.0)
 
-        if max_render_points > 0 and self.xyz.shape[0] > max_render_points:
-            keep = torch.randperm(self.xyz.shape[0], device=self.device)[
-                :max_render_points
-            ]
-            self.xyz = self.xyz.index_select(0, keep)
-            self.color = self.color.index_select(0, keep)
-            self.times = self.times.index_select(0, keep)
-            self.duration = self.duration.index_select(0, keep)
-            self.camera_indices = self.camera_indices.index_select(0, keep)
-
         self.enabled_camera_indices = set(range(10))
         self.indexed_point_masks = {
             idx: self.camera_indices == idx for idx in range(10)
@@ -187,7 +178,19 @@ class TemporalPointCloudStore:
 
         t = current_time
         temporal_mask = (self.times <= t) & (t <= (self.times + self.duration))
-        return visible_mask & temporal_mask
+
+        all_visible = visible_mask & temporal_mask
+        if self.max_render_points < all_visible.sum().item():
+            # Randomly subsample points to avoid rendering too many points.
+            visible_indices = torch.nonzero(all_visible, as_tuple=False).view(-1)
+            perm = torch.randperm(visible_indices.shape[0], device=self.device)
+            selected_indices = visible_indices[perm[: self.max_render_points]]
+            final_mask = torch.zeros_like(all_visible, dtype=torch.bool)
+            final_mask[selected_indices] = True
+            
+            return final_mask
+        else:
+            return all_visible
 
     def build_visible_point_cloud(
         self, current_time: torch.Tensor
