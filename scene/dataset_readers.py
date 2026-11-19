@@ -11,6 +11,7 @@
 
 import os
 import sys
+
 from PIL import Image
 from typing import NamedTuple
 from scene.colmap_loader import (
@@ -224,365 +225,290 @@ def fetchPly(path):
     )
 
 
-def makePointCloudFromImages(scene, points_per_image=1000,max_points = 3000000):
-    # get the training dataset from the scene
-    # then for all images choose points
-    # spread across the image and save to ply with the calculated point (from the depth and the camera rays)
-    # and timestamp set to the image timestamp
-    # and return this as a BasicPointCloud for use with gaussian initialization
+def makePointCloudFromImages(
+    scene,
+    points_per_frame=1000,
+    max_points=3000000,
+    depth_tolerance=0.05,
+    color_threshold=0.1,
+):
+    """Build a 4D point cloud from the depth + colour of every camera in every frame.
 
+    Points are sampled per frame (across all cameras), merged between cameras where
+    they are mutually visible, tracked through time in a single set of live points,
+    and finally extended backwards in time where they still appear to exist.
+    """
     TENSOR_DEVICE = "cuda"
-    bg = torch.tensor((1,1,1), device=TENSOR_DEVICE) if scene.white_background else torch.tensor((0,0,0), device=TENSOR_DEVICE)
-    print("Making point cloud from images with background color:", bg)
-
+    bg = torch.tensor((1, 1, 1) if scene.white_background else (0, 0, 0), device=TENSOR_DEVICE)
 
     dataset = scene.getTrainCameras()
-    timestamps = dataset.get_timestamps()
-    num_cameras = dataset.get_num_different_cameras()
+    timestamps = list(dataset.get_timestamps())
 
-
-
-    num_points_total = len(timestamps) * points_per_image * num_cameras
-    if num_points_total > max_points:
+    if len(timestamps) * points_per_frame > max_points:
         print("Skipping timestamps to limit total points to", max_points)
-        # Calculate the number of timestamps to keep
-        num_timestamps_to_keep = max_points // (points_per_image * num_cameras)
-        # Select the timestamps to keep (evenly spaced)
-        timestamps = timestamps[::len(timestamps) // num_timestamps_to_keep]
-    num_points_total = len(timestamps) * points_per_image * num_cameras
-    print(f"Finding {num_points_total} points at {len(timestamps)} timestamps")
-    all_points = torch.zeros((num_points_total, 2), dtype=torch.int32,device=TENSOR_DEVICE)
-    all_xyz = torch.zeros((num_points_total, 3), device=TENSOR_DEVICE)
-    all_colors = torch.zeros((num_points_total, 3), device=TENSOR_DEVICE)
-    all_normals = torch.zeros((num_points_total, 3), device=TENSOR_DEVICE)
-    all_times = torch.zeros((num_points_total, 1), device=TENSOR_DEVICE)
-    all_durations = torch.zeros((num_points_total, 1), device=TENSOR_DEVICE)
-    all_src_cams = torch.zeros((num_points_total, 1), dtype=torch.int32, device=TENSOR_DEVICE)
-    all_depths = torch.zeros((num_points_total, 1), device=TENSOR_DEVICE)
+        num_to_keep = max(1, max_points // points_per_frame)
+        timestamps = timestamps[:: max(1, len(timestamps) // num_to_keep)]
+    num_frames = len(timestamps)
+    frame_delta = (timestamps[1] - timestamps[0]) if num_frames > 1 else 1.0 / 30.0
+    # time of each frame start, plus one extra entry for "alive until the end"
+    time_values = torch.tensor(
+        timestamps + [timestamps[-1] + frame_delta], dtype=torch.float32, device=TENSOR_DEVICE
+    )
+    print(f"Finding up to {num_frames * points_per_frame} points at {num_frames} timestamps")
 
-    # live points, indexed by colmap_id
-    # for each colmap_id we have a list of x,y and d
-    live_points = {}
-
-
-    all_points_index = 0
-
-    # last frame images per camera - we prioritise adding points where the image
-    # changed so we capture motion
-    last_frames = {}
-
-    def add_finished_points(
-        finished_points,finished_xyz, finished_depth, finished_colors, finished_times, time_now, cam_id
-    ):
-        nonlocal all_points_index
-        #print(f"Adding finished points: {finished_points.shape[0]}, finished_xyz: {finished_xyz.shape[0]}, finished_depth: {finished_depth.shape[0]}, finished_colors: {finished_colors.shape[0]}, finished_times: {finished_times.shape[0]}")
-        num_points = finished_points.shape[0]
-        all_src_cams[all_points_index : all_points_index + num_points,0] = cam_id
-        all_xyz [ all_points_index : all_points_index + num_points] = finished_xyz
-        all_points[all_points_index : all_points_index + num_points] = finished_points
-        all_depths[all_points_index : all_points_index + num_points] = finished_depth.unsqueeze(-1)
-        all_colors[all_points_index : all_points_index + num_points] = finished_colors
-        all_times[all_points_index : all_points_index + num_points] = (
-            finished_times.unsqueeze(-1)
-        )
-        all_durations[all_points_index : all_points_index + num_points] = (
-            time_now - finished_times
-        ).unsqueeze(-1)
-        count_zero = (all_durations[all_points_index : all_points_index + num_points] == 0).sum().item()
-        if count_zero > 0:
-            print("Warning - finished points with zero duration:", count_zero, "out of", num_points)
-        all_points_index += num_points
-
-    batches = [ dataset.get_indices_for_timestamp(t) for t in timestamps]
-    sampler = dataset.get_index_batch_list_sampler(batches,readahead=5,output_device="cuda")
-    progress = tqdm(total=len(batches)*2,desc="Making point cloud from images")
-    for t,batch in zip(timestamps,sampler):
-        progress.update(1)
+    def load_frame(batch):
+        frame = []
         for idx in batch:
-            (
-                image,
-                cam,
-                depth,
-            ) = dataset[idx]
-            
-            rays_o, rays_d = cam.cuda().get_rays()
-            depth = transform_depth_to_image_size(depth,image)
-            valid_depth = depth > 0
-            point_sample_weight = valid_depth.float()
-
-            # be much more likely to sample non-bg colour points
-            # n.b. if there is bg colour in fg, then lets hope
-            # it comes out in nearby gaussians in the optimisation process
-            # img = [c,h,w]
-            # bg = [c]
-            # unsqueeze to [c,1,1] then broadcast against [c,h,w] to get the 
-            # difference
-            bg_diff = image  - bg.unsqueeze(-1).unsqueeze(-1)
-            # now get max absolute difference from bg colour
-            bg_diff = torch.abs(bg_diff)
-            bg_diff = torch.amax(bg_diff,dim=0)
-            # now clamp multiply by 10.0 and clamp to 0-1 so that
-            # anything less than 0.05 from bg colour is not sampled
-            # and anything more than 0.15 from bg colour is fully sampled
-            point_sample_weight *= torch.clamp((bg_diff -0.1)* 10.0, 0.0, 1.0)
-            
-
-            last_frame_img = last_frames.get(cam.colmap_id, None)
-            if last_frame_img is not None:
-                # if the image has changed, then we want to prioritise adding points at this point
-                # so we increase the weight of points that have changed in color
-                color_diff = torch.linalg.vector_norm(image - last_frame_img, dim=0)
-                point_sample_weight *= 0.25 + torch.clamp(color_diff, 0.0, 1.0)
-            last_frames[cam.colmap_id] = image
-
-            point_data = live_points.get(cam.colmap_id, None)
-            if point_data is not None:
-                old_points, old_xyz, old_depths, old_color, old_times = point_data
-                finished_points_mask = depth[old_points[:, 0], old_points[:, 1]] < 0
-                # check each old point and clear it if it is too different in depth
-                # finished_points_mask |= torch.abs(depth[old_points[:,0], old_points[:,1]] - old_depths) > 0.01
-                # check each old point and clear it if it is too different in color
-
-                colors_in_this_frame = image[
-                    :, old_points[:, 0], old_points[:, 1]
-                ].transpose(0, 1)
-
-                finished_points_mask |= (
-                    torch.linalg.vector_norm(colors_in_this_frame - old_color, dim=-1)
-                    > 0.05
+            image, cam, depth = dataset[idx]
+            depth = transform_depth_to_image_size(depth, image)
+            rays_o, rays_d = cam.get_rays()
+            wvt = cam.world_view_transform.to(TENSOR_DEVICE)
+            if cam.cx > 0:
+                fx, fy, cx, cy = cam.fl_x, cam.fl_y, cam.cx, cam.cy
+            else:
+                fx = cam.image_width / (2 * np.tan(cam.FoVx / 2))
+                fy = cam.image_height / (2 * np.tan(cam.FoVy / 2))
+                cx, cy = cam.image_width / 2, cam.image_height / 2
+            frame.append(
+                dict(
+                    cam=cam,
+                    id=cam.colmap_id,
+                    image=image,
+                    depth=depth,
+                    width=image.shape[2],
+                    height=image.shape[1],
+                    origin=rays_o[0, 0],
+                    pos=rays_d * depth.unsqueeze(-1) + rays_o[0, 0],
+                    rot=wvt[:3, :3],
+                    trans=wvt[3, :3],
+                    intr=(fx, fy, cx, cy),
                 )
-
-                still_live_points = ~finished_points_mask
-
-                # if a point isn't finished then don't sample it again in the current frame
-                point_sample_weight[
-                    old_points[still_live_points][:, 0],
-                    old_points[still_live_points][:, 1],
-                ] = 0.0
-                if still_live_points.sum() == 0:
-                    live_points[cam.colmap_id] = None
-                else:
-                    live_points[cam.colmap_id] = (
-                        old_points[still_live_points],
-                        old_xyz[still_live_points],
-                        old_depths[still_live_points],
-                        old_color[still_live_points],
-                        old_times[still_live_points],
-                    )
-                # print(
-                #     "Live points:",
-                #     still_live_points.sum().item(),
-                #     "Finished points:",
-                #     finished_points_mask.sum().item(),
-                # )
-                if finished_points_mask.sum() > 0:
-                    # now add in the points that are finished to the all_points list with a duration
-                    add_finished_points(
-                        old_points[finished_points_mask],
-                        old_xyz[finished_points_mask],
-                        old_depths[finished_points_mask],
-                        old_color[finished_points_mask],
-                        old_times[finished_points_mask],
-                        t,
-                        cam.colmap_id
-                    )
-
-            #print("Making points from image:", cam.image_path)
-            # read the depth and image
-            # sample points across the image
-            # for each point, calculate the 3D position using the camera intrinsics and extrinsics
-            # save to ply with color from the image and timestamp from the camera
-
-            # do in frame order, keep a list of gaussians in play and
-            # finish them if depth error too great
-
-            ## distance >4 from centre gets zero weight
-            ##point_dists = torch.norm(rays_d*depth.unsqueeze(-1),dim=-1)
-            ##point_sample_weight[point_dists>4.0] = 0.0
-
-            point_idxs = torch.multinomial(
-                point_sample_weight.flatten(), points_per_image, replacement=False
             )
+        return frame
 
-            point_xs = point_idxs % cam.image_width
-            point_ys = point_idxs // cam.image_width
-            new_depths = depth[point_ys, point_xs]
+    def project(c, xyz):
+        pv = xyz @ c["rot"] + c["trans"]
+        z = pv[:, 2]
+        zs = z.clamp(min=1e-6)
+        fx, fy, cx, cy = c["intr"]
+        px = torch.floor(fx * pv[:, 0] / zs + cx).long()
+        py = torch.floor(fy * pv[:, 1] / zs + cy).long()
+        inside = (z > 1e-6) & (px >= 0) & (px < c["width"]) & (py >= 0) & (py < c["height"])
+        return px.clamp(0, c["width"] - 1), py.clamp(0, c["height"] - 1), inside
 
-            new_points = torch.stack([point_ys, point_xs], dim=-1)
+    def observe(frame, xyz):
+        """Project points into every camera of the frame.
 
-            projected_xyz = rays_d[new_points[:, 0], new_points[:, 1], :] * new_depths.unsqueeze(-1)
-            projected_xyz += rays_o[0, 0]
+        Returns per-camera visibility [C,N] (in view and depth agrees), colour [C,N,3],
+        the 3d point the camera's own depth gives at that pixel [C,N,3] and the flat pixel index.
+        """
+        vis, cols, poss, pix = [], [], [], []
+        for c in frame:
+            px, py, inside = project(c, xyz)
+            rng = torch.linalg.vector_norm(xyz - c["origin"], dim=-1)
+            d = c["depth"][py, px]
+            vis.append(inside & (d > 0) & ((d - rng).abs() < depth_tolerance * rng))
+            cols.append(c["image"][:, py, px].T)
+            poss.append(c["pos"][py, px])
+            pix.append(py * c["width"] + px)
+        return torch.stack(vis), torch.stack(cols), torch.stack(poss), pix
 
-            new_xyz = projected_xyz
-            new_times = torch.ones(new_points.shape[0], device=TENSOR_DEVICE) * cam.timestamp
-            new_colors = image[:, new_points[:, 0], new_points[:, 1]].transpose(0, 1)
+    def still_alive(vis, cols, ref_color):
+        # a point has ended if its colour differs in most of the cameras that can see it
+        differs = ((cols - ref_color.unsqueeze(0)).norm(dim=-1) > color_threshold) & vis
+        n_vis = vis.sum(0)
+        return (n_vis > 0) & (differs.sum(0) * 2 <= n_vis)
 
-            point_data = live_points.get(cam.colmap_id, None)
+    def sample_weights(c, prev_image):
+        w = (c["depth"] > 0).float()
+        # strongly prefer non-background pixels
+        bg_diff = torch.amax(torch.abs(c["image"] - bg.view(3, 1, 1)), dim=0)
+        w *= torch.clamp((bg_diff - 0.1) * 10.0, 0.0, 1.0)
+        if prev_image is not None:
+            # prefer pixels that changed since the last frame so motion gets points
+            w *= 0.25 + torch.clamp(torch.linalg.vector_norm(c["image"] - prev_image, dim=0), 0.0, 1.0)
+        return w
 
-            if point_data is not None:
-                old_points, old_xyz, old_depths, old_color, old_times = point_data
-                new_points = torch.cat([new_points, old_points], dim=0)
-                new_xyz = torch.cat([new_xyz, old_xyz], dim=0)
-                new_depths = torch.cat([new_depths, old_depths], dim=0)
-                new_colors = torch.cat([new_colors, old_color], dim=0)
-                new_times = torch.cat([new_times, old_times], dim=0)
-            live_points[cam.colmap_id] = (
-                new_points,
-                new_xyz,
-                new_depths,
-                new_colors,
-                new_times,
-            )
-
-    last_time = timestamps[-1] + timestamps[1]-timestamps[0]
-
-    for cam_id, point_data in live_points.items():
-        if point_data is not None:
-            old_points, old_xyz, old_depths, old_color, old_times = point_data
-            add_finished_points(old_points,old_xyz, old_depths, old_color, old_times, last_time,cam_id)
-
-    print("Total points made:", all_points_index, "out of", num_points_total)
-
-    # now iterate backwards through frames (and though all_points which is sorted in order of end time), and for any points that
-    # finish on the current frame plus 1, extend their duration to the current frame if the color is similar enough (as per calculation above)
-    last_timestamp = None
-    last_frames = {}  # image, cam, depth, t
-
-    live_points = torch.zeros((all_points_index), dtype=torch.bool)
-    batches = [ dataset.get_indices_for_timestamp(t) for t in reversed(timestamps)]
-    sampler = dataset.get_index_batch_list_sampler(batches,readahead=5,output_device="cuda")
-
-    for t,batch in zip(reversed(timestamps),sampler):
-        progress.update(1)
-        for idx in batch:
-            (
-                image,
-                cam,
-                depth,
-            ) = dataset[idx]
-            last_frame_data = last_frames.get(cam.colmap_id, None)
-            if last_frame_data is not None:
-                last_image, last_cam, last_depth, last_time = last_frame_data
-                # check all points which end on the next frame (the last one in loop because we are going backwards)
-                possible_points_to_extend = torch.logical_and(all_times[:,0] == last_time,all_src_cams[:, 0] == cam.colmap_id).nonzero()
-                possible_points_to_extend = possible_points_to_extend.squeeze()
-
-                diff_image = last_image - image
-                diff_image_norm = torch.linalg.vector_norm(diff_image, dim=0)
-
-
-
-
-                sample_points = all_points[possible_points_to_extend]
-                #print(diff_image_norm.shape,diff_image_norm.dtype,possible_points_to_extend.shape,all_points.shape,sample_points.shape)
-                
-
-                diff_image_samples = diff_image_norm[
-                    sample_points[:,0], sample_points[:,1] 
-                ]
-
-                possible_points_to_extend = possible_points_to_extend[diff_image_samples< 0.1]
-
-
-                all_times[possible_points_to_extend] = t
-                all_durations[possible_points_to_extend] += last_time - t
-                # print(
-                #     "Extended points:",
-                #     possible_points_to_extend.numel(),
-                #     "at time:",
-                #     t,
-                # )
-            last_frames[cam.colmap_id] = (image, cam, depth, t)
-
-    all_rotations = torch.zeros((all_points_index,4), device=TENSOR_DEVICE)
-    all_scales = torch.zeros((all_points_index,3), device=TENSOR_DEVICE)
-
-
-    first_frame_cams = dataset.get_indices_for_timestamp(timestamps[0])
-    #print(len(first_frame_cams), "cameras in first frame:")
-
-    for idx in first_frame_cams:
-        (
-            image,
-            cam,
-            depth,
-        ) = dataset[idx]
-
-        rays_o, rays_d = cam.cuda().get_rays()
-
-        # get scale multiplier for 1 pixel move at distance 1
-        ray_scale_multiplier = torch.linalg.vector_norm(
-            rays_d[rays_d.shape[0] // 2, rays_d.shape[1] // 2, :] - rays_d[1+(rays_d.shape[0] // 2), rays_d.shape[1] // 2, :])
-        this_cam_indices = cam.colmap_id == all_src_cams[:, 0]
-
-        this_cam_points = all_points[this_cam_indices]
-        this_cam_depths = all_depths[this_cam_indices]
-        this_cam_times = all_times[this_cam_indices]
-        this_cam_durations = all_durations[this_cam_indices]
-        this_cam_end_times = this_cam_times + this_cam_durations
-        this_cam_centre_times = this_cam_times+ (this_cam_durations *0.5)
-        this_cam_scales = torch.zeros((this_cam_points.shape[0],3), device=TENSOR_DEVICE)
-        cam_rotation = rotation_matrix_to_quaternion(torch.transpose(torch.tensor(cam.R,device=TENSOR_DEVICE,dtype=torch.float32),0,1))
-        this_cam_rotations = torch.ones((this_cam_points.shape[0],4) , device=TENSOR_DEVICE)* cam_rotation.unsqueeze(0)
-        last_timestamp = timestamps[0] - (timestamps[1]-timestamps[0])
-        for timestamp in timestamps:            
-            live_indices = torch.logical_and(this_cam_times[:,0] <= timestamp, this_cam_end_times[:,0] > timestamp)
-            centre_indices = torch.logical_and(this_cam_centre_times[:,0] < timestamp, this_cam_centre_times[:,0] >= last_timestamp)
-            last_timestamp = timestamp
-            if live_indices.count_nonzero() == 0 or centre_indices.count_nonzero() == 0:
+    def sample_new_points(frame, weights):
+        totals = torch.stack([w.sum() for w in weights])
+        if totals.sum() <= 0:
+            return None
+        cam_counts = torch.bincount(
+            torch.multinomial(totals, points_per_frame, replacement=True), minlength=len(frame)
+        )
+        src_cam, src_y, src_x = [], [], []
+        for ci, (c, w) in enumerate(zip(frame, weights)):
+            k = min(int(cam_counts[ci]), int((w > 0).sum()))
+            if k == 0:
                 continue
+            idx = torch.multinomial(w.flatten(), k, replacement=False)
+            src_cam.append(torch.full((k,), ci, device=TENSOR_DEVICE))
+            src_y.append(idx // c["width"])
+            src_x.append(idx % c["width"])
+        if not src_cam:
+            return None
+        src_cam, src_y, src_x = torch.cat(src_cam), torch.cat(src_y), torch.cat(src_x)
+        n = src_cam.shape[0]
 
-            live_points = this_cam_points[live_indices]
-            centre_points = this_cam_points[centre_indices]
-            centre_depths = this_cam_depths[centre_indices][:,0]
+        own_xyz = torch.zeros((n, 3), device=TENSOR_DEVICE)
+        own_col = torch.zeros((n, 3), device=TENSOR_DEVICE)
+        own_depth = torch.zeros(n, device=TENSOR_DEVICE)
+        own_pix = torch.zeros(n, dtype=torch.long, device=TENSOR_DEVICE)
+        for ci, c in enumerate(frame):
+            m = src_cam == ci
+            own_xyz[m] = c["pos"][src_y[m], src_x[m]]
+            own_col[m] = c["image"][:, src_y[m], src_x[m]].T
+            own_depth[m] = c["depth"][src_y[m], src_x[m]]
+            own_pix[m] = src_y[m] * c["width"] + src_x[m]
 
+        vis, cols, poss, pix = observe(frame, own_xyz)
+        sample_ids = torch.arange(n, device=TENSOR_DEVICE)
+        keep = torch.ones(n, dtype=torch.bool, device=TENSOR_DEVICE)
+        for ci, c in enumerate(frame):
+            m = src_cam == ci
+            # a sample always sees itself, whatever the rounding says
+            vis[ci, m] = True
+            cols[ci, m] = own_col[m]
+            poss[ci, m] = own_xyz[m]
+            pix[ci] = torch.where(m, own_pix, pix[ci])
+            # drop samples that land on the pixel of an earlier sample: same point seen again
+            claim = torch.full((c["width"] * c["height"],), n, dtype=torch.long, device=TENSOR_DEVICE)
+            claim.scatter_reduce_(0, pix[ci][vis[ci]], sample_ids[vis[ci]], reduce="amin")
+            keep[m] &= claim[own_pix[m]] == sample_ids[m]
 
-            from utils.pointdistance4d import find2d_nearest_points
-            point_indices, centre_scales_2d = find2d_nearest_points(live_points,centre_points)
-            # now project the 2d scales into 3d using the camera info
-            #centre_scales_2d = torch.tensor(10.0, device=TENSOR_DEVICE).repeat(centre_points.shape[0])
-#            print(centre_depths.shape,centre_scales_2d.shape,ray_scale_multiplier.shape)
-            centre_scales_3d = (centre_scales_2d * ray_scale_multiplier) * centre_depths 
-            # make the output be flattish in z
-            centre_scales_3d = torch.stack([centre_scales_3d*3.0, centre_scales_3d*3.0, centre_scales_3d*0.5],dim=1)
-#            print(centre_scales_3d.shape)
-            this_cam_scales[centre_indices] = centre_scales_3d
-        all_rotations[this_cam_indices] = this_cam_rotations
-        all_scales[this_cam_indices] = this_cam_scales
-        print("Finished calculating scales for camera:", cam.colmap_id, "with", this_cam_scales.shape[0], "points", (all_scales<=0).sum().item(), "scales <= 0")
+        v = vis.float().unsqueeze(-1)
+        count = v.sum(0).clamp(min=1)
+        xyz = ((poss * v).sum(0) / count)[keep]
+        col = ((cols * v).sum(0) / count)[keep]
+        src_ids = torch.tensor([c["id"] for c in frame], device=TENSOR_DEVICE)[src_cam][keep]
+        src_pixel = torch.stack([src_y, src_x], dim=-1)[keep]
+        return xyz, col, src_ids, src_pixel, own_depth[keep]
 
-    print("Scale distribution:",all_scales[this_cam_indices].min().item(),all_scales[this_cam_indices].max().item(),all_scales[this_cam_indices].mean().item())
-    print(all_scales)
+    def empty_points():
+        return dict(
+            xyz=torch.zeros((0, 3), device=TENSOR_DEVICE),
+            col=torch.zeros((0, 3), device=TENSOR_DEVICE),
+            start=torch.zeros(0, dtype=torch.long, device=TENSOR_DEVICE),
+            src_cam=torch.zeros(0, dtype=torch.long, device=TENSOR_DEVICE),
+            src_pix=torch.zeros((0, 2), dtype=torch.long, device=TENSOR_DEVICE),
+            depth=torch.zeros(0, device=TENSOR_DEVICE),
+        )
 
-    print("Found all scales",(all_scales==0).sum().item(), "out of", all_scales.shape[0], "points")
+    live = empty_points()
+    finished = []  # (points dict, end frame index)
 
-    # test code to only use camera 2
-    # only_cam_2 = all_src_cams[:,0] == 2
-    # all_xyz = all_xyz[only_cam_2]
-    # all_colors = all_colors[only_cam_2]
-    # all_normals = all_normals[only_cam_2]
-    # all_times = all_times[only_cam_2]
-    # all_durations = all_durations[only_cam_2]
-    # all_scales = all_scales[only_cam_2]
-    # all_rotations = all_rotations[only_cam_2]
-    # # now we have calculated the points then calculate the scales
-    # # by going through points, keeping a track of live points
-    # # and doing KNN on only live points
-    # # n.b. we need to scale points somehow based on duration also
-    # from utils.pointdistance4d import pointDistance4D
-    # all_scales = pointDistance4D(
-    #      all_xyz,all_times,all_durations,timestamps)
-    # print("Found scales!",scales.shape)
-    
+    def finish(mask, end_idx):
+        if mask.any():
+            finished.append(({k: v[mask] for k, v in live.items()}, end_idx))
+
+    # forward pass
+    batches = [dataset.get_indices_for_timestamp(t) for t in timestamps]
+    sampler = dataset.get_index_batch_list_sampler(batches, readahead=5, output_device="cuda")
+    progress = tqdm(total=num_frames * 2, desc="Making point cloud from images")
+    prev_images = {}
+    for f, batch in enumerate(sampler):
+        progress.update(1)
+        frame = load_frame(batch)
+        weights = [sample_weights(c, prev_images.get(c["id"])) for c in frame]
+
+        if live["xyz"].shape[0] > 0:
+            vis, cols, _, pix = observe(frame, live["xyz"])
+            alive = still_alive(vis, cols, live["col"])
+            # don't resample pixels that already belong to a live point
+            for ci in range(len(frame)):
+                weights[ci].view(-1)[pix[ci][vis[ci] & alive]] = 0.0
+            finish(~alive, f)
+            live = {k: v[alive] for k, v in live.items()}
+
+        new = sample_new_points(frame, weights)
+        if new is not None:
+            xyz, col, src_ids, src_pixel, depth = new
+            live = {
+                k: torch.cat([live[k], v])
+                for k, v in zip(
+                    ["xyz", "col", "start", "src_cam", "src_pix", "depth"],
+                    [xyz, col, torch.full((xyz.shape[0],), f, dtype=torch.long, device=TENSOR_DEVICE), src_ids, src_pixel, depth],
+                )
+            }
+        for c in frame:
+            prev_images[c["id"]] = c["image"]
+
+    finish(torch.ones(live["xyz"].shape[0], dtype=torch.bool, device=TENSOR_DEVICE), num_frames)
+    pts = {k: torch.cat([p[k] for p, _ in finished]) for k in finished[0][0]}
+    end = torch.cat([torch.full((p["xyz"].shape[0],), e, device=TENSOR_DEVICE) for p, e in finished]).long()
+    print("Total points made:", pts["xyz"].shape[0])
+
+    # backward pass: points starting at frame k+1 are extended to frame k if they still look the same there
+    batches = [dataset.get_indices_for_timestamp(t) for t in reversed(timestamps)]
+    sampler = dataset.get_index_batch_list_sampler(batches, readahead=5, output_device="cuda")
+    for k, batch in zip(reversed(range(num_frames)), sampler):
+        progress.update(1)
+        candidates = (pts["start"] == k + 1).nonzero().squeeze(1)
+        if candidates.numel() == 0:
+            continue
+        vis, cols, _, _ = observe(load_frame(batch), pts["xyz"][candidates])
+        extend = still_alive(vis, cols, pts["col"][candidates])
+        pts["start"][candidates[extend]] = k
+    progress.close()
+
+    all_xyz = pts["xyz"]
+    all_colors = pts["col"]
+    all_times = time_values[pts["start"]].unsqueeze(-1)
+    all_durations = (time_values[end] - time_values[pts["start"]]).unsqueeze(-1)
+    all_src_cams = pts["src_cam"]
+    all_points = pts["src_pix"]
+    all_depths = pts["depth"].unsqueeze(-1)
+    all_rotations = torch.zeros((all_xyz.shape[0], 4), device=TENSOR_DEVICE)
+    all_scales = torch.zeros((all_xyz.shape[0], 3), device=TENSOR_DEVICE)
+
+    # scales come from the 2d spacing of points in their source camera
+    from utils.pointdistance4d import find2d_nearest_points
+
+    for idx in dataset.get_indices_for_timestamp(timestamps[0]):
+        _, cam, _ = dataset[idx]
+        _, rays_d = cam.get_rays()
+        # scale multiplier for a 1 pixel move at distance 1
+        ray_scale_multiplier = torch.linalg.vector_norm(
+            rays_d[rays_d.shape[0] // 2, rays_d.shape[1] // 2, :]
+            - rays_d[1 + (rays_d.shape[0] // 2), rays_d.shape[1] // 2, :]
+        )
+        this_cam = all_src_cams == cam.colmap_id
+        if not this_cam.any():
+            continue
+        cam_points = all_points[this_cam]
+        cam_depths = all_depths[this_cam]
+        cam_times = all_times[this_cam]
+        cam_end_times = cam_times + all_durations[this_cam]
+        cam_centre_times = cam_times + all_durations[this_cam] * 0.5
+        cam_scales = torch.zeros((cam_points.shape[0], 3), device=TENSOR_DEVICE)
+        cam_rotation = rotation_matrix_to_quaternion(
+            torch.tensor(cam.R, device=TENSOR_DEVICE, dtype=torch.float32).T
+        )
+        all_rotations[this_cam] = cam_rotation.unsqueeze(0)
+        last_timestamp = timestamps[0] - frame_delta
+        for timestamp in timestamps:
+            live_idx = (cam_times[:, 0] <= timestamp) & (cam_end_times[:, 0] > timestamp)
+            centre_idx = (cam_centre_times[:, 0] < timestamp) & (cam_centre_times[:, 0] >= last_timestamp)
+            last_timestamp = timestamp
+            if live_idx.sum() == 0 or centre_idx.sum() == 0:
+                continue
+            _, centre_scales_2d = find2d_nearest_points(cam_points[live_idx], cam_points[centre_idx])
+            scale_3d = centre_scales_2d * ray_scale_multiplier * cam_depths[centre_idx][:, 0]
+            # make the output flattish in z
+            cam_scales[centre_idx] = torch.stack([scale_3d * 3.0, scale_3d * 3.0, scale_3d * 0.5], dim=1)
+        all_scales[this_cam] = cam_scales
+
+    all_scales=all_scales.clamp(min=1e-6,max=0.05)
+    print("Found all scales", (all_scales == 0).sum().item(), "zero out of", all_scales.numel())
 
     return BasicPointCloud(
         points=all_xyz.cpu().numpy(),
         colors=all_colors.cpu().numpy(),
-        normals=all_normals,
+        normals=np.zeros(all_xyz.shape, dtype=np.float32),
         times=all_times.cpu().numpy(),
         durations=all_durations.cpu().numpy(),
-        scales = all_scales.cpu().numpy(),
-        rotations = all_rotations.cpu().numpy()
+        scales=all_scales.cpu().numpy(),
+        rotations=all_rotations.cpu().numpy(),
     )
 
 
