@@ -19,15 +19,25 @@ class PlainDensifier(DensifierBase):
             if gaussians.gaussian_dim == 4:
                 self.t_gradient_accum = torch.zeros((gaussians.get_xyz.shape[0], 1), device="cuda")
 
-    def add_densification_stats_grad(self, gaussians, iteration, viewspace_point_grad, update_filter, radii, avg_t_gradient):
-        self.max_radii2D[update_filter] = torch.max(
-            self.max_radii2D[update_filter],
+    def add_densification_stats_grad(self, gaussians, iteration, viewspace_point_grad, update_filter, radii, avg_t_gradient,filter_mask):
+        target_indices = update_filter
+        if filter_mask is not None:
+            # filter_mask is a mask indicating points in full array
+            # update_filter is a mask indicating points in the filtered array
+            # combine them to get the indices of points in the full array that are being updated
+            target_indices = torch.zeros_like(filter_mask, dtype=torch.bool)
+            target_indices[filter_mask] = update_filter
+            print("Update filter shape:", update_filter.shape, filter_mask.shape, target_indices.shape)
+
+
+        self.max_radii2D[target_indices] = torch.max(
+            self.max_radii2D[target_indices],
             radii[update_filter],
         )
-        self.xyz_gradient_accum[update_filter] += viewspace_point_grad[update_filter]
-        self.denom[update_filter] += 1
+        self.xyz_gradient_accum[target_indices] += viewspace_point_grad[update_filter]
+        self.denom[target_indices] += 1
         if gaussians.gaussian_dim == 4:
-            self.t_gradient_accum[update_filter] += avg_t_gradient[update_filter]
+            self.t_gradient_accum[target_indices] += avg_t_gradient[update_filter]
 
 
     def densify_and_prune(self, iteration, scene, gaussians, radii, pipe, bg, *, options):

@@ -9,7 +9,7 @@ class OpacityReset(DensifierBase):
     def densify_and_prune(self, iteration, scene, gaussians, radii,pipe, bg, *, options):
         gaussians.reset_opacity()
 
-    def add_densification_stats_grad(self,*,gaussians,iteration,viewspace_point_grad,update_filter, radii,avg_t_gradient):
+    def add_densification_stats_grad(self,*,gaussians,iteration,viewspace_point_grad,update_filter, radii,avg_t_gradient,filter_mask):
         pass
 
     def get_save_vars(self,gaussians):

@@ -207,7 +207,7 @@ class FastGSDensifier(DensifierBase):
         torch.cuda.empty_cache()
 
 
-    def add_densification_stats_grad(self, *,gaussians, iteration, viewspace_point_grad, update_filter, radii,avg_t_gradient):
+    def add_densification_stats_grad(self, *,gaussians, iteration, viewspace_point_grad, update_filter, radii,avg_t_gradient,filter_mask):
         """FastGS uses xyz_gradient and norm xyz_gradient as stats, + t gradient in 4d """
         self.xyz_gradient_accum[update_filter] += viewspace_point_grad[update_filter]
         self.xyz_gradient_accum_abs[update_filter] += torch.norm(

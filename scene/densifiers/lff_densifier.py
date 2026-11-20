@@ -47,6 +47,7 @@ class LFFDensifier(DensifierBase):
         update_filter,
         radii,
         avg_t_gradient,
+        filter_mask,
     ):
         grad_norm = torch.norm(viewspace_point_grad[update_filter], dim=-1, keepdim=True)
         self.lff_xyz_grad_accum[update_filter] += grad_norm

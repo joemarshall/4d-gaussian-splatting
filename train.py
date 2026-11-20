@@ -88,7 +88,7 @@ if __name__ == "__main__":
     TRACK_MEMORY = False
     CLEAR_CACHE = False
 
-    SHOW_TIMINGS = False
+    SHOW_TIMINGS = True
     CUDA_EVENTS = False
 
     RUN_PROFILER = False
@@ -224,8 +224,9 @@ if __name__ == "__main__":
                 render_pkg["viewspace_points"],
                 render_pkg["visibility_filter"],
                 render_pkg["radii"],
-                render_pkg["depth"],
+                render_pkg["depth"]
             )
+
 
             losses = [
                 ("L1", 1.0, loss_l1),
@@ -292,11 +293,11 @@ if __name__ == "__main__":
                 times.append(("losses", time.monotonic()))
 
             # with record_function("PROFILE_bwd"):
-            loss_dict["loss"].backward()
+            loss_dict["loss"].backward(retain_graph=True)
             if SHOW_TIMINGS:
                 times.append(("backward", time.monotonic()))
             batch_point_grad.append(
-                torch.norm(viewspace_point_tensor.grad[:, :2].detach(), dim=-1)
+                torch.norm(viewspace_point_tensor.grad[0:visibility_filter.shape[0], :2].detach(), dim=-1)
             )
             batch_radii.append(radii.detach())
             batch_visibility_filter.append(visibility_filter.detach())
@@ -306,14 +307,12 @@ if __name__ == "__main__":
                     loss_items[k] = v.detach()
                 else:
                     loss_items[k] += v.detach()
-            #del gt_image
-            #del loss_dict
             if SHOW_TIMINGS:
                 times.append(("done render", time.monotonic()))
 
 
         batch_viewspace_point_grad = None
-        if batch_size > 1:
+        if batch_size > 1:            
             visibility_count = torch.stack(batch_visibility_filter, 1).sum(1)
             visibility_filter = visibility_count > 0
             radii = torch.stack(batch_radii, 1).max(1)[0]
@@ -324,10 +323,13 @@ if __name__ == "__main__":
                 * batch_size
                 / visibility_count[visibility_filter]
             )
+
+
+            
             batch_viewspace_point_grad = batch_viewspace_point_grad.unsqueeze(1)
 
-            if gaussians.gaussian_dim == 4:
-                batch_t_grad = gaussians._t.grad.clone()[:, 0].detach()
+            if gaussians.gaussian_dim == 4:                
+                batch_t_grad = gaussians.get_t.grad.clone()[:, 0].detach()
                 batch_t_grad[visibility_filter] = (
                     batch_t_grad[visibility_filter]
                     * batch_size
@@ -346,7 +348,7 @@ if __name__ == "__main__":
             )
         else:
             if gaussians.gaussian_dim == 4:
-                batch_t_grad = gaussians._t.grad.clone().detach()
+                batch_t_grad = gaussians.get_t.grad.clone().detach()
             return (
                 loss_items,
                 image.detach(),
@@ -573,6 +575,8 @@ if __name__ == "__main__":
         stop_iteration = False
 
         def stop_handler(signum, frame):
+            import sys
+            sys.exit(0)
             nonlocal stop_iteration
             print("CTRL+C received, saving checkpoint and exiting")
             stop_iteration = True
@@ -595,9 +599,6 @@ if __name__ == "__main__":
         iteration = first_iter
         # stop_iteration= True
 
-        # print(build_rotation_4d(gaussians._rotation, gaussians._rotation_r))
-        # print(gaussians._rotation)
-        # print(gaussians._rotation_r)
         while not stop_iteration and iteration < opt.iterations + 1:
 
             for batch_data in training_dataloader:
@@ -619,7 +620,7 @@ if __name__ == "__main__":
                             )
                         )
                         for i, (title, t) in enumerate(times):
-                            print(f"  {i}({title}):{t:.5f}")
+                            print(f"  {i}({title}):{t:.5f}:")
 
                     times = []
                     times.append(("start", time.monotonic()))
@@ -657,7 +658,10 @@ if __name__ == "__main__":
                 ]
 
                 if SHOW_TIMINGS:
-                    times.append(("batch:", time.monotonic()))
+                    times.append(("batch", time.monotonic()))
+
+                # set gaussians to only update the visible timestamps for this batch
+                gaussians.filter_visible_timestamps([b[1].timestamp for b in batch_data])
 
                 if tensor_gradient_2d_buffer.shape[0] != gaussians.get_xyz.shape[0]:
                     tensor_gradient_2d_buffer = (
@@ -794,17 +798,13 @@ if __name__ == "__main__":
                     #     else:
                     #         try_save(gaussians, iteration, total_training_points, scene,"not-best")
 
-                    # Optimizer step - n.b. densifier calls may reset gradients so do this first
-                    if iteration < opt.iterations:
-                        gaussians.optimizer_step(iteration, radii=radii)
-                        if pipe.env_map_res and iteration < pipe.env_optimize_until:
-                            env_map_optimizer.step()
-                            env_map_optimizer.zero_grad(set_to_none=True)
+
+                    gaussians.update_t_visible_range(mask=visibility_filter)
+
 
                     # # update visibility filter based on T
                     # if SHOW_TIMINGS:
                     #     times.append(("optimizer step", time.monotonic()))
-                    # #gaussians.update_t_visible_range(mask=visibility_filter)
                     # if SHOW_TIMINGS:
                     #     times.append(("update_t_visible_range", time.monotonic()))
 
@@ -838,6 +838,9 @@ if __name__ == "__main__":
                     if SHOW_TIMINGS:
                         times.append(("densification stats", time.monotonic()))
 
+
+
+
                     # run any densifiers configured for this step
                     gaussians.run_densifiers(iteration, scene, radii, pipe, background)
                     if SHOW_TIMINGS:
@@ -850,6 +853,15 @@ if __name__ == "__main__":
                     )
                     if SHOW_TIMINGS:
                         times.append(("call_densifier_per_iteration", time.monotonic()))
+
+                    # Optimizer step - n.b. densifier calls may reset gradients so do this first
+                    if iteration < opt.iterations:
+                        gaussians.clear_filter()
+                        gaussians.optimizer_step(iteration, radii=radii)
+                        if pipe.env_map_res and iteration < pipe.env_optimize_until:
+                            env_map_optimizer.step()
+                            env_map_optimizer.zero_grad(set_to_none=True)
+
 
 
         # Generate prefilter masks at end of training (including early stop via Ctrl+C)

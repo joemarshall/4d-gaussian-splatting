@@ -15,84 +15,38 @@ import math
 from scene.gaussian_model import GaussianModel
 from utils.sh_utils import eval_sh, eval_shfs_4d
 
-USE_FASTGS = False
-
-
-if USE_FASTGS:
-    from .diff_gaussian_rasterization_fastgs import GaussianRasterizationSettings as GaussianRasterizationSettingsFastGS
-    from .diff_gaussian_rasterization_fastgs import GaussianRasterizer as GaussianRasterizerFastGS
-else:
-    from .diff_gaussian_rasterization import GaussianRasterizationSettings, GaussianRasterizer
+from .diff_gaussian_rasterization import GaussianRasterizationSettings, GaussianRasterizer
 
 def _make_rasterizer(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, scaling_modifier = 1.0, override_color = None, metric_map = None):
     tanfovx = math.tan(viewpoint_camera.FoVx * 0.5)
     tanfovy = math.tan(viewpoint_camera.FoVy * 0.5)
 
-    if USE_FASTGS:
-        if metric_map is None:
-            metric_map = torch.zeros(
-                int(viewpoint_camera.image_height) * int(viewpoint_camera.image_width),
-                dtype=torch.int32,
-                device=means3d.device,
-            )
+    if metric_map is None:
+        metric_map = torch.empty([], device="cuda")
 
+    raster_settings = GaussianRasterizationSettings(
+        image_height=int(viewpoint_camera.image_height),
+        image_width=int(viewpoint_camera.image_width),
+        tanfovx=tanfovx,
+        tanfovy=tanfovy,
+        bg=bg_color if not pipe.env_map_res else torch.zeros(3, device="cuda"),
+        scale_modifier=scaling_modifier,
+        viewmatrix=viewpoint_camera.world_view_transform,
+        projmatrix=viewpoint_camera.full_proj_transform,
+        sh_degree=pc.active_sh_degree,
+        sh_degree_t=pc.active_sh_degree_t,
+        campos=viewpoint_camera.camera_center,
+        timestamp=viewpoint_camera.timestamp_tensor,
+        time_duration=pc.time_duration[1]-pc.time_duration[0],
+        rot_4d=pc.rot_4d,
+        gaussian_dim=pc.gaussian_dim,
+        force_sh_3d=pc.force_sh_3d,
+        prefiltered=False,
+        debug=pipe.debug,
+        metric_map = metric_map,
 
-        raster_settings = GaussianRasterizationSettingsFastGS(
-            image_height=int(viewpoint_camera.image_height),
-            image_width=int(viewpoint_camera.image_width),
-            tanfovx=tanfovx,
-            tanfovy=tanfovy,
-            bg=bg_color if not pipe.env_map_res else torch.zeros(3, device="cuda"),
-            scale_modifier=scaling_modifier,
-            viewmatrix=viewpoint_camera.world_view_transform,
-            projmatrix=viewpoint_camera.full_proj_transform,
-            sh_degree=pc.active_sh_degree,
-            sh_degree_t=pc.active_sh_degree_t,
-            campos=viewpoint_camera.camera_center,
-            timestamp=viewpoint_camera.timestamp_tensor,
-            time_duration=pc.time_duration[1]-pc.time_duration[0],
-            rot_4d=pc.rot_4d,
-            gaussian_dim=pc.gaussian_dim,
-            force_sh_3d=pc.force_sh_3d,
-            prefiltered=False,
-            debug=pipe.debug,
-            metric_map = metric_map,
-            mult = 0.5,
-            get_flag = False,
-            prefilter_var = -1.0
-
-
-        )
-        rasterizer = GaussianRasterizerFastGS(raster_settings=raster_settings)
-
-
-    else:
-        if metric_map is None:
-            metric_map = torch.empty([], device="cuda")
-
-        raster_settings = GaussianRasterizationSettings(
-            image_height=int(viewpoint_camera.image_height),
-            image_width=int(viewpoint_camera.image_width),
-            tanfovx=tanfovx,
-            tanfovy=tanfovy,
-            bg=bg_color if not pipe.env_map_res else torch.zeros(3, device="cuda"),
-            scale_modifier=scaling_modifier,
-            viewmatrix=viewpoint_camera.world_view_transform,
-            projmatrix=viewpoint_camera.full_proj_transform,
-            sh_degree=pc.active_sh_degree,
-            sh_degree_t=pc.active_sh_degree_t,
-            campos=viewpoint_camera.camera_center,
-            timestamp=viewpoint_camera.timestamp_tensor,
-            time_duration=pc.time_duration[1]-pc.time_duration[0],
-            rot_4d=pc.rot_4d,
-            gaussian_dim=pc.gaussian_dim,
-            force_sh_3d=pc.force_sh_3d,
-            prefiltered=False,
-            debug=pipe.debug,
-            metric_map = metric_map,
-
-        )
-        rasterizer = GaussianRasterizer(raster_settings=raster_settings)
+    )
+    rasterizer = GaussianRasterizer(raster_settings=raster_settings)
     return rasterizer
 
 def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, tensor_gradient_2d_buffer: torch.Tensor,scaling_modifier = 1.0, override_color = None, metric_map = None,):
@@ -101,14 +55,17 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
     
     Background tensor (bg_color) must be on GPU!
     """
+    # reset gradient for 2d points buffer, only used between fwd and bwd passes
     tensor_gradient_2d_buffer.grad=None
     screenspace_points = tensor_gradient_2d_buffer
 
 
     # Set up rasterization configuration
     rasterizer = _make_rasterizer(viewpoint_camera, pc, pipe, bg_color, scaling_modifier, override_color, metric_map)
+    # Render the scene
 
     means3D = pc.get_xyz
+    # make sure this is the same size as input
     means2D = screenspace_points
     opacity = pc.get_opacity
 
@@ -119,6 +76,7 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
     rotations = None
     rotations_r = None
     ts = None
+
     cov3D_precomp = None
     prefilter_var = -1.0
     marginal_t = None
@@ -168,11 +126,10 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
             # reduce precision to see if storage precision matters
             #sh_ac = sh_ac.to(dtype=torch.float16)
             #sh_ac = sh_ac.to(dtype=torch.float32)
-            if pc.gaussian_dim == 4 and ts is None:
-                ts = pc.get_t
     else:
         colors_precomp = override_color
     
+    # Get the 2D flow
     flow_2d = torch.zeros_like(pc.get_xyz[:,:2])
     
     # Prefilter
@@ -206,48 +163,24 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
         if flow_2d is not None:
             flow_2d = flow_2d[mask]
     # Rasterize visible Gaussians to image, obtain their radii (on screen). 
-    if USE_FASTGS:
-        dc = sh_dc
-        sh = sh_ac
-        print("Rasterizing with FastGS!")
-        print("DC",sh_dc.shape)
-        print("SH",sh_ac.shape)
-        rendered_image, depth, radii, metric_count, out_means3D = rasterizer(
-            means3D = means3D,
-            means2D = means2D,
-            dc = dc,
-            sh_dc = sh_dc,
-            sh_ac = sh_ac,
-            colors_precomp = colors_precomp,
-#            flow_2d = flow_2d,
-            opacities = opacity,
-            ts = ts,
-            scales = scales,
-            scales_t = scales_t,
-            rotations = rotations,
-            rotations_r = rotations_r,
-            cov3D_precomp = cov3D_precomp,
-            )
-
-    else:
-    
 
 
-        rendered_image, radii, depth, alpha, flow, covs_com,metric_count = rasterizer(
-            means3D = means3D,
-            means2D = means2D,
-            shs_dc = sh_dc,
-            shs_ac = sh_ac,
-            colors_precomp = colors_precomp,
-            flow_2d = flow_2d,
-            opacities = opacity,
-            ts = ts,
-            scales = scales,
-            scales_t = scales_t,
-            rotations = rotations,
-            rotations_r = rotations_r,
-            cov3D_precomp = cov3D_precomp,
-            prefilter_var = prefilter_var)
+
+    rendered_image, radii, depth, alpha, flow, covs_com,metric_count = rasterizer(
+        means3D = means3D,
+        means2D = means2D,
+        shs_dc = sh_dc,
+        shs_ac = sh_ac,
+        colors_precomp = colors_precomp,
+        flow_2d = flow_2d,
+        opacities = opacity,
+        ts = ts,
+        scales = scales,
+        scales_t = scales_t,
+        rotations = rotations,
+        rotations_r = rotations_r,
+        cov3D_precomp = cov3D_precomp,
+        prefilter_var = prefilter_var)
 
 
 
@@ -271,41 +204,18 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
         radii_all[mask] = radii
     else:
         radii_all = radii
-    # with torch.no_grad():
-    #     vis_range = pc._visible_range
-    #     if vis_range is not None and vis_range.shape[0] == means3D.shape[0]:
-    #         time_offset = torch.abs(ts.squeeze() - viewpoint_camera.timestamp)
-    #         visibles_time =  time_offset < vis_range
-#            print(torch.sum(visibles_time), "visible gaussians out of", radii_all.shape[0])
-    if USE_FASTGS:
-        return {"render": rendered_image,
-                "viewspace_points": screenspace_points,
-                "visibility_filter" : radii_all > 0,
-                "radii": radii_all,
-                "depth": depth
-                }
-    else:
-
-        # return {"render": torch.zeros((3,viewpoint_camera.image_height, viewpoint_camera.image_width),dtype=torch.float32, device="cuda"),
-        #         "viewspace_points": screenspace_points,
-        #         "visibility_filter" : torch.zeros(pc.get_xyz.shape[0], device="cuda") > 0,
-        #         "radii": torch.ones(pc.get_xyz.shape[0], device="cuda"),
-        #         "depth": torch.zeros((viewpoint_camera.image_height, viewpoint_camera.image_width),dtype=torch.float32, device="cuda"),
-        #         "alpha": torch.zeros((viewpoint_camera.image_height, viewpoint_camera.image_width),dtype=torch.float32, device="cuda"),
-        #         "flow": None,
-        #         "metric_counts": metric_count}
-
-        
-        # Those Gaussians that were frustum culled or had a radius of 0 were not visible.
-        #They will be excluded from value updates used in the splitting criteria.
-        return {"render": rendered_image,
-                "viewspace_points": screenspace_points,
-                "visibility_filter" : radii_all > 0,
-                "radii": radii_all,
-                "depth": depth,
-                "alpha": alpha,
-                "flow": flow,
-                "metric_counts": metric_count}
+    
+    # Those Gaussians that were frustum culled or had a radius of 0 were not visible.
+    #They will be excluded from value updates used in the splitting criteria.
+    return {"render": rendered_image,
+            "viewspace_points": screenspace_points,
+            "visibility_filter" : radii_all > 0,
+            "radii": radii_all,
+            "depth": depth,
+            "alpha": alpha,
+            "flow": flow,
+            "metric_counts": metric_count,
+            }
 
 def calculate_gaussian_contribution(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, error_map: torch.Tensor = None):
     """
@@ -376,21 +286,17 @@ def calculate_gaussian_contribution(viewpoint_camera, pc : GaussianModel, pipe, 
                 prefilter_var = pc.prefilter_var
 
 
-    if USE_FASTGS:
-        print("Gaussian contribution calculation not implemented for FastGS yet.")
-        render_outputs = None
-    else:    
-        num_pts,gaussian_contribution,weighted_contribution = rasterizer.calculate_gaussian_contributions(
-            means3D=pc.get_xyz,
-            ts = ts,
-            scales = scales,
-            scales_t = scales_t,
-            rotations = rotations,
-            rotations_r = rotations_r,
-            cov3D_precomp = cov3D_precomp,
-            opacities = opacity,
-            prefilter_var = prefilter_var,
-        )
+    num_pts,gaussian_contribution,weighted_contribution = rasterizer.calculate_gaussian_contributions(
+        means3D=pc.get_xyz,
+        ts = ts,
+        scales = scales,
+        scales_t = scales_t,
+        rotations = rotations,
+        rotations_r = rotations_r,
+        cov3D_precomp = cov3D_precomp,
+        opacities = opacity,
+        prefilter_var = prefilter_var,
+    )
 
     render_outputs = {"num_pts": num_pts, "visual_contribution": gaussian_contribution, "error_contribution": weighted_contribution}
 

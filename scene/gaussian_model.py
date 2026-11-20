@@ -97,6 +97,7 @@ class GaussianModel:
         self.optimizer_type = optimizer_type
         self.active_sh_degree = 0
         self.max_sh_degree = sh_degree
+        self._filter_timestamps = None
 
         self._xyz = torch.empty(0)
         self._features_dc = torch.empty(0)
@@ -104,7 +105,7 @@ class GaussianModel:
         self._scaling = torch.empty(0)
         self._rotation = torch.empty(0)
         self._opacity = torch.empty(0)
-        self._visible_range = torch.empty(0)
+        self._visible_range = torch.empty(0,device="cuda")
         self.tmp_radii = None
         self.optimizer = None
         self.shoptimizer = None
@@ -292,6 +293,9 @@ class GaussianModel:
         print("Total number of parameters: ", total_params)
 
     def capture(self):
+        # make sure we're not filtering when we save
+        # or else we will lose saved gradients etc.        
+        self.clear_filter()
 
         def save_fn(self, var_name, in_val):
             var = getattr(self, var_name,None)
@@ -304,60 +308,131 @@ class GaussianModel:
                 return var
 
         save_data = self._make_save_or_restore_calls(save_fn, None)
-
         return save_data
+
+    @torch.compile
+    def _get_filtered_tensor(self,name,activation):
+        if self._filter_timestamps is None:
+            return getattr(self, name)
+        
+        if name not in self._filtered_params:
+            src_tensor = getattr(self, name)
+            filtered_tensor = src_tensor.detach()[self._filtered_visibility]
+            if src_tensor.requires_grad:
+                filtered_tensor.requires_grad_(True)
+            self._filtered_leaf_tensors[name] = filtered_tensor
+            if activation is not None:
+                filtered_tensor = activation(filtered_tensor)
+            self._filtered_params[name] = filtered_tensor
+        
+        return self._filtered_params[name]
+
+    @torch.compile
+    def clear_filter(self):
+        if self._filter_timestamps is None:
+            return
+        with torch.no_grad():
+            for k,tensor in self._filtered_leaf_tensors.items():
+                print("Clearing tensor: ",k, tensor.shape)
+                target_tensor = getattr(self,k)
+                target_tensor[self._filtered_visibility] = tensor
+                if target_tensor.requires_grad:
+                    if tensor.grad is None:
+                        target_tensor.grad = None
+                    else:
+                        if target_tensor.grad is None:
+                            target_tensor.grad = torch.zeros(target_tensor.shape, device=target_tensor.device)
+                        target_tensor.grad[self._filtered_visibility] = tensor.grad
+                        tensor.grad = None
+        torch.cuda.empty_cache()
+        self._filter_timestamps = None
+        self._filtered_visibility = None
+        self._filtered_params = {}
+        self._filtered_leaf_tensors = {}
+
+    
+    def filter_visible_timestamps(self, timestamps):
+        # set filtering on - in this mode:
+        # 1) all .get methods return only visible gaussians
+        # 2) Optimizers only optimize visible gaussians
+        # 3) densification stats are only updated for visible gaussians
+        # 4) Changes are passed back to the main gaussian set when clear filter is called
+        #    (which is automatically called on save), or when the filter is changed
+
+        timestamps = set(timestamps)
+        if self._filter_timestamps != timestamps:
+            pass
+            # print("Changing timestamp filter from {} to {}".format(self._filter_timestamps, timestamps))            
+        else:
+            pass
+            #print("Timestamp filter unchanged: {}".format(self._filter_timestamps))
+            return
+        self.clear_filter()
+
+        self._filtered_params = {}
+        self._filtered_leaf_tensors ={} 
+        if self._visible_range is None or self._visible_range.shape[0] != self._xyz.shape[0]:
+            self.update_t_visible_range()
+
+        self._filter_timestamps = timestamps
+        self._filtered_visibility = torch.zeros(self._xyz.shape[0], dtype=torch.bool, device=self._xyz.device)
+        for timestamp in timestamps:
+            self._filtered_visibility = torch.logical_or(self._filtered_visibility, torch.abs(self._t.squeeze(-1) - timestamp) < self._visible_range)
+        #print("Visible points:", self._filtered_visibility.sum(), "out of", self._xyz.shape[0])
+
+
+    @property
+    def get_visible_range(self):
+        return self._get_filtered_tensor("_visible_range",None)
 
     @property
     def get_scaling(self):
-        return self.scaling_activation(self._scaling)
+        return self._get_filtered_tensor( "_scaling",self.scaling_activation)
 
     @property
     def get_scaling_t(self):
-        return self.scaling_activation(self._scaling_t)
+        return self._get_filtered_tensor( "_scaling_t",self.scaling_activation)
+
 
     @property
     def get_scaling_xyzt(self):
-        return self.scaling_activation(
-            torch.cat([self._scaling, self._scaling_t], dim=1)
-        )
+        return torch.cat([self._get_filtered_tensor( "_scaling",self.scaling_activation), self._get_filtered_tensor( "_scaling_t",self.scaling_activation)], dim=1)
 
     @property
     def get_rotation(self):
-        return self.rotation_activation(self._rotation)
+        return self._get_filtered_tensor( "_rotation",self.rotation_activation)
 
     @property
     def get_rotation_r(self):
-        return self.rotation_activation(self._rotation_r)
+        return self._get_filtered_tensor( "_rotation_r",self.rotation_activation)
 
     @property
     def get_xyz(self):
-        return self._xyz
+        return self._get_filtered_tensor( "_xyz",None)
 
     @property
     def get_t(self):
-        return self._t
+        return self._get_filtered_tensor( "_t",None)
 
     @property
     def get_xyzt(self):
-        return torch.cat([self._xyz, self._t], dim=1)
+        return torch.cat(self._get_filtered_tensor( "_xyz",None), self._get_filtered_tensor( "_t",None),dim=1)
 
     @property
     def get_features(self):
-        features_dc = self._features_dc
-        features_rest = self._features_rest
-        return torch.cat((features_dc, features_rest), dim=1)
+        return torch.cat(self.get_sh_features_dc, self.get_sh_features_rest, dim=1)
 
     @property
     def get_sh_features_dc(self):
-        return self._features_dc
+        return self._get_filtered_tensor( "_features_dc",None)
 
     @property
     def get_sh_features_rest(self):
-        return self._features_rest
+        return self._get_filtered_tensor( "_features_rest",None)
 
     @property
     def get_opacity(self):
-        return self.opacity_activation(self._opacity)
+        return self._get_filtered_tensor( "_opacity",self.opacity_activation)
 
     @property
     def get_max_sh_channels(self):
@@ -380,37 +455,52 @@ class GaussianModel:
 
     @torch.no_grad()
     def update_t_visible_range(self, mask=None, scaling_modifier=1):
-        if (
-            self._visible_range is None
-            or self._visible_range.shape[0] != self.get_xyz.shape[0]
-        ):
-            self._visible_range = torch.empty(
-                self.get_xyz.shape[0], device=self.get_xyz.device
+
+        def visible_range_calc(src_array,scale,rotation,rotation_r):
+            L = build_scaling_rotation_4d(
+                scale,
+                rotation,
+                rotation_r,
             )
-            mask = None
-        if mask is not None:
-            mask = mask.squeeze()
-            scale = scaling_modifier * self.get_scaling_xyzt[mask]
-            rotation = self._rotation[mask]
-            rotation_r = self._rotation_r[mask]
+            actual_covariance = L @ L.transpose(1, 2)
+            cov_t = actual_covariance[:, 3, 3]  # .unsqueeze(1)
+            sd_t = torch.sqrt(cov_t)
+            # opacity multiplier is 0.05 at this point (1.96)
+            # visible_range = 1.96 * sd_t
+            # opacity multiplier is 0.01 at this point (2.576 = 99% of contribution)
+            visible_range = 2.576 * sd_t
+            visible_range = visible_range.detach()
+            return visible_range
+
+        if self._visible_range is None or self._visible_range.shape[0] != self._xyz.shape[0]:
+            # need to make a full visible range array from 
+            # the raw unfiltered data
+            # because the master set of gaussians has changed size since last calculation
+            scaling = torch.cat([self.scaling_activation(self._scaling), self.scaling_activation(self._scaling_t)], dim=1)
+            rotation = self.rotation_activation(self._rotation)
+            rotation_r = self.rotation_activation(self._rotation_r)
+            self._visible_range = visible_range_calc(self._xyz,scaling,rotation,rotation_r)
+            if "_visible_range" in self._filtered_params:
+                del self._filtered_params["_visible_range"]
         else:
-            scale = scaling_modifier * self.get_scaling_xyzt
-            rotation = self._rotation
-            rotation_r = self._rotation_r
-        # print("SCALE:",scale,"MASK:",mask,"ROT:",rotation,"ROT_R:",rotation_r)
-        L = build_scaling_rotation_4d(
-            scale,
-            rotation,
-            rotation_r,
-        )
-        actual_covariance = L @ L.transpose(1, 2)
-        cov_t = actual_covariance[:, 3, 3]  # .unsqueeze(1)
-        sd_t = torch.sqrt(cov_t)
-        # opacity multiplier is 0.05 at this point (1.96)
-        # visible_range = 1.96 * sd_t
-        # opacity multiplier is 0.01 at this point (2.576 = 99% of contribution)
-        visible_range = 2.576 * sd_t
-        self._visible_range[mask] = visible_range
+            # we already have a visible range array, so update 
+            # even if we are filtered (using get_visible_range to get the filtered data)
+            if mask is not None:
+                mask = mask.squeeze()
+                scale = scaling_modifier * self.get_scaling_xyzt[mask]
+                rotation = self.get_rotation[mask]
+                rotation_r = self.get_rotation_r[mask]
+                self.get_visible_range[mask] = visible_range_calc(self.get_xyz[mask],scale,rotation,rotation_r)
+            else:
+                scale = scaling_modifier * self.get_scaling_xyzt
+                rotation = self._rotation
+                rotation_r = self._rotation_r
+                self.get_visible_range.copy_(visible_range_calc(self.get_xyz[mask],scale,rotation,rotation_r))
+
+
+
+
+
 
     def get_marginal_t(self, timestamp, scaling_modifier=1):  # Standard
         sigma = self.get_cov_t(scaling_modifier)
@@ -834,35 +924,28 @@ class GaussianModel:
                 if self.rot_4d:
                     self._rotation_r = self._rotation_r[valid_points_mask]
 
+    def make_combined_tensor(self, t1, t2):
+        requires_grad = t1.requires_grad
+        combined = torch.cat((t1.detach(), t2.detach()), dim=0).requires_grad_(requires_grad)
+        return combined
+
     def cat_one_tensor_to_optimizer(self, tensor, name):
         for group in self.optimizer.param_groups:
             if group["name"] == name:
                 stored_state = self.optimizer.state.get(group["params"][0], None)
-                if stored_state is not None:
-                    old_exp_avg = stored_state["exp_avg"]
-                    stored_state["exp_avg"] = torch.cat(
-                        (stored_state["exp_avg"].detach(), torch.zeros_like(tensor)),
-                        dim=0,
-                    ).requires_grad_(True)
-                    stored_state["exp_avg_sq"] = torch.cat(
-                        (stored_state["exp_avg_sq"].detach(), torch.zeros_like(tensor)),
-                        dim=0,
-                    ).requires_grad_(True)
-
-                    #                    del self.optimizer.state[group['params'][0]]
+                if stored_state is not None:                    
+                    stored_state["exp_avg"] = self.make_combined_tensor(self, stored_state["exp_avg"], torch.zeros_like(tensor))
+                    stored_state["exp_avg_sq"] = self.make_combined_tensor(self, stored_state["exp_avg_sq"], torch.zeros_like(tensor))
+                    
                     group["params"][0] = nn.Parameter(
-                        torch.cat(
-                            (group["params"][0].detach(), tensor.detach()), dim=0
-                        ).requires_grad_(True)
+                        self.make_combined_tensor(group["params"][0], tensor)
                     )
                     self.optimizer.state[group["params"][0]] = stored_state
 
                     return group["params"][0]
                 else:
                     group["params"][0] = nn.Parameter(
-                        torch.cat(
-                            (group["params"][0].detach(), tensor), dim=0
-                        ).requires_grad_(True)
+                        self.make_combined_tensor(group["params"][0], tensor)
                     )
                     return group["params"][0]
 
@@ -878,33 +961,19 @@ class GaussianModel:
                 extension_tensor = tensors_dict[group["name"]]
                 stored_state = opt.state.get(group["params"][0], None)
                 if stored_state is not None:
-
-                    stored_state["exp_avg"] = torch.cat(
-                        (stored_state["exp_avg"], torch.zeros_like(extension_tensor)),
-                        dim=0,
-                    )
-                    stored_state["exp_avg_sq"] = torch.cat(
-                        (
-                            stored_state["exp_avg_sq"],
-                            torch.zeros_like(extension_tensor),
-                        ),
-                        dim=0,
-                    )
+                    stored_state["exp_avg"] = self.make_combined_tensor(self, stored_state["exp_avg"], torch.zeros_like(tensor))
+                    stored_state["exp_avg_sq"] = self.make_combined_tensor(self, stored_state["exp_avg_sq"], torch.zeros_like(tensor))
 
                     del opt.state[group["params"][0]]
                     group["params"][0] = nn.Parameter(
-                        torch.cat(
-                            (group["params"][0], extension_tensor), dim=0
-                        ).requires_grad_(True)
+                        self.make_combined_tensor(group["params"][0], extension_tensor)
                     )
                     opt.state[group["params"][0]] = stored_state
 
                     optimizable_tensors[group["name"]] = group["params"][0]
                 else:
                     group["params"][0] = nn.Parameter(
-                        torch.cat(
-                            (group["params"][0], extension_tensor), dim=0
-                        ).requires_grad_(True)
+                        self.make_combined_tensor(group["params"][0], extension_tensor)
                     )
                     optimizable_tensors[group["name"]] = group["params"][0]
 
@@ -1028,6 +1097,7 @@ class GaussianModel:
                 update_filter=update_filter,
                 radii=radii,
                 avg_t_grad=avg_t_grad,
+                filter_mask = self._filtered_visibility
             )
 
     def add_densification_stats_grad(
@@ -1041,6 +1111,7 @@ class GaussianModel:
                 update_filter=update_filter,
                 radii=radii,
                 avg_t_gradient=avg_t_grad,
+                filter_mask = self._filtered_visibility
             )
 
     def run_densifiers(self, iteration, scene, radii, pipe, bg):

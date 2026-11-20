@@ -89,7 +89,7 @@ class TimeSpacePruner(DensifierBase):
         clone_split_prune(gaussians,prunes = invisibles)
 
 
-    def add_densification_stats_grad(self,*,gaussians,iteration,viewspace_point_grad,update_filter, radii,avg_t_gradient):
+    def add_densification_stats_grad(self,*,gaussians,iteration,viewspace_point_grad,update_filter, radii,avg_t_gradient,filter_mask):
         pass
 
     def get_save_vars(self,gaussians):

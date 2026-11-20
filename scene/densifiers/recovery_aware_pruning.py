@@ -14,7 +14,7 @@ class RecoveryAwarePruner(DensifierBase):
         prune_mask = (gaussians.get_opacity < prune_opacity).squeeze()
         clone_split_prune(gaussians,None,None,prune_mask)
 
-    def add_densification_stats_grad(self,*,gaussians,iteration,viewspace_point_grad,update_filter, radii,avg_t_gradient):
+    def add_densification_stats_grad(self,*,gaussians,iteration,viewspace_point_grad,update_filter, radii,avg_t_gradient,filter_mask):
         pass
 
     def get_save_vars(self,gaussians):
