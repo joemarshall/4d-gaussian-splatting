@@ -378,7 +378,7 @@ class CameraDataset(Dataset):
         return camlist
 
     def get_frame_batch_sampler(self, suggested_batch_size=4,output_device = "cpu"):
-        return CameraDataset.ReadAheadSampler(self,CameraDataset.RandomSampler(self),output_device=output_device,num_batches_readahead=4)
+        return CameraDataset.ReadAheadSampler(self,CameraDataset.FrameSampler(self),output_device=output_device,num_batches_readahead=4)
 
     def get_index_batch_list_sampler(self, index_list,readahead=5,output_device = "cpu"):
         return CameraDataset.ReadAheadSampler(self,CameraDataset.IndexListSampler(self, index_list),num_batches_readahead=readahead,output_device=output_device)
