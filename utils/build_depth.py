@@ -674,6 +674,129 @@ def calculate_depths(output_path: Path, ignore_existing: bool = False):
                 return_when="FIRST_COMPLETED",
             )
 
+def calculate_flows(output_path: Path, ignore_existing: bool = False):
+    import ptlflow
+
+    image_path = output_path / "images"
+    images = image_path.glob("*.png")
+    image_names = [str(image.name) for image in images]
+
+
+    model = ptlflow.get_model('fastflownet', ckpt_path='things')
+    model.eval()
+    model.to(device="cuda")
+
+
+    #flow_pool = ThreadPoolExecutor(max_workers=1)
+    load_pool = ThreadPoolExecutor(max_workers=5)
+    save_pool = ThreadPoolExecutor(max_workers=2)
+
+
+    image_ids = [
+        (frame_and_camid_from_path(image_name), str(image_path / image_name))
+        for image_name in image_names
+    ]
+
+
+    ids_sorted_by_camera_and_frame = sorted(image_ids, key=lambda x: (x[0][1],x[0][0]) )
+
+    batch_groups = list(itertools.batched(ids_sorted_by_camera_and_frame,5))
+
+    tensor_dtype= torch.float32
+
+    load_futures = []
+    process_futures = []
+    save_futures = []
+
+    def load_frame_images_for_flow(imgs):
+        loaded_images = []
+        img_names = []
+        for img_id, img_path in imgs:
+            try:
+                img_names.append(str(img_path))
+                img = Image.open(img_path).convert("RGB")
+            except Exception as e:
+                print(f"Error opening image {img_path}: {e}")
+                raise e
+            resized_image = transform_image_to_depth_size(img)
+            img_tensor = pil_to_tensor(resized_image)
+            img_tensor = convert_image_dtype(img_tensor, dtype=tensor_dtype)
+            #img_tensor = normalize(img_tensor, mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+            loaded_images.append((img_id,img_tensor.pin_memory()))
+        return img_names, loaded_images
+
+    def save_flow_task(flow_tensor, img_names):
+        #print(">", end="", flush=True)
+        for i, x in enumerate(img_names):
+            flow_path = x.replace(".png", f".flow")
+            # print(torch.max(depth_tensor[i]), torch.min(depth_tensor[i]))
+            flow_tensor_i = flow_tensor[i]
+            flow_tensor_i = flow_tensor_i.to(dtype=torch.float16)
+            # print(f"Saving depth {x}:{depth_tensor_i.shape}")
+            torch.save(flow_tensor_i, flow_path)
+        return img_names
+    
+
+    with tqdm(total=len(ids_sorted_by_camera_and_frame), desc="Flow Calculation") as pbar:
+        load_pos = 0
+        save_pos = 0
+        last_cam = None
+        last_image_tensor = None
+        waiting_load_futures = 0
+        finished_pos = len(ids_sorted_by_camera_and_frame)
+        while load_pos < len(batch_groups) or len(load_futures)+len(process_futures)+len(save_futures)>0:
+            if len(load_futures)<5 and load_pos<len(batch_groups):
+                batch = batch_groups[load_pos]
+                load_futures.append(
+                        load_pool.submit(load_frame_images_for_flow, batch)
+                )
+                load_pos+=1
+            if len(load_futures)>0 and load_futures[0].done():
+                f = load_futures[0]
+                load_futures.remove(f)
+                # now process this set of images
+                save_values = []
+                save_names = []
+                image_names, frame_data = f.result()
+                for (img_name, ((frame_id,cam_id),img_tensor)) in zip(image_names,frame_data):
+                    if last_cam != cam_id:
+                        print("Next cam")
+                        last_image_tensor=None
+                    if last_image_tensor is not None:
+                        # calculate flow between this and previous
+                        img_tensor = img_tensor.to("cuda")
+                        inputs = torch.cat([img_tensor.unsqueeze(0),last_image_tensor.unsqueeze(0)],dim=0)
+                        with torch.no_grad():
+                            with torch.autocast(device_type="cuda"):
+                                predictions = model({"images":inputs.unsqueeze(0)})
+                        last_image_tensor = img_tensor
+                        # The output is a dict with possibly several keys,
+                        # but it should always store the optical flow prediction in a key called 'flows'.
+                        flows = predictions['flows']
+                        save_values.append(flows.to('cpu'))
+                        save_names.append(img_name)
+                        print("Calc flow:",frame_id,cam_id)
+                    else:
+                        last_image_tensor = img_tensor.to('cuda')
+                    last_cam = cam_id
+                print("SAVING:",save_names)
+                save_futures.append(save_pool.submit(save_flow_task,save_values,save_names))
+
+            save_ready = [future for future in save_futures if future.done()]
+            for f in save_ready:
+                save_futures.remove(f)
+                result = f.result()
+                print("Done save:", result)
+                pbar.update(len(result))
+            if len(load_futures + save_futures + process_futures)>0:
+                wait(
+                    load_futures + save_futures + process_futures,
+                    return_when="FIRST_COMPLETED",
+                )
+    print("Got all flow values")
+
+
+
 
 def intrinsics_from_colmap_camera_file(colmap_path, dest_w, dest_h):
     colmap_cam_line = None
@@ -852,28 +975,29 @@ if __name__ == "__main__":
     #    make_onnx_depth_model("depth-anything/DA3-SMALL", Path("output/depth_model.onnx"))
 
     output_path = Path("output/9moving")
-    calculate_depths(output_path, ignore_existing=True)
+    calculate_flows(output_path, ignore_existing=True)
+#    calculate_depths(output_path, ignore_existing=True)
 
-    tensor = torch.rand(2074, 2104)
-    #    tensor = torch.rand(1, 1, 2073, 2005)
-    transformed_tensor = transform_tensor_to_depth_size(tensor)
-    print(transformed_tensor.shape, tensor.shape)
+    # tensor = torch.rand(2074, 2104)
+    # #    tensor = torch.rand(1, 1, 2073, 2005)
+    # transformed_tensor = transform_tensor_to_depth_size(tensor)
+    # print(transformed_tensor.shape, tensor.shape)
 
-    image_size_tensor = transform_depth_to_image_size(transformed_tensor, tensor)
-    print(
-        image_size_tensor.shape,
-        tensor.shape,
-        "ImgSize tensor:\n",
-        image_size_tensor[..., 0:10, 0:10],
-    )
-    retransformed = transform_tensor_to_depth_size(image_size_tensor)
-    print(torch.count_nonzero(retransformed < 0.0))
-    print(
-        retransformed.shape,
-        tensor.shape,
-        torch.all(retransformed == transformed_tensor),
-    )
-    if torch.any(retransformed != transformed_tensor):
-        print("Error: retransformed tensor does not match original transformed tensor")
-        print("Original transformed tensor:\n", transformed_tensor)
-        print("Retransformed tensor:\n", retransformed)
+    # image_size_tensor = transform_depth_to_image_size(transformed_tensor, tensor)
+    # print(
+    #     image_size_tensor.shape,
+    #     tensor.shape,
+    #     "ImgSize tensor:\n",
+    #     image_size_tensor[..., 0:10, 0:10],
+    # )
+    # retransformed = transform_tensor_to_depth_size(image_size_tensor)
+    # print(torch.count_nonzero(retransformed < 0.0))
+    # print(
+    #     retransformed.shape,
+    #     tensor.shape,
+    #     torch.all(retransformed == transformed_tensor),
+    # )
+    # if torch.any(retransformed != transformed_tensor):
+    #     print("Error: retransformed tensor does not match original transformed tensor")
+    #     print("Original transformed tensor:\n", transformed_tensor)
+    #     print("Retransformed tensor:\n", retransformed)

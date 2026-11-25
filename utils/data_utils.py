@@ -32,20 +32,18 @@ class FastPNGToTorch:
         self.config.pixel_format = PixelFormat.RGB
         self.decoder = ImageDecoder(self.config)
 
-    def decode(self, path,device,non_blocking):
+    def decode(self, path):
         decoding_result = self.decoder.decode(str(path))
-        img_u8 = torch.from_numpy(decoding_result.pixbuf).to(device,non_blocking=non_blocking)
-        img = img_u8.permute(2, 0, 1).contiguous().to(dtype=torch.float32) / 255.0
-        return img
+        img_u8 = torch.from_numpy(decoding_result.pixbuf)
+        return img_u8
 
 class PILPNGToTorch:
 
-    def decode(self, path,device,non_blocking):
+    def decode(self, path):
         decoding_result = Image.open(path).convert("RGB")
         decoding_result = np.array(decoding_result)
-        img_u8 = torch.from_numpy(decoding_result).to(device,non_blocking=non_blocking)
-        img = img_u8.permute(2, 0, 1).contiguous().to(dtype=torch.float32) / 255.0
-        return img
+        img_u8 = torch.from_numpy(decoding_result)
+        return img_u8
 
 
 
@@ -60,27 +58,40 @@ class ImageCache:
     executor = ThreadPoolExecutor(max_workers=50)
 
     @staticmethod 
-    def loader_task(path,width,has_depth,output_device):
+    def loader_task(path,width,has_depth,output_device,pinned_memory):
         decoder = FastPNGToTorch()
         non_blocking = True if output_device=="cuda" else False
-        r_img = decoder.decode(path,output_device,non_blocking)
+        r_img = decoder.decode(path)
 
         if has_depth:
             depth_path = Path(path).with_suffix(".depth")
             if os.path.exists(depth_path):
-                r_depth = torch.load(depth_path).to(dtype=torch.float32,device=output_device,non_blocking=non_blocking)
+                r_depth = torch.load(depth_path)
         else:
             r_depth = None
+
+        if output_device!="cpu":
+            r_img = r_img.to(device=output_device,non_blocking=True)
+            if r_depth is not None:
+                r_depth = r_depth.to(device=output_device,non_blocking=True)
+
+        r_img = r_img.permute(2, 0, 1).contiguous().to(dtype=torch.float32) / 255.0
+        r_depth= r_depth.to(dtype=torch.float32) if r_depth is not None else None
+
+        if output_device=="cpu" and pinned_memory:
+            r_img = r_img.pin_memory()
+            r_depth= r_depth.pin_memory() if r_depth is not None else None
+
         return (r_img,r_depth)
 
 
     @staticmethod
-    def preload_image(path,width,has_depth, output_device = "cpu"):
+    def preload_image(path,width,has_depth, output_device = "cpu",pinned_memory=True):
         # load into preload cache in a thread
         # so that we can return it next call
         if (path,width) not in ImageCache.preload_cache:
             #print("Preloading image for", path,width)
-            ImageCache.preload_cache[(path,width)] = {"future": ImageCache.executor.submit(ImageCache.loader_task, path, width, has_depth, output_device),"refcount":1}
+            ImageCache.preload_cache[(path,width)] = {"future": ImageCache.executor.submit(ImageCache.loader_task, path, width, has_depth, output_device,pinned_memory),"refcount":1}
         else:
             ImageCache.preload_cache[(path,width)]["refcount"] += 1
             #print("Already preloaded", path,width,ImageCache.preload_cache[(path,width)]["refcount"])

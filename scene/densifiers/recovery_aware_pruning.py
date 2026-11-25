@@ -6,7 +6,7 @@ class RecoveryAwarePruner(DensifierBase):
     def __init__(self,opt):
         super().__init__(opt, "recovery_aware")
 
-    def densify_and_prune(self, iteration, scene, gaussians, radii,pipe, bg, *, options):
+    def densify_and_prune(self, iteration, scene, gaussians, radii,pipe, bg, *, options,filter_mask):
         # only gets called if needs_densification is true
         prune_opacity = getattr(self.options, 'prune_opacity_threshold`', 0.05)
         # prune everything less than 0.01 opacity

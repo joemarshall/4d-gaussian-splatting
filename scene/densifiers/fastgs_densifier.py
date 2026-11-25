@@ -21,7 +21,7 @@ class FastGSDensifier(DensifierBase):
             else:
                 self.t_gradient_accum = None
 
-    def densify_and_prune(self, iteration, scene, gaussians, radii, pipe, bg, *, options):
+    def densify_and_prune(self, iteration, scene, gaussians, radii, pipe, bg, *, options,filter_mask):
         """FastGS multi-view consistent densification and pruning.
 
         Steps:

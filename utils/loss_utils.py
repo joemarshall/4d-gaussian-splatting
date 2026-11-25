@@ -204,7 +204,11 @@ def _depth_internal_no_op(render_depth,gt_depth):
 def loss_depth(
     render_package, gt_image, gt_depth, gaussians, args, iterations, max_iterations
 ):
-    return torch.cond(iterations > (max_iterations * 5 / 6), _depth_internal_no_op, _depth_internal_loss,(render_package['depth'].squeeze(), gt_depth))
+    if iterations < max_iterations*5/6:
+        return _depth_internal_loss(render_package['depth'].squeeze(), gt_depth)
+    else:
+        return torch.tensor(0.0,device=gt_depth.device,dtype=gt_depth.dtype)
+    #return torch.cond(iterations > (max_iterations * 5 / 6), _depth_internal_no_op, _depth_internal_loss,(render_package['depth'].squeeze(), gt_depth))
 
 
 

@@ -30,7 +30,7 @@ class MonteCarloPruner(DensifierBase):
             sigma = gaussians.get_marginal_t(timestamp) * gaussians.get_opacity
             return sigma
 
-    def densify_and_prune(self, iteration, scene, gaussians, radii,pipe, bg, *, options):
+    def densify_and_prune(self, iteration, scene, gaussians, radii,pipe, bg, *, options,filter_mask):
         # render *all* training views
         # for each gaussian, calculate time/space score
         # based on:

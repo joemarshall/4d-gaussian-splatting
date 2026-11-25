@@ -451,15 +451,19 @@ def makePointCloudFromImages(
         pts["start"][candidates[extend]] = k
     progress.close()
 
-    all_xyz = pts["xyz"]
-    all_colors = pts["col"]
-    all_times = time_values[pts["start"]].unsqueeze(-1)
-    all_durations = (time_values[end] - time_values[pts["start"]]).unsqueeze(-1)
-    all_src_cams = pts["src_cam"]
-    all_points = pts["src_pix"]
-    all_depths = pts["depth"].unsqueeze(-1)
+    short_duration_filter = end - pts["start"] > 1
+
+    all_xyz = pts["xyz"][short_duration_filter]
+    all_durations = (time_values[end] - time_values[pts["start"]]).unsqueeze(-1)[short_duration_filter]
+    all_colors = pts["col"][short_duration_filter]
+    all_times = time_values[pts["start"]].unsqueeze(-1)[short_duration_filter]
+    all_src_cams = pts["src_cam"][short_duration_filter]
+    all_points = pts["src_pix"][short_duration_filter]
+    all_depths = pts["depth"].unsqueeze(-1)[short_duration_filter]
     all_rotations = torch.zeros((all_xyz.shape[0], 4), device=TENSOR_DEVICE)
     all_scales = torch.zeros((all_xyz.shape[0], 3), device=TENSOR_DEVICE)
+
+
 
     # scales come from the 2d spacing of points in their source camera
     from utils.pointdistance4d import find2d_nearest_points
@@ -495,11 +499,12 @@ def makePointCloudFromImages(
             _, centre_scales_2d = find2d_nearest_points(cam_points[live_idx], cam_points[centre_idx])
             scale_3d = centre_scales_2d * ray_scale_multiplier * cam_depths[centre_idx][:, 0]
             # make the output flattish in z
-            cam_scales[centre_idx] = torch.stack([scale_3d * 3.0, scale_3d * 3.0, scale_3d * 0.5], dim=1)
+            cam_scales[centre_idx] = torch.stack([scale_3d * 6.0, scale_3d * 6.0, scale_3d * 6.0], dim=1)
         all_scales[this_cam] = cam_scales
 
-    all_scales=all_scales.clamp(min=1e-6,max=0.05)
+    all_scales=all_scales.clamp(min=1e-6,max=0.1)
     print("Found all scales", (all_scales == 0).sum().item(), "zero out of", all_scales.numel())
+
 
     return BasicPointCloud(
         points=all_xyz.cpu().numpy(),

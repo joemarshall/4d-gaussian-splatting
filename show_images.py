@@ -589,12 +589,12 @@ try:
 #            prune_mask = (gaussians.get_cov_t() < 0.01).squeeze()
 
             #prune_mask = (gaussians.get_opacity < 0.9).squeeze()
-            #cov_t = gaussians.get_cov_t().squeeze()
-            #prune_mask = cov_t < 0.5
+            cov_t = gaussians.get_cov_t().squeeze()
+            prune_mask = cov_t < 0.5
             # static_threshold = torch.quantile(cov_t, 0.5)
 #            prune_mask|= (cov_t > static_threshold).squeeze()
-#            clone_split_prune(gaussians, None, None, prune_mask)
-            #print("Pruned:",prune_mask.shape[0]," -> ",gaussians.get_xyz.shape[0])
+            clone_split_prune(gaussians, None, None, prune_mask)
+            print("Pruned:",prune_mask.shape[0]," -> ",gaussians.get_xyz.shape[0])
             #gaussians.reset_opacity(max_val = 1.0, min_val=1.0)
             
 

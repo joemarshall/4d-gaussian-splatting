@@ -27,7 +27,6 @@ class PlainDensifier(DensifierBase):
             # combine them to get the indices of points in the full array that are being updated
             target_indices = torch.zeros_like(filter_mask, dtype=torch.bool)
             target_indices[filter_mask] = update_filter
-            print("Update filter shape:", update_filter.shape, filter_mask.shape, target_indices.shape)
 
 
         self.max_radii2D[target_indices] = torch.max(
@@ -40,7 +39,8 @@ class PlainDensifier(DensifierBase):
             self.t_gradient_accum[target_indices] += avg_t_gradient[update_filter]
 
 
-    def densify_and_prune(self, iteration, scene, gaussians, radii, pipe, bg, *, options):
+    def densify_and_prune(self, iteration, scene, gaussians, radii, pipe, bg, *, options,filter_mask):
+            
         max_grad = self.options.densify_grad_threshold
         min_opacity = self.options.thresh_opa_prune
         max_grad_t = self.options.densify_grad_t_threshold

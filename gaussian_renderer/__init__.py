@@ -126,6 +126,9 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
             # reduce precision to see if storage precision matters
             #sh_ac = sh_ac.to(dtype=torch.float16)
             #sh_ac = sh_ac.to(dtype=torch.float32)
+            if pc.gaussian_dim == 4:
+                ts = pc.get_t
+
     else:
         colors_precomp = override_color
     
@@ -165,7 +168,7 @@ def render(viewpoint_camera, pc : GaussianModel, pipe, bg_color : torch.Tensor, 
     # Rasterize visible Gaussians to image, obtain their radii (on screen). 
 
 
-
+    #print("Rendering with", means3D.shape[0], "gaussians")
     rendered_image, radii, depth, alpha, flow, covs_com,metric_count = rasterizer(
         means3D = means3D,
         means2D = means2D,
@@ -263,7 +266,6 @@ def calculate_gaussian_contribution(viewpoint_camera, pc : GaussianModel, pipe, 
                 rotations_r = pc.get_rotation_r
             if pc.prefilter_var > 0.0:
                 prefilter_var = pc.prefilter_var
-
 
     if pipe.compute_cov3D_python:
         if pc.rot_4d:

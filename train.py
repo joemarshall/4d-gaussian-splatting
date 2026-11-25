@@ -88,7 +88,7 @@ if __name__ == "__main__":
     TRACK_MEMORY = False
     CLEAR_CACHE = False
 
-    SHOW_TIMINGS = True
+    SHOW_TIMINGS = False
     CUDA_EVENTS = False
 
     RUN_PROFILER = False
@@ -197,11 +197,15 @@ if __name__ == "__main__":
         for batch_idx in range(batch_size):
             gt_image, viewpoint_cam, gt_depth = batch_data[batch_idx]
             batch_data[batch_idx]=None
-            gt_image = gt_image.to(device="cuda", non_blocking=True).detach()
+            if SHOW_TIMINGS:
+                times.append(("before_gt_image", time.monotonic()))
+
+
+            gt_image = gt_image.to(device="cuda", non_blocking=True)
             if batch_idx == batch_size-1:
                 gt_image_last = gt_image
             gt_depth = (
-                gt_depth.to(device="cuda", non_blocking=True).detach()
+                gt_depth.to(device="cuda", non_blocking=True)
                 if gt_depth is not None
                 else None
             )
@@ -498,6 +502,11 @@ if __name__ == "__main__":
             scene.init_gaussians_from_scene()
             try_save(gaussians, 0, 0, scene, name="post_init")
 
+        # from scene.densifiers.split_ops import clone_split_prune
+        # prune_mask = torch.zeros(gaussians.get_xyz.shape[0], dtype=torch.bool, device="cuda")
+        # prune_mask[50000:]=True
+        # clone_split_prune(gaussians, prunes=prune_mask)
+
         gaussians.training_setup(opt, batch_size_mult=1.0)
         total_training_points = 0
 
@@ -532,6 +541,7 @@ if __name__ == "__main__":
         gaussians.env_map = env_map
 
         training_dataset = scene.getTrainCameras()
+        
 
         # estimate rough number of num workers based on initial point count to avoid OOM when loading things for large scenes
         initial_size = gaussians.get_xyz.shape[0]
@@ -575,8 +585,6 @@ if __name__ == "__main__":
         stop_iteration = False
 
         def stop_handler(signum, frame):
-            import sys
-            sys.exit(0)
             nonlocal stop_iteration
             print("CTRL+C received, saving checkpoint and exiting")
             stop_iteration = True
@@ -783,14 +791,6 @@ if __name__ == "__main__":
                     #     (pipe, background),
                     #     loss_dict,
                     # )
-                    if iteration in saving_iterations:
-                        try_save(
-                            gaussians,
-                            iteration,
-                            total_training_points,
-                            scene,
-                            f"iter_{iteration}",
-                        )
                     # elif iteration in testing_iterations:
                     #     if test_psnr >= best_psnr:
                     #         best_psnr = test_psnr
@@ -861,6 +861,16 @@ if __name__ == "__main__":
                         if pipe.env_map_res and iteration < pipe.env_optimize_until:
                             env_map_optimizer.step()
                             env_map_optimizer.zero_grad(set_to_none=True)
+
+                    if iteration in saving_iterations:
+                        try_save(
+                            gaussians,
+                            iteration,
+                            total_training_points,
+                            scene,
+                            f"iter_{iteration}",
+                        )
+
 
 
 

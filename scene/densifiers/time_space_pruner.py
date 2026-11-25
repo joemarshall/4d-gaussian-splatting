@@ -31,7 +31,7 @@ class TimeSpacePruner(DensifierBase):
             return sigma
 
 
-    def densify_and_prune(self, iteration, scene, gaussians, radii,pipe, bg, *, options):
+    def densify_and_prune(self, iteration, scene, gaussians, radii,pipe, bg, *, options,filter_mask):
         # render *all* training views
         # for each gaussian, calculate time/space score
         # based on:
