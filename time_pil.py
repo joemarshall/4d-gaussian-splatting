@@ -75,11 +75,11 @@ def load_all_imagecache(has_depth = False):
             im = ImageCache.preload_image(str(x), 3927, has_depth=has_depth)
             delay_list.append(str(x))
             if len(delay_list)>=24:
-                img = ImageCache.get_image_for_file(delay_list[0],3927,has_depth=has_depth)
+                img = ImageCache.get_image_for_file(delay_list[0],3927)
                 delay_list = delay_list[1:]
                 pbar.update(1)
         while len(delay_list) > 0:
-            im = ImageCache.get_image_for_file(delay_list[0],3927,has_depth=has_depth)
+            im = ImageCache.get_image_for_file(delay_list[0],3927)
             delay_list = delay_list[1:]
             pbar.update(1)
     return im_means

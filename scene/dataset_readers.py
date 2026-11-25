@@ -259,7 +259,7 @@ def makePointCloudFromImages(
     def load_frame(batch):
         frame = []
         for idx in batch:
-            image, cam, depth = dataset[idx]
+            image, cam, depth, flow = dataset[idx]
             depth = transform_depth_to_image_size(depth, image)
             rays_o, rays_d = cam.get_rays()
             wvt = cam.world_view_transform.to(TENSOR_DEVICE)
@@ -469,7 +469,7 @@ def makePointCloudFromImages(
     from utils.pointdistance4d import find2d_nearest_points
 
     for idx in dataset.get_indices_for_timestamp(timestamps[0]):
-        _, cam, _ = dataset[idx]
+        _, cam, _, _ = dataset[idx]
         _, rays_d = cam.get_rays()
         # scale multiplier for a 1 pixel move at distance 1
         ray_scale_multiplier = torch.linalg.vector_norm(

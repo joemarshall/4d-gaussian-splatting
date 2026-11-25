@@ -56,7 +56,7 @@ for batch in sampler:
 
     for i,id in enumerate(batch):
         print(id)
-        image, cam, depth = dataset[id]
+        image, cam, depth = dataset[id][:3]
         if depth is None:
             continue
         print(

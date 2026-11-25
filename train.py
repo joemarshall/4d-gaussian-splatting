@@ -163,7 +163,7 @@ if __name__ == "__main__":
         iteration,            
     ):
         for batch_idx in range(batch_size):
-            gt_image, viewpoint_cam, gt_depth = batch_data[batch_idx]
+            gt_image, viewpoint_cam, gt_depth, gt_flow = batch_data[batch_idx]
             if batch_idx == batch_size-1:
                 gt_image_last = gt_image
             gt_image = gt_image.detach().to(device="cuda", non_blocking=True).detach()
@@ -195,7 +195,7 @@ if __name__ == "__main__":
 
         loss_items = {}
         for batch_idx in range(batch_size):
-            gt_image, viewpoint_cam, gt_depth = batch_data[batch_idx]
+            gt_image, viewpoint_cam, gt_depth, gt_flow = batch_data[batch_idx]
             batch_data[batch_idx]=None
             if SHOW_TIMINGS:
                 times.append(("before_gt_image", time.monotonic()))
@@ -661,7 +661,7 @@ if __name__ == "__main__":
 
                 ts_batch = batch_data[0][1].timestamp
                 batch_data = [
-                    (data[0], data[1].cuda(), data[2])
+                    (data[0], data[1].cuda(), data[2],data[3])
                     for data in batch_data
                 ]
 
@@ -1025,7 +1025,7 @@ if __name__ == "__main__":
                     ssim_test = 0.0
                     msssim_test = 0.0
                     for idx, batch_data in enumerate(tqdm(config["range"])):
-                        gt_image, viewpoint, gt_depth = config["cameras"][idx]
+                        gt_image, viewpoint, gt_depth, gt_flow = config["cameras"][idx]
                         gt_image = gt_image.cuda()
                         viewpoint = viewpoint.cuda()
 

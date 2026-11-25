@@ -58,40 +58,47 @@ class ImageCache:
     executor = ThreadPoolExecutor(max_workers=50)
 
     @staticmethod 
-    def loader_task(path,width,has_depth,output_device,pinned_memory):
+    def loader_task(path,width,output_device,pinned_memory):
         decoder = FastPNGToTorch()
         non_blocking = True if output_device=="cuda" else False
         r_img = decoder.decode(path)
+        r_depth = None
+        r_flow = None
 
-        if has_depth:
-            depth_path = Path(path).with_suffix(".depth")
-            if os.path.exists(depth_path):
-                r_depth = torch.load(depth_path)
-        else:
-            r_depth = None
+        depth_path = Path(path).with_suffix(".depth")
+        if os.path.exists(depth_path):
+            r_depth = torch.load(depth_path)
+
+        flow_path = Path(path).with_suffix(".flow")
+        if os.path.exists(flow_path):
+            r_flow = torch.load(flow_path)
 
         if output_device!="cpu":
             r_img = r_img.to(device=output_device,non_blocking=True)
             if r_depth is not None:
                 r_depth = r_depth.to(device=output_device,non_blocking=True)
+                
 
         r_img = r_img.permute(2, 0, 1).contiguous().to(dtype=torch.float32) / 255.0
         r_depth= r_depth.to(dtype=torch.float32) if r_depth is not None else None
+        r_flow = r_flow.to(dtype=torch.float32) if r_flow is not None else None
 
         if output_device=="cpu" and pinned_memory:
             r_img = r_img.pin_memory()
             r_depth= r_depth.pin_memory() if r_depth is not None else None
+            r_flow = r_flow.pin_memory() if r_flow is not None else None
 
-        return (r_img,r_depth)
+
+        return (r_img,r_depth,r_flow)
 
 
     @staticmethod
-    def preload_image(path,width,has_depth, output_device = "cpu",pinned_memory=True):
+    def preload_image(path,width, output_device = "cpu",pinned_memory=True):
         # load into preload cache in a thread
         # so that we can return it next call
         if (path,width) not in ImageCache.preload_cache:
             #print("Preloading image for", path,width)
-            ImageCache.preload_cache[(path,width)] = {"future": ImageCache.executor.submit(ImageCache.loader_task, path, width, has_depth, output_device,pinned_memory),"refcount":1}
+            ImageCache.preload_cache[(path,width)] = {"future": ImageCache.executor.submit(ImageCache.loader_task, path, width, output_device,pinned_memory),"refcount":1}
         else:
             ImageCache.preload_cache[(path,width)]["refcount"] += 1
             #print("Already preloaded", path,width,ImageCache.preload_cache[(path,width)]["refcount"])
@@ -99,11 +106,11 @@ class ImageCache:
         return ImageCache.preload_cache[(path,width)]["future"]
 
     @staticmethod
-    def get_image_for_file(path, width, has_depth):
+    def get_image_for_file(path, width):
         if (path,width) not in ImageCache.preload_cache:
             # load and wait
             print("Not preloaded but cache file exists, loading for", path)
-            ImageCache.preload_image(path,width,has_depth).result()
+            ImageCache.preload_image(path,width).result()
         cache_entry = ImageCache.preload_cache[(path,width)]
         refcount = cache_entry["refcount"]
         if refcount <= 1:
@@ -152,7 +159,7 @@ class CameraDataset(Dataset):
                     try:
                         next_batch =next(child_iter)
                         for x in next_batch:
-                            ImageCache.preload_image(self.dataset.viewpoint_stack[x].image_path, self.dataset.viewpoint_stack[x].image_width, self.dataset.viewpoint_stack[x].depth is not None, output_device = self.output_device)
+                            ImageCache.preload_image(self.dataset.viewpoint_stack[x].image_path, self.dataset.viewpoint_stack[x].image_width, output_device = self.output_device)
                         readahead_buffer.append(next_batch)
                     except StopIteration:
                         done = True
@@ -403,12 +410,12 @@ class CameraDataset(Dataset):
     def __getitem__(self, index):
         viewpoint_cam = self.viewpoint_stack[index]
         if viewpoint_cam.meta_only and not self.names_only:
-            cached_image,cached_depth = ImageCache.get_image_for_file(
-                viewpoint_cam.image_path, viewpoint_cam.image_width, viewpoint_cam.depth is not None
+            cached_image,cached_depth, cached_flow = ImageCache.get_image_for_file(
+                viewpoint_cam.image_path, viewpoint_cam.image_width
             )
             if cached_image is not None:
                 #                print("Using cached image:", viewpoint_cam.image_path)
-                return cached_image, viewpoint_cam.cuda(), cached_depth
+                return cached_image, viewpoint_cam.cuda(), cached_depth, cached_flow
             else:
                 raise RuntimeError(
                     "ImageCache get_image_for_file returned None for image: {}".format(
@@ -417,7 +424,7 @@ class CameraDataset(Dataset):
                 )
 
         if self.names_only:
-            return None, viewpoint_cam, None
+            return None, viewpoint_cam, None, None
 
     def __len__(self):
         return len(self.viewpoint_stack)
